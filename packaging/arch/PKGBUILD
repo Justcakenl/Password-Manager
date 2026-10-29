@@ -1,31 +1,33 @@
-# PKGBUILD voor kluis – bouwt vanuit deze lokale git-checkout.
+# PKGBUILD for kluis (CakePass) – builds from this local git checkout.
 #
-# Gebruik (in deze map):   makepkg -si
-# Tests overslaan:          makepkg -si --nocheck
+# Usage (in this folder):   makepkg -si
+# Skip the tests:            makepkg -si --nocheck
 #
-# Deze PKGBUILD staat in packaging/arch/ en niet in de hoofdmap, omdat makepkg
-# zelf mappen "src/" en "pkg/" aanmaakt; die zouden botsen met de Rust-broncode.
+# This PKGBUILD lives in packaging/arch/ and not in the project root, because
+# makepkg creates its own "src/" and "pkg/" folders, which would clash with the
+# Rust source code.
 
-# De projectmap (twee niveaus boven deze PKGBUILD).
+# The project folder (two levels above this PKGBUILD).
 _root="$(realpath "${startdir}/../..")"
 
-# Versie = nummer uit Cargo.toml + aantal commits, zodat elke update voor pacman
-# een nieuwere versie is. Dit staat hier bovenaan (en niet in een pkgver()-functie)
-# omdat makepkg de PKGBUILD anders zelf zou aanpassen en de git-map "vuil" wordt.
+# Version = number from Cargo.toml + commit count, so every update is a newer
+# version for pacman. This sits up here (and not in a pkgver() function)
+# because otherwise makepkg would edit the PKGBUILD itself and the git folder
+# would become "dirty".
 pkgname=kluis
 pkgver="$(sed -n 's/^version = "\(.*\)"/\1/p' "$_root/Cargo.toml" | head -n1).r$(git -C "$_root" rev-list --count HEAD 2>/dev/null || echo 0)"
 pkgrel=1
-pkgdesc="Offline, versleutelde wachtwoordmanager voor de terminal"
+pkgdesc="Offline, encrypted password manager for the terminal (CakePass)"
 arch=('x86_64' 'aarch64')
 url="https://github.com/Justcakenl/passcode-manager-cli-"
 license=('MIT')
 depends=('glibc' 'gcc-libs')
 makedepends=('cargo' 'git')
-optdepends=('wl-clipboard: klembord onder Wayland'
-            'xclip: klembord onder X11'
-            'git: kluis --update (bijwerken vanaf GitHub)'
-            'base-devel: kluis --update (bouwen met makepkg)'
-            'libnotify: bureaubladmelding bij een nieuwe versie')
+optdepends=('wl-clipboard: clipboard on Wayland'
+            'xclip: clipboard on X11'
+            'git: kluis --update (update from GitHub)'
+            'base-devel: kluis --update (build with makepkg)'
+            'libnotify: desktop notification for a new version')
 options=('!debug')
 source=()
 
@@ -39,7 +41,7 @@ build() {
   cd "$_root"
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR="$srcdir/target"
-  # Zo weet het programma uit welke versie het gebouwd is (voor kluis --update).
+  # This tells the program which version it was built from (for kluis --update).
   export KLUIS_GIT_COMMIT="$(git -C "$_root" rev-parse --short=12 HEAD 2>/dev/null || true)"
   cargo build --frozen --release
 }
@@ -57,7 +59,7 @@ package() {
   local bin="$srcdir/target/release/kluis"
   install -Dm0755 "$bin" "$pkgdir/usr/bin/kluis"
 
-  # Shell-completions
+  # Shell completions
   install -dm0755 "$pkgdir/usr/share/bash-completion/completions" \
                   "$pkgdir/usr/share/zsh/site-functions" \
                   "$pkgdir/usr/share/fish/vendor_completions.d"
@@ -65,16 +67,16 @@ package() {
   "$bin" completions zsh  > "$pkgdir/usr/share/zsh/site-functions/_kluis"
   "$bin" completions fish > "$pkgdir/usr/share/fish/vendor_completions.d/kluis.fish"
 
-  # Waar de broncode staat, voor `kluis --update`.
+  # Where the source code is, for `kluis --update`.
   install -dm0755 "$pkgdir/usr/share/kluis"
   printf '%s\n' "$_root" > "$pkgdir/usr/share/kluis/source-dir"
 
-  # Dagelijkse controle op een nieuwe versie (aanzetten: kluis --update --auto on)
+  # Daily check for a new version (turn on: kluis --update --auto on)
   install -Dm0644 packaging/arch/kluis-update.service "$pkgdir/usr/lib/systemd/user/kluis-update.service"
   install -Dm0644 packaging/arch/kluis-update.timer "$pkgdir/usr/lib/systemd/user/kluis-update.timer"
 
   install -Dm0644 README.md "$pkgdir/usr/share/doc/kluis/README.md"
-  install -Dm0644 docs/ONTWERP.md "$pkgdir/usr/share/doc/kluis/ONTWERP.md"
+  install -Dm0644 docs/DESIGN.md "$pkgdir/usr/share/doc/kluis/DESIGN.md"
   install -Dm0644 LICENSE "$pkgdir/usr/share/licenses/kluis/LICENSE"
   install -Dm0644 assets/README.md "$pkgdir/usr/share/licenses/kluis/EFF-WORDLIST.md"
 }

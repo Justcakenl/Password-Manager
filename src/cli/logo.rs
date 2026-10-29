@@ -1,19 +1,21 @@
-//! Het CakePass-inlogscherm: een echt 3D-gerenderd, draaiend logo in de terminal.
+//! The CakePass login screen: a truly 3D-rendered, spinning logo in the terminal.
 //!
-//! Hoe het werkt (geen externe libraries nodig):
-//! 1. Elke letter van "CakePass" is een pixelfont van 7×9. Elk pixel wordt een
-//!    blokje met diepte ("extrusie"), zodat de tekst een 3D-object wordt.
-//! 2. Op de oppervlakken van die blokjes leggen we een raster van punten met
-//!    een normaalvector en een materiaal: roze glazuur (voorkant), cake met
-//!    een roomlaag (zijkanten) en chocolade (achterkant).
-//! 3. Per frame draaien we alle punten, projecteren ze met perspectief op een
-//!    pixelraster (met z-buffer), en kleuren we ze met licht en glans.
-//! 4. Elke terminalcel toont twee pixels boven elkaar met het teken "▀"
-//!    (voorgrond = bovenste pixel, achtergrond = onderste), in truecolor.
+//! How it works (no external libraries needed):
+//! 1. Every letter of "CakePass" is a 7×9 pixel font. Each pixel becomes a
+//!    block with depth ("extrusion"), so the text becomes a 3D object.
+//! 2. On the surfaces of those blocks we place a grid of points with a normal
+//!    vector and a material: pink frosting (front), cake with a cream layer
+//!    (sides) and chocolate (back).
+//! 3. For every frame we rotate all points, project them with perspective
+//!    onto a pixel grid (with a z-buffer), and shade them with light and shine.
+//! 4. Every terminal cell shows two pixels on top of each other using the
+//!    character "▀" (foreground = upper pixel, background = lower pixel), in
+//!    truecolor.
 //!
-//! Het logo verschijnt alleen als de uitvoer een kleurenterminal is. In
-//! pipes, scripts en tests gebeurt er niets. Uitzetten: `--no-animation`
-//! of `KLUIS_NO_ANIMATION=1`.
+//! The logo only appears when the output is a color terminal. In pipes,
+//! scripts and tests nothing happens. With the animation switched off
+//! (`kluis config set animation off`, `--no-animation` or
+//! `KLUIS_NO_ANIMATION=1`) the logo is shown as a still image.
 
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,11 +35,18 @@ const FRAME: Duration = Duration::from_millis(33);
 const SPIN_SECS: f32 = 1.25;
 const SHINE_SECS: f32 = 0.85;
 
-static DISABLED: AtomicBool = AtomicBool::new(false);
+static ANIMATION_OFF: AtomicBool = AtomicBool::new(false);
 
-/// Zet animaties uit (vlag `--no-animation`).
-pub fn disable() {
-    DISABLED.store(true, Ordering::Relaxed);
+/// Turn the animation on or off (setting, `--no-animation` flag). With the
+/// animation off, the logo is shown as a still image.
+pub fn set_animation(on: bool) {
+    ANIMATION_OFF.store(!on, Ordering::Relaxed);
+}
+
+/// Whether the animation is currently enabled.
+fn animation_enabled() -> bool {
+    !ANIMATION_OFF.load(Ordering::Relaxed)
+        && std::env::var_os("KLUIS_NO_ANIMATION").is_none_or(|v| v.is_empty() || v == "0")
 }
 
 fn glyph(c: char) -> [&'static str; GLYPH_H] {
@@ -82,9 +91,9 @@ fn bitmap() -> Vec<Vec<bool>> {
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Material {
-    /// Roze glazuur, met hagelslag (index 1..=4) of zonder (0).
+    /// Pink frosting, with sprinkles (index 1..=4) or without (0).
     Frosting(u8),
-    /// Cake; `t` = positie in de diepte (0..1) voor de roomlaag.
+    /// Cake; `t` = position in the depth (0..1) for the cream layer.
     Cake(f32),
     Chocolate,
 }
@@ -93,12 +102,12 @@ enum Material {
 struct Point {
     p: [f32; 3],
     n: [f32; 3],
-    /// Horizontale positie (0..1) voor het kleurverloop.
+    /// Horizontal position (0..1) for the color gradient.
     u: f32,
     mat: Material,
 }
 
-/// Eenvoudige, deterministische hash voor de hagelslag.
+/// Simple, deterministic hash for the sprinkles.
 fn hash(a: usize, b: usize, c: usize) -> u32 {
     let mut h = (a as u32).wrapping_mul(73_856_093)
         ^ (b as u32).wrapping_mul(19_349_663)
@@ -108,7 +117,7 @@ fn hash(a: usize, b: usize, c: usize) -> u32 {
     h ^ (h >> 15)
 }
 
-/// Bouw de puntenwolk van het 3D-model. `n` = monsters per eenheid.
+/// Build the point cloud of the 3D model. `n` = samples per unit.
 fn build_points(n: usize) -> Vec<Point> {
     let bits = bitmap();
     let (h, w) = (bits.len(), bits[0].len());
@@ -126,7 +135,7 @@ fn build_points(n: usize) -> Vec<Point> {
                 continue;
             }
             let x0 = gx as f32 - cx;
-            let y1 = cy - gy as f32; // bovenkant van het pixel
+            let y1 = cy - gy as f32; // top of the pixel
             let u = gx as f32 / w as f32;
             for i in 0..n {
                 for j in 0..n {
@@ -189,13 +198,13 @@ fn build_points(n: usize) -> Vec<Point> {
     pts
 }
 
-/// Stand van het logo in één frame.
+/// Pose of the logo in a single frame.
 #[derive(Clone, Copy, Debug)]
 pub struct Pose {
     yaw: f32,
     pitch: f32,
     dist: f32,
-    /// Positie van de glansstreep (in modelcoördinaten), of geen glans.
+    /// Position of the shine streak (in model coordinates), or no shine.
     shine: Option<f32>,
 }
 
@@ -213,14 +222,14 @@ fn ease_out_cubic(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
 }
 
-/// Schiet iets door en veert terug: geeft de "wip" aan het eind.
+/// Overshoots and springs back: gives the "wobble" at the end.
 fn ease_out_back(t: f32) -> f32 {
     let c1 = 1.70158;
     let c3 = c1 + 1.0;
     1.0 + c3 * (t - 1.0).powi(3) + c1 * (t - 1.0).powi(2)
 }
 
-/// De stand op tijdstip `t` (seconden) van de animatie.
+/// The pose at time `t` (seconds) of the animation.
 fn pose_at(t: f32) -> Pose {
     if t < SPIN_SECS {
         let k = (t / SPIN_SECS).clamp(0.0, 1.0);
@@ -238,7 +247,7 @@ fn pose_at(t: f32) -> Pose {
 
 type Rgb = [u8; 3];
 
-/// Een gerenderd beeld: `w` × `h` pixels (h is even; 2 pixels per terminalregel).
+/// A rendered image: `w` × `h` pixels (h is even; 2 pixels per terminal row).
 pub struct Frame {
     w: usize,
     h: usize,
@@ -288,7 +297,7 @@ fn base_color(p: &Point) -> [f32; 3] {
     }
 }
 
-/// Render één frame van `w` × `h` pixels.
+/// Render one frame of `w` × `h` pixels.
 fn render(points: &[Point], pose: Pose, w: usize, h: usize, scale: f32) -> Frame {
     let mut px: Vec<Option<Rgb>> = vec![None; w * h];
     let mut zbuf = vec![f32::INFINITY; w * h];
@@ -301,7 +310,7 @@ fn render(points: &[Point], pose: Pose, w: usize, h: usize, scale: f32) -> Frame
         let mut p = rotate(pt.p, pose.yaw, pose.pitch);
         p[2] += pose.dist;
         if p[2] <= 1.0 || dot(n, [-p[0], -p[1], -p[2]]) <= 0.0 {
-            continue; // achter de camera, of van ons af gekeerd
+            continue; // behind the camera, or facing away from us
         }
         let sx = cx + focal * p[0] / p[2];
         let sy = cy - focal * p[1] / p[2];
@@ -343,7 +352,7 @@ fn render(points: &[Point], pose: Pose, w: usize, h: usize, scale: f32) -> Frame
     Frame { w, h, px }
 }
 
-/// Kleur → ANSI-code (truecolor of de 256-kleurenkubus).
+/// Color → ANSI code (truecolor or the 256-color cube).
 fn color_code(c: Rgb, background: bool, truecolor: bool) -> String {
     let layer = if background { 48 } else { 38 };
     if truecolor {
@@ -354,7 +363,7 @@ fn color_code(c: Rgb, background: bool, truecolor: bool) -> String {
     }
 }
 
-/// Zet een frame om in terminaltekst (halve blokjes, 2 pixels per cel).
+/// Convert a frame to terminal text (half blocks, 2 pixels per cell).
 fn encode(frame: &Frame, indent: usize, truecolor: bool) -> String {
     let mut out = String::with_capacity(frame.w * frame.h * 12);
     let pad = " ".repeat(indent);
@@ -390,9 +399,9 @@ fn encode(frame: &Frame, indent: usize, truecolor: bool) -> String {
     out
 }
 
-/// Terminalgrootte (kolommen, regels) van stderr.
+/// Terminal size (columns, rows) of stderr.
 fn terminal_size() -> Option<(usize, usize)> {
-    // SAFETY: winsize is een gewone C-struct die ioctl invult.
+    // SAFETY: winsize is a plain C struct that ioctl fills in.
     unsafe {
         let mut ws: libc::winsize = std::mem::zeroed();
         (libc::ioctl(2, libc::TIOCGWINSZ, &mut ws) == 0 && ws.ws_col > 0)
@@ -404,24 +413,22 @@ fn truecolor() -> bool {
     std::env::var("COLORTERM").is_ok_and(|v| v.contains("truecolor") || v.contains("24bit"))
 }
 
-/// Of het logo getoond mag worden.
+/// Whether the logo may be shown at all (only on a color terminal).
 fn allowed() -> bool {
-    !DISABLED.load(Ordering::Relaxed)
-        && ui::color_on_stderr()
-        && std::env::var_os("KLUIS_NO_ANIMATION").is_none_or(|v| v.is_empty() || v == "0")
+    ui::color_on_stderr()
 }
 
-/// Zet de cursor terug als iemand tijdens de animatie op Ctrl+C drukt.
+/// Restore the cursor if someone presses Ctrl+C during the animation.
 extern "C" fn on_interrupt(_: libc::c_int) {
     const RESTORE: &[u8] = b"\x1b[0m\x1b[?25h\n";
-    // SAFETY: write en _exit zijn async-signal-safe.
+    // SAFETY: write and _exit are async-signal-safe.
     unsafe {
         libc::write(2, RESTORE.as_ptr().cast(), RESTORE.len());
         libc::_exit(130);
     }
 }
 
-/// Afmetingen: (pixels breed, pixels hoog, schaal, inspringing).
+/// Dimensions: (pixels wide, pixels high, scale, indent).
 fn layout(cols: usize) -> (usize, usize, f32, usize) {
     let text_w = (TEXT.chars().count() * (GLYPH_W + GAP) - GAP) as f32;
     let w = cols.saturating_sub(4).min(120);
@@ -431,8 +438,9 @@ fn layout(cols: usize) -> (usize, usize, f32, usize) {
     (w, h, scale, (cols - w) / 2)
 }
 
-/// Toon het CakePass-logo, geanimeerd als `animate` waar is.
-/// Doet niets als de terminal dat niet ondersteunt (pipe, geen kleur, te klein).
+/// Show the CakePass logo, animated if `animate` is true and the animation
+/// is enabled. Does nothing if the terminal cannot do it (pipe, no color,
+/// too small).
 pub fn show(animate: bool) {
     if !allowed() {
         return;
@@ -447,12 +455,12 @@ pub fn show(animate: bool) {
     let mut err = std::io::stderr().lock();
     let rows_out = h / 2;
 
-    if !animate {
+    if !animate || !animation_enabled() {
         let _ = write!(err, "\n{}", encode(&render(&points, Pose::rest(), w, h, scale), indent, tc));
         return;
     }
-    // SAFETY: we zetten een eenvoudige, async-signal-safe handler en herstellen
-    // daarna de standaard.
+    // SAFETY: we install a simple, async-signal-safe handler and restore the
+    // default afterwards.
     unsafe {
         libc::signal(libc::SIGINT, on_interrupt as *const () as libc::sighandler_t);
     }
@@ -479,13 +487,13 @@ pub fn show(animate: bool) {
     }
     let _ = write!(err, "\x1b[?25h");
     let _ = err.flush();
-    // SAFETY: standaardgedrag van Ctrl+C terugzetten.
+    // SAFETY: restore the default behavior of Ctrl+C.
     unsafe {
         libc::signal(libc::SIGINT, libc::SIG_DFL);
     }
 }
 
-/// Een gecentreerde regel onder het logo.
+/// A centered line below the logo.
 pub fn tagline(text: &str) {
     if !allowed() {
         return;
@@ -500,11 +508,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn font_is_compleet() {
+    fn font_is_complete() {
         for c in TEXT.chars() {
             let g = glyph(c);
             assert!(g.iter().all(|r| r.len() == GLYPH_W), "glyph {c}");
-            assert!(g.iter().any(|r| r.contains('#')), "glyph {c} is leeg");
+            assert!(g.iter().any(|r| r.contains('#')), "glyph {c} is empty");
         }
         let bits = bitmap();
         assert_eq!(bits.len(), GLYPH_H);
@@ -512,19 +520,19 @@ mod tests {
     }
 
     #[test]
-    fn model_en_renderer() {
+    fn model_and_renderer() {
         let pts = build_points(3);
         assert!(pts.len() > 2000);
-        assert!(pts.iter().any(|p| matches!(p.mat, Material::Frosting(s) if s > 0)), "hagelslag");
+        assert!(pts.iter().any(|p| matches!(p.mat, Material::Frosting(s) if s > 0)), "sprinkles");
         let (w, h, scale, _) = layout(100);
         let rest = render(&pts, Pose::rest(), w, h, scale);
-        // Het logo vult een flink deel van het beeld, maar niet alles.
+        // The logo fills a good part of the image, but not all of it.
         let filled = rest.filled();
-        assert!(filled > w * h / 10 && filled < w * h * 3 / 4, "gevuld: {filled} van {}", w * h);
-        // Van opzij gezien is het smal; van voren breed.
+        assert!(filled > w * h / 10 && filled < w * h * 3 / 4, "filled: {filled} of {}", w * h);
+        // Seen from the side it is narrow; from the front it is wide.
         let edge = render(&pts, Pose { yaw: 1.5, ..Pose::rest() }, w, h, scale);
         assert!(edge.filled() < filled / 2);
-        // Glans maakt pixels lichter.
+        // Shine makes pixels lighter.
         let shiny = render(&pts, Pose { shine: Some(0.0), ..Pose::rest() }, w, h, scale);
         let sum =
             |f: &Frame| f.px.iter().flatten().map(|c| c.iter().map(|&v| v as u64).sum::<u64>()).sum::<u64>();
@@ -532,23 +540,23 @@ mod tests {
     }
 
     #[test]
-    fn animatie_eindigt_in_ruststand() {
+    fn animation_ends_in_rest_pose() {
         let p = pose_at(SPIN_SECS - 0.0001);
         assert!((p.yaw - FINAL_YAW).abs() < 0.01);
-        assert!(pose_at(0.0).dist > pose_at(SPIN_SECS).dist, "zoomt in");
+        assert!(pose_at(0.0).dist > pose_at(SPIN_SECS).dist, "zooms in");
         assert!(pose_at(SPIN_SECS + 0.1).shine.is_some());
-        // ease_out_back schiet door (de "wip") en eindigt op 1.
+        // ease_out_back overshoots (the "wobble") and ends at 1.
         assert!((0..100).any(|i| ease_out_back(i as f32 / 100.0) > 1.0));
         assert!((ease_out_back(1.0) - 1.0).abs() < 1e-6);
     }
 
     #[test]
-    fn codering() {
+    fn encoding() {
         let f = Frame { w: 2, h: 2, px: vec![Some([255, 0, 0]), None, Some([0, 0, 255]), Some([0, 255, 0])] };
         let s = encode(&f, 1, true);
         assert!(s.starts_with(' '));
         assert!(s.contains("\x1b[38;2;255;0;0m") && s.contains("\x1b[48;2;0;0;255m") && s.contains('▄'));
         let s256 = encode(&f, 0, false);
-        assert!(s256.contains("\x1b[38;5;196m"), "rood in de 256-kleurenkubus");
+        assert!(s256.contains("\x1b[38;5;196m"), "red in the 256-color cube");
     }
 }

@@ -1,18 +1,18 @@
 //! # kluis
 //!
-//! Kernbibliotheek van de offline wachtwoordmanager `kluis`.
+//! Core library of the offline password manager `kluis` (CakePass).
 //!
-//! De bibliotheek bevat alles behalve de gebruikersinterface, zodat er later
-//! een TUI of GUI bovenop gebouwd kan worden zonder de kern te herschrijven:
+//! The library contains everything except the user interface, so a TUI or
+//! GUI can be built on top of it later without rewriting the core:
 //!
-//! - [`secure_mem`]: wissen en vergrendelen van geheugen, procesbeveiliging.
-//! - [`crypto`]: Argon2id en XChaCha20-Poly1305 (via RustCrypto-crates).
-//! - [`format`]: het versioneerde, versleutelde bestandsformaat.
-//! - [`vault`]: het kluismodel (items), zonder I/O.
-//! - [`storage`]: paden (XDG), atomisch schrijven, back-ups, vergrendeling.
-//! - [`generator`]: wachtwoorden en diceware-passphrases.
-//! - [`import`]: CSV-import uit andere wachtwoordmanagers.
-//! - [`clipboard`]: klembord met automatisch wissen.
+//! - [`secure_mem`]: wiping and locking memory, process hardening.
+//! - [`crypto`]: Argon2id and XChaCha20-Poly1305 (via RustCrypto crates).
+//! - [`format`]: the versioned, encrypted file format.
+//! - [`vault`]: the vault model (items), without I/O.
+//! - [`storage`]: paths (XDG), atomic writes, backups, locking.
+//! - [`generator`]: passwords and diceware passphrases.
+//! - [`import`]: CSV import from other password managers.
+//! - [`clipboard`]: clipboard with automatic clearing.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 

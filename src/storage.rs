@@ -1,14 +1,14 @@
-//! Opslag op schijf: paden, atomisch schrijven, back-up en vergrendeling.
+//! Storage on disk: paths, atomic writes, backups and locking.
 //!
-//! BEVEILIGINGSKRITIEK.
-//! - Map 0700, bestanden 0600 (alleen jij kunt lezen/schrijven).
-//! - Schrijven gaat altijd via: tijdelijk bestand → fsync → rename → fsync
-//!   van de map. Bij stroomuitval heb je dus óf de oude, óf de nieuwe kluis,
-//!   nooit een half bestand.
-//! - Vóór elke opslag wordt de vorige versie als `<kluis>.bak` bewaard.
-//! - Een `flock`-slot plus een controle "is het bestand intussen veranderd?"
-//!   voorkomt dat twee terminals elkaars wijzigingen overschrijven.
-//! - Symlinks worden geweigerd (`O_NOFOLLOW`).
+//! SECURITY-CRITICAL.
+//! - Directory 0700, files 0600 (only you can read/write).
+//! - Writing always goes through: temporary file → fsync → rename → fsync of
+//!   the directory. After a power failure you have either the old or the new
+//!   vault, never a half-written file.
+//! - Before every save the previous version is kept as `<vault>.bak`.
+//! - A `flock` lock plus a check "has the file changed in the meantime?"
+//!   stops two terminals from overwriting each other's changes.
+//! - Symlinks are refused (`O_NOFOLLOW`).
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -24,7 +24,7 @@ use crate::vault::Vault;
 const APP_DIR: &str = "kluis";
 const VAULT_FILE: &str = "vault.enc";
 
-/// Alle paden die bij één kluis horen.
+/// All paths that belong to one vault.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VaultPaths {
     pub file: PathBuf,
@@ -33,7 +33,7 @@ pub struct VaultPaths {
 }
 
 impl VaultPaths {
-    /// Paden voor een kluisbestand op een zelfgekozen plek.
+    /// Paths for a vault file at a location of your choice.
     pub fn for_file(file: impl Into<PathBuf>) -> VaultPaths {
         let file = file.into();
         let with_suffix = |suffix: &str| {
@@ -44,7 +44,7 @@ impl VaultPaths {
         VaultPaths { backup: with_suffix(".bak"), lock: with_suffix(".lock"), file }
     }
 
-    /// Standaardlocatie volgens de XDG Base Directory-specificatie:
+    /// Default location according to the XDG Base Directory specification:
     /// `$XDG_DATA_HOME/kluis/vault.enc`, of `~/.local/share/kluis/vault.enc`.
     pub fn default_location() -> Result<VaultPaths> {
         Ok(Self::for_file(data_home()?.join(APP_DIR).join(VAULT_FILE)))
@@ -56,7 +56,7 @@ impl VaultPaths {
 }
 
 fn data_home() -> Result<PathBuf> {
-    // De specificatie zegt: alleen absolute paden tellen, anders negeren.
+    // The specification says: only absolute paths count, ignore anything else.
     if let Some(x) = std::env::var_os("XDG_DATA_HOME") {
         let p = PathBuf::from(x);
         if p.is_absolute() {
@@ -65,11 +65,11 @@ fn data_home() -> Result<PathBuf> {
     }
     match std::env::var_os("HOME") {
         Some(h) if PathBuf::from(&h).is_absolute() => Ok(PathBuf::from(h).join(".local").join("share")),
-        _ => Err(Error::InvalidInput("HOME is niet ingesteld; gebruik --vault <pad>".into())),
+        _ => Err(Error::InvalidInput("HOME is not set; use --vault <path>".into())),
     }
 }
 
-/// Lees een bestand veilig: geen symlinks, maximale grootte.
+/// Read a file safely: no symlinks, maximum size.
 fn read_file(path: &Path) -> Result<Vec<u8>> {
     let mut f = match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path) {
         Ok(f) => f,
@@ -78,7 +78,7 @@ fn read_file(path: &Path) -> Result<Vec<u8>> {
         }
         Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
             return Err(Error::InvalidInput(format!(
-                "{} is een symbolische link; geef het echte pad op",
+                "{} is a symbolic link; give the real path",
                 path.display()
             )));
         }
@@ -86,7 +86,7 @@ fn read_file(path: &Path) -> Result<Vec<u8>> {
     };
     let meta = f.metadata()?;
     if !meta.is_file() {
-        return Err(Error::InvalidInput(format!("{} is geen gewoon bestand", path.display())));
+        return Err(Error::InvalidInput(format!("{} is not a regular file", path.display())));
     }
     if meta.len() > MAX_FILE_SIZE as u64 {
         return Err(Error::TooLarge);
@@ -99,15 +99,15 @@ fn read_file(path: &Path) -> Result<Vec<u8>> {
     Ok(data)
 }
 
-/// Lees alleen de (onversleutelde) header, voor `kluis info`.
+/// Read only the (unencrypted) header, for `kluis info`.
 pub fn read_header(path: &Path) -> Result<Header> {
     Ok(Header::decode(&read_file(path)?)?.0)
 }
 
-/// Schrijf `data` atomisch naar `path` met rechten 0600.
+/// Write `data` atomically to `path` with permissions 0600.
 pub fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     let dir = path.parent().unwrap_or(Path::new("."));
-    let name = path.file_name().ok_or_else(|| Error::InvalidInput("ongeldig pad".into()))?;
+    let name = path.file_name().ok_or_else(|| Error::InvalidInput("invalid path".into()))?;
     let rnd = crypto::random_array::<8>()?;
     let suffix: String = rnd.iter().map(|b| format!("{b:02x}")).collect();
     let mut tmp_name = std::ffi::OsString::from(".");
@@ -126,7 +126,7 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
         f.sync_all()?;
         drop(f);
         fs::rename(&tmp, path)?;
-        // fsync van de map, zodat de rename zelf ook duurzaam is.
+        // fsync of the directory, so the rename itself is durable too.
         File::open(dir)?.sync_all()?;
         Ok(())
     })();
@@ -136,8 +136,8 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     Ok(result?)
 }
 
-/// Schrijf een NIEUW bestand (faalt als het al bestaat), rechten 0600.
-/// Gebruikt voor exports, ook naar bijv. een USB-stick (FAT kent geen hardlinks).
+/// Write a NEW file (fails if it already exists), permissions 0600.
+/// Used for exports, also to e.g. a USB stick (FAT has no hard links).
 pub fn write_new_file(path: &Path, data: &[u8]) -> Result<()> {
     let mut f = match OpenOptions::new()
         .write(true)
@@ -157,7 +157,7 @@ pub fn write_new_file(path: &Path, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Exclusief schrijfslot; wordt vrijgegeven als het object verdwijnt.
+/// Exclusive write lock; released when the object is dropped.
 struct WriteLock(#[allow(dead_code)] File);
 
 impl WriteLock {
@@ -170,7 +170,7 @@ impl WriteLock {
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
             .open(path)?;
-        // SAFETY: geldige file descriptor die we zelf bezitten.
+        // SAFETY: a valid file descriptor that we own.
         if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
             return Err(io::Error::last_os_error().into());
         }
@@ -185,21 +185,21 @@ fn ensure_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Een geopende (ontgrendelde) kluis.
+/// An opened (unlocked) vault.
 ///
-/// Houdt de sleutel in vergrendeld geheugen, zodat opslaan geen nieuw
-/// wachtwoord vraagt. Als dit object verdwijnt, worden sleutel en inhoud gewist.
+/// Keeps the key in locked memory, so saving does not ask for the password
+/// again. When this object is dropped, key and contents are wiped.
 pub struct UnlockedVault {
     pub vault: Vault,
     key: VaultKey,
     paths: VaultPaths,
-    /// Het bestand zoals we het gelezen/geschreven hebben (versleuteld).
+    /// The file as we last read/wrote it (encrypted).
     on_disk: Vec<u8>,
     warnings: Vec<String>,
 }
 
 impl UnlockedVault {
-    /// Maak een nieuwe, lege kluis. Faalt als er al een bestand staat.
+    /// Create a new, empty vault. Fails if a file already exists.
     pub fn create(paths: VaultPaths, password: &[u8], kdf: KdfParams) -> Result<UnlockedVault> {
         kdf.validate()?;
         ensure_dir(paths.dir())?;
@@ -214,16 +214,16 @@ impl UnlockedVault {
         Ok(UnlockedVault { vault, key, paths, on_disk: bytes, warnings: Vec::new() })
     }
 
-    /// Open en ontsleutel een bestaande kluis.
+    /// Open and decrypt an existing vault.
     pub fn open(paths: VaultPaths, password: &[u8]) -> Result<UnlockedVault> {
         let bytes = read_file(&paths.file)?;
         let mut warnings = Vec::new();
         let meta = fs::metadata(&paths.file)?;
         if meta.mode() & 0o077 != 0 {
-            // Herstel te ruime rechten (bijv. na kopiëren) en meld het.
+            // Repair overly broad permissions (e.g. after copying) and report it.
             fs::set_permissions(&paths.file, fs::Permissions::from_mode(0o600))?;
             warnings.push(format!(
-                "De rechten van {} waren te ruim en zijn hersteld naar 600.",
+                "The permissions of {} were too broad and have been reset to 600.",
                 paths.file.display()
             ));
         }
@@ -232,19 +232,19 @@ impl UnlockedVault {
         drop(plaintext);
         if key.kdf().weaker_than_default() {
             warnings.push(
-                "Deze kluis gebruikt lichtere Argon2-instellingen dan aanbevolen. \
-                 Overweeg `kluis passwd` met de standaardinstellingen."
+                "This vault uses lighter Argon2 settings than recommended. \
+                 Consider running `kluis passwd` with the default settings."
                     .into(),
             );
         }
         let mut uv = UnlockedVault { vault, key, paths, on_disk: bytes, warnings };
         if migrated || version < format::CURRENT_VERSION {
-            // Oud formaat: meteen opslaan in het nieuwe formaat, zodat elk
-            // wachtwoord en elke notitie ook op schijf apart versleuteld is.
+            // Old format: save right away in the new format, so every field of
+            // every item is also encrypted separately on disk.
             uv.save()?;
             uv.warnings.push(
-                "Je kluis is bijgewerkt naar formaat 2: elk wachtwoord en elke notitie is nu \
-                 ook nog eens apart versleuteld. (De back-up .bak is nog de oude versie.)"
+                "Your vault was upgraded to the newest format: every field of every item is now \
+                 also encrypted separately. (The .bak backup is still the old version.)"
                     .into(),
             );
         }
@@ -259,27 +259,27 @@ impl UnlockedVault {
         self.key.kdf()
     }
 
-    /// De sleutel om wachtwoorden en notities van items te ontsleutelen.
+    /// The key to decrypt the fields of items.
     pub fn item_key(&self) -> &ItemKey {
         self.key.item_key()
     }
 
-    /// De kluis (om te wijzigen) plus de itemsleutel, tegelijk te gebruiken.
+    /// The vault (to modify) plus the item key, usable at the same time.
     pub fn parts_mut(&mut self) -> (&mut Vault, &ItemKey) {
         (&mut self.vault, self.key.item_key())
     }
 
-    /// Controleer het hoofdwachtwoord opnieuw (bijv. vóór `passwd` in de shell).
+    /// Check the master password again (e.g. before `passwd` in the shell).
     pub fn verify_password(&self, password: &[u8]) -> Result<bool> {
         self.key.verify(password)
     }
 
-    /// Waarschuwingen die bij het openen zijn ontstaan.
+    /// Warnings that arose while opening.
     pub fn take_warnings(&mut self) -> Vec<String> {
         std::mem::take(&mut self.warnings)
     }
 
-    /// Sla de huidige inhoud op (nieuwe nonce, atomisch, met back-up).
+    /// Save the current contents (new nonce, atomic, with backup).
     pub fn save(&mut self) -> Result<()> {
         let plaintext = self.vault.to_json()?;
         let new_bytes = format::seal(&self.key, plaintext.as_slice())?;
@@ -287,14 +287,14 @@ impl UnlockedVault {
         self.replace_file(new_bytes, false)
     }
 
-    /// Wijzig het hoofdwachtwoord (nieuwe salt, eventueel nieuwe parameters).
+    /// Change the master password (new salt, optionally new parameters).
     ///
-    /// Ook de back-up wordt daarna met het NIEUWE wachtwoord versleuteld, zodat
-    /// een eventueel uitgelekt oud wachtwoord geen enkel bestand meer opent.
+    /// The backup is then encrypted with the NEW password as well, so a
+    /// possibly leaked old password no longer opens any file.
     pub fn change_password(&mut self, new_password: &[u8], kdf: KdfParams) -> Result<()> {
         kdf.validate()?;
         let new_key = VaultKey::create(new_password, kdf)?;
-        // Alle losse geheimen opnieuw versleutelen met de nieuwe itemsleutel.
+        // Re-encrypt every individual secret with the new item key.
         let mut rekeyed = self.vault.clone();
         rekeyed.rekey(self.key.item_key(), new_key.item_key())?;
         let plaintext = rekeyed.to_json()?;
@@ -308,7 +308,7 @@ impl UnlockedVault {
 
     fn replace_file(&mut self, new_bytes: Vec<u8>, backup_is_new: bool) -> Result<()> {
         let _lock = WriteLock::acquire(&self.paths.lock)?;
-        // Is het bestand intussen door een ander proces gewijzigd?
+        // Has the file been changed by another process in the meantime?
         let current = match read_file(&self.paths.file) {
             Ok(c) => c,
             Err(Error::VaultNotFound(_)) => return Err(Error::ConcurrentModification),
@@ -317,9 +317,9 @@ impl UnlockedVault {
         if current != self.on_disk {
             return Err(Error::ConcurrentModification);
         }
-        // 1. Vorige versie als back-up bewaren.
+        // 1. Keep the previous version as a backup.
         write_atomic(&self.paths.backup, &current)?;
-        // 2. Nieuwe versie atomisch neerzetten.
+        // 2. Put the new version in place atomically.
         write_atomic(&self.paths.file, &new_bytes)?;
         if backup_is_new {
             write_atomic(&self.paths.backup, &new_bytes)?;
@@ -328,7 +328,7 @@ impl UnlockedVault {
         Ok(())
     }
 
-    /// Exporteer de kluis als nieuw versleuteld bestand met een eigen wachtwoord.
+    /// Export the vault as a new encrypted file with its own password.
     pub fn export_to(&self, path: &Path, password: &[u8], kdf: KdfParams) -> Result<()> {
         let key = VaultKey::create(password, kdf)?;
         let mut copy = self.vault.clone();
@@ -339,23 +339,23 @@ impl UnlockedVault {
     }
 }
 
-/// Hoeveel "voor-update"-kopieën we bewaren.
+/// How many "pre-update" copies we keep.
 const KEEP_UPDATE_BACKUPS: usize = 3;
 
-/// Maak een extra kopie van het kluisbestand vóór een update
-/// (`vault.enc.voor-update-<tijd>`, rechten 600) en gooi de oudste weg als er
-/// meer dan drie zijn. Geeft `None` terug als er (nog) geen kluis is.
+/// Make an extra copy of the vault file before an update
+/// (`vault.enc.pre-update-<time>`, permissions 600) and delete the oldest if
+/// there are more than three. Returns `None` if there is no vault (yet).
 ///
-/// De kopie is een gewoon, versleuteld kluisbestand en opent met je
-/// hoofdwachtwoord: `kluis --vault <kopie> list`.
+/// The copy is an ordinary encrypted vault file and opens with your master
+/// password: `kluis --vault <copy> list`.
 pub fn backup_before_update(paths: &VaultPaths) -> Result<Option<PathBuf>> {
     let data = match read_file(&paths.file) {
         Ok(d) => d,
         Err(Error::VaultNotFound(_)) => return Ok(None),
         Err(e) => return Err(e),
     };
-    let base = paths.file.file_name().ok_or_else(|| Error::InvalidInput("ongeldig pad".into()))?;
-    let prefix = format!("{}.voor-update-", base.to_string_lossy());
+    let base = paths.file.file_name().ok_or_else(|| Error::InvalidInput("invalid path".into()))?;
+    let prefix = format!("{}.pre-update-", base.to_string_lossy());
     let stamps = |prefix: &str| -> Result<Vec<(u64, PathBuf)>> {
         let mut found: Vec<(u64, PathBuf)> = fs::read_dir(paths.dir())?
             .filter_map(|e| e.ok())
@@ -368,13 +368,13 @@ pub fn backup_before_update(paths: &VaultPaths) -> Result<Option<PathBuf>> {
         found.sort();
         Ok(found)
     };
-    // Het nummer is de tijd, maar altijd hoger dan van de bestaande kopieën,
-    // zodat de volgorde klopt en een weggegooide naam niet terugkomt.
+    // The number is the time, but always higher than that of existing copies,
+    // so the order is right and a deleted name never comes back.
     let n = stamps(&prefix)?.last().map_or(0, |(s, _)| s + 1).max(crate::vault::now());
     let target = paths.dir().join(format!("{prefix}{n}"));
     write_new_file(&target, &data)?;
 
-    // Oude kopieën opruimen (alleen bestanden die precies zo heten).
+    // Clean up old copies (only files with exactly this name pattern).
     let mut old = stamps(&prefix)?;
     while old.len() > KEEP_UPDATE_BACKUPS {
         let (_, path) = old.remove(0);
@@ -383,8 +383,8 @@ pub fn backup_before_update(paths: &VaultPaths) -> Result<Option<PathBuf>> {
     Ok(Some(target))
 }
 
-/// Open een geëxporteerd (of ander) kluisbestand alleen om te lezen.
-/// Geeft ook de sleutel terug, nodig om de items te ontsleutelen.
+/// Open an exported (or other) vault file read-only.
+/// Also returns the key, needed to decrypt the items.
 pub fn read_vault_file(path: &Path, password: &[u8]) -> Result<(Vault, VaultKey)> {
     let bytes = read_file(path)?;
     let (plaintext, key, _version) = format::open(&bytes, password)?;
@@ -398,7 +398,7 @@ mod tests {
     use crate::vault::{Entry, NewEntry};
 
     const P: KdfParams = KdfParams { memory_kib: 8 * 1024, iterations: 1, parallelism: 1 };
-    const PW: &[u8] = b"correct paard batterij nietje";
+    const PW: &[u8] = b"correct horse battery staple";
 
     fn paths(dir: &tempfile::TempDir) -> VaultPaths {
         VaultPaths::for_file(dir.path().join("sub").join("vault.enc"))
@@ -407,13 +407,13 @@ mod tests {
     fn add(uv: &mut UnlockedVault, name: &str) {
         let (vault, key) = uv.parts_mut();
         let e =
-            Entry::new(NewEntry { name: name.into(), password: "geheim".into(), ..Default::default() }, key)
+            Entry::new(NewEntry { name: name.into(), password: "secret".into(), ..Default::default() }, key)
                 .unwrap();
         vault.add(e).unwrap();
     }
 
     #[test]
-    fn xdg_paden() {
+    fn xdg_paths() {
         let p = VaultPaths::for_file("/x/y/vault.enc");
         assert_eq!(p.backup, PathBuf::from("/x/y/vault.enc.bak"));
         assert_eq!(p.lock, PathBuf::from("/x/y/vault.enc.lock"));
@@ -421,24 +421,24 @@ mod tests {
     }
 
     #[test]
-    fn maken_openen_opslaan_en_rechten() {
+    fn create_open_save_and_permissions() {
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         let mut uv = UnlockedVault::create(p.clone(), PW, P).unwrap();
         assert_eq!(fs::metadata(&p.file).unwrap().mode() & 0o777, 0o600);
         assert_eq!(fs::metadata(p.dir()).unwrap().mode() & 0o777, 0o700);
-        add(&mut uv, "een");
+        add(&mut uv, "one");
         uv.save().unwrap();
-        assert!(p.backup.exists(), "back-up van de vorige versie");
+        assert!(p.backup.exists(), "backup of the previous version");
         assert_eq!(fs::metadata(&p.backup).unwrap().mode() & 0o777, 0o600);
         drop(uv);
 
         let uv = UnlockedVault::open(p.clone(), PW).unwrap();
-        assert_eq!(uv.vault.get("een").unwrap().password(uv.item_key()).unwrap().as_str(), "geheim");
+        assert_eq!(uv.vault.get("one").unwrap().password(uv.item_key()).unwrap().as_str(), "secret");
         assert_eq!(uv.kdf(), P);
-        // De back-up is de lege vorige versie en opent met hetzelfde wachtwoord.
+        // The backup is the empty previous version and opens with the same password.
         assert!(read_vault_file(&p.backup, PW).unwrap().0.is_empty());
-        // Geen tijdelijke bestanden achtergebleven.
+        // No temporary files left behind.
         let leftovers: Vec<_> = fs::read_dir(p.dir())
             .unwrap()
             .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().contains(".tmp-"))
@@ -447,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn bestaande_kluis_wordt_niet_overschreven() {
+    fn existing_vault_is_not_overwritten() {
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         UnlockedVault::create(p.clone(), PW, P).unwrap();
@@ -455,16 +455,16 @@ mod tests {
     }
 
     #[test]
-    fn verkeerd_wachtwoord_en_ontbrekend_bestand() {
+    fn wrong_password_and_missing_file() {
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         assert!(matches!(UnlockedVault::open(p.clone(), PW), Err(Error::VaultNotFound(_))));
         UnlockedVault::create(p.clone(), PW, P).unwrap();
-        assert!(matches!(UnlockedVault::open(p, b"fout"), Err(Error::Decrypt)));
+        assert!(matches!(UnlockedVault::open(p, b"wrong"), Err(Error::Decrypt)));
     }
 
     #[test]
-    fn gemanipuleerd_bestand_faalt() {
+    fn tampered_file_fails() {
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         UnlockedVault::create(p.clone(), PW, P).unwrap();
@@ -480,18 +480,18 @@ mod tests {
     }
 
     #[test]
-    fn te_ruime_rechten_worden_hersteld() {
+    fn overly_broad_permissions_are_repaired() {
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         UnlockedVault::create(p.clone(), PW, P).unwrap();
         fs::set_permissions(&p.file, fs::Permissions::from_mode(0o644)).unwrap();
         let mut uv = UnlockedVault::open(p.clone(), PW).unwrap();
-        assert_eq!(uv.take_warnings().len(), 2, "rechten + lichte KDF");
+        assert_eq!(uv.take_warnings().len(), 2, "permissions + light KDF");
         assert_eq!(fs::metadata(&p.file).unwrap().mode() & 0o777, 0o600);
     }
 
     #[test]
-    fn symlink_wordt_geweigerd() {
+    fn symlink_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         UnlockedVault::create(p.clone(), PW, P).unwrap();
@@ -501,85 +501,88 @@ mod tests {
     }
 
     #[test]
-    fn gelijktijdige_wijziging_wordt_opgemerkt() {
+    fn concurrent_modification_is_detected() {
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         UnlockedVault::create(p.clone(), PW, P).unwrap();
         let mut a = UnlockedVault::open(p.clone(), PW).unwrap();
         let mut b = UnlockedVault::open(p.clone(), PW).unwrap();
-        add(&mut a, "van a");
+        add(&mut a, "from a");
         a.save().unwrap();
-        add(&mut b, "van b");
+        add(&mut b, "from b");
         assert!(matches!(b.save(), Err(Error::ConcurrentModification)));
-        // De wijziging van a is niet verloren gegaan.
-        assert!(UnlockedVault::open(p, PW).unwrap().vault.get("van a").is_some());
+        // The change from a was not lost.
+        assert!(UnlockedVault::open(p, PW).unwrap().vault.get("from a").is_some());
     }
 
     #[test]
-    fn wachtwoord_wijzigen_ook_voor_backup() {
+    fn changing_password_also_covers_backup() {
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         let mut uv = UnlockedVault::create(p.clone(), PW, P).unwrap();
         add(&mut uv, "x");
         uv.save().unwrap();
         let new_p = KdfParams { memory_kib: 9 * 1024, iterations: 2, parallelism: 1 };
-        uv.change_password(b"nieuw wachtwoord", new_p).unwrap();
+        uv.change_password(b"new password", new_p).unwrap();
         add(&mut uv, "y");
-        uv.save().unwrap(); // werkt met de nieuwe sleutel
+        uv.save().unwrap(); // works with the new key
         drop(uv);
         assert!(matches!(UnlockedVault::open(p.clone(), PW), Err(Error::Decrypt)));
-        assert!(matches!(read_vault_file(&p.backup, PW), Err(Error::Decrypt)), "oude ww opent back-up niet");
-        let uv = UnlockedVault::open(p.clone(), b"nieuw wachtwoord").unwrap();
+        assert!(
+            matches!(read_vault_file(&p.backup, PW), Err(Error::Decrypt)),
+            "the old password does not open the backup"
+        );
+        let uv = UnlockedVault::open(p.clone(), b"new password").unwrap();
         assert_eq!(uv.kdf(), new_p);
         assert_eq!(uv.vault.len(), 2);
-        // Ook de losse wachtwoorden zijn met de nieuwe sleutel versleuteld.
-        assert_eq!(uv.vault.get("x").unwrap().password(uv.item_key()).unwrap().as_str(), "geheim");
-        assert!(read_vault_file(&p.backup, b"nieuw wachtwoord").is_ok());
+        // The individual passwords are encrypted with the new key as well.
+        assert_eq!(uv.vault.get("x").unwrap().password(uv.item_key()).unwrap().as_str(), "secret");
+        assert!(read_vault_file(&p.backup, b"new password").is_ok());
     }
 
     #[test]
-    fn export_en_import() {
+    fn export_and_import() {
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         let mut uv = UnlockedVault::create(p, PW, P).unwrap();
         add(&mut uv, "x");
         let out = dir.path().join("export.kluis");
-        uv.export_to(&out, b"exportwachtwoord", P).unwrap();
+        uv.export_to(&out, b"export password", P).unwrap();
         assert_eq!(fs::metadata(&out).unwrap().mode() & 0o777, 0o600);
         assert!(matches!(uv.export_to(&out, b"x", P), Err(Error::AlreadyExists(_))));
         assert!(matches!(read_vault_file(&out, PW), Err(Error::Decrypt)));
-        let (v, k) = read_vault_file(&out, b"exportwachtwoord").unwrap();
-        assert_eq!(v.get("x").unwrap().password(k.item_key()).unwrap().as_str(), "geheim");
-        // De export heeft een eigen itemsleutel: de sleutel van de kluis werkt niet.
+        let (v, k) = read_vault_file(&out, b"export password").unwrap();
+        assert_eq!(v.get("x").unwrap().password(k.item_key()).unwrap().as_str(), "secret");
+        // The export has its own item key: the vault's key does not work.
         assert!(v.get("x").unwrap().password(uv.item_key()).is_err());
     }
 
     #[test]
-    fn oud_formaat_wordt_automatisch_bijgewerkt() {
+    fn old_format_is_upgraded_automatically() {
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         ensure_dir(p.dir()).unwrap();
-        let old_json = br#"{"schema":1,"entries":[{"name":"Oud","password":"oud-geheim","notes":"n"}]}"#;
+        let old_json = br#"{"schema":1,"entries":[{"name":"Old","password":"old-secret","notes":"n"}]}"#;
         let v1 = format::seal_v1_for_tests(PW, P, old_json).unwrap();
         write_atomic(&p.file, &v1).unwrap();
         assert_eq!(read_header(&p.file).unwrap().version, 1);
 
         let mut uv = UnlockedVault::open(p.clone(), PW).unwrap();
-        assert!(uv.take_warnings().iter().any(|w| w.contains("formaat 2")));
-        assert_eq!(uv.vault.get("oud").unwrap().password(uv.item_key()).unwrap().as_str(), "oud-geheim");
+        assert!(uv.take_warnings().iter().any(|w| w.contains("newest format")));
+        assert_eq!(uv.vault.get("old").unwrap().password(uv.item_key()).unwrap().as_str(), "old-secret");
         drop(uv);
         assert_eq!(read_header(&p.file).unwrap().version, 2);
         let mut uv = UnlockedVault::open(p, PW).unwrap();
-        assert!(!uv.take_warnings().iter().any(|w| w.contains("formaat 2")), "maar één keer migreren");
+        assert!(!uv.take_warnings().iter().any(|w| w.contains("newest format")), "migrate only once");
     }
 
     #[test]
-    fn backup_voor_update() {
+    fn backup_before_update_keeps_three() {
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
-        assert!(backup_before_update(&p).unwrap().is_none(), "geen kluis, geen kopie");
+        assert!(backup_before_update(&p).unwrap().is_none(), "no vault, no copy");
         let mut uv = UnlockedVault::create(p.clone(), PW, P).unwrap();
-        add(&mut uv, "belangrijk");
+        add(&mut uv, "important");
         uv.save().unwrap();
         drop(uv);
         let original = fs::read(&p.file).unwrap();
@@ -587,12 +590,12 @@ mod tests {
         for _ in 0..5 {
             made.push(backup_before_update(&p).unwrap().unwrap());
         }
-        // De laatste kopie is identiek, heeft rechten 600 en opent normaal.
+        // The last copy is identical, has permissions 600 and opens normally.
         let last = made.last().unwrap();
         assert_eq!(fs::read(last).unwrap(), original);
         assert_eq!(fs::metadata(last).unwrap().mode() & 0o777, 0o600);
         assert!(read_vault_file(last, PW).is_ok());
-        // Maar drie bewaard; de oudste zijn weg; de kluis zelf is onaangeroerd.
+        // Only three are kept; the oldest are gone; the vault itself is untouched.
         let left: Vec<_> = made.iter().filter(|m| m.exists()).collect();
         assert_eq!(left.len(), 3);
         assert!(!made[0].exists() && !made[1].exists());
@@ -600,7 +603,7 @@ mod tests {
     }
 
     #[test]
-    fn header_lezen_zonder_wachtwoord() {
+    fn read_header_without_password() {
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         UnlockedVault::create(p.clone(), PW, P).unwrap();

@@ -1,23 +1,22 @@
-//! Het kluismodel: items en bewerkingen daarop. Puur in-memory; geen I/O.
+//! The vault model: items and operations on them. Purely in-memory; no I/O.
 //!
-//! BEVEILIGINGSKRITIEK – tweede versleutelingslaag.
-//! Alle inhoud van een item (gebruikersnaam, URL, wachtwoord/API-sleutel en
-//! notities) wordt per veld apart versleuteld met de itemsleutel
-//! ([`ItemKey`]), elk met een eigen willekeurige nonce. Ook als de kluis
-//! geopend is, staat die inhoud dus alleen versleuteld in het geheugen. Lezen
-//! kan alleen via de methoden die de sleutel vragen; de klare tekst bestaat
-//! dan heel even in een `Zeroizing<String>` en wordt daarna gewist.
+//! SECURITY-CRITICAL – second encryption layer.
+//! All content of an item (username, URL, password/API key and notes) is
+//! encrypted per field with the item key ([`ItemKey`]), each with its own
+//! random nonce. Even while the vault is open, that content therefore only
+//! exists encrypted in memory. It can only be read through the methods that
+//! require the key; the plaintext then briefly lives in a `Zeroizing<String>`
+//! and is wiped afterwards.
 //!
-//! Alleen naam, soort, tags en datums zijn niet apart versleuteld (wel door
-//! de buitenste laag op schijf), zodat je items kunt vinden en sorteren.
+//! Only name, type, tags and dates are not encrypted separately (they are
+//! protected by the outer layer on disk), so you can find and sort items.
 //!
-//! Soorten items ([`Kind`]):
-//! - **login**: gebruikersnaam, URL, wachtwoord, notities
-//! - **api**: account/sleutel-ID, service-URL, de API-sleutel, notities
-//! - **notitie**: alleen tekst (meerdere regels), bijv. herstelcodes
+//! Item types ([`Kind`]):
+//! - **login**: username, URL, password, notes
+//! - **api**: account/key ID, service URL, the API key, notes
+//! - **note**: text only (multiple lines), e.g. recovery codes
 //!
-//! Alle velden worden bij opruimen gewist (`ZeroizeOnDrop`). `Debug` toont
-//! nooit geheimen.
+//! All fields are wiped on drop (`ZeroizeOnDrop`). `Debug` never shows secrets.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -29,9 +28,9 @@ use crate::crypto::{self, ItemKey};
 use crate::error::{Error, Result};
 use crate::secure_mem::{CountingWriter, SecureBuf};
 
-/// Huidige versie van de (versleutelde) JSON-inhoud.
-/// 1 = alles als tekst binnen de kluis; 2 = wachtwoord en notities per veld
-/// versleuteld; 3 = alle inhoud per veld versleuteld + soorten items.
+/// Current version of the (encrypted) JSON contents.
+/// 1 = everything as text inside the vault; 2 = password and notes encrypted
+/// per field; 3 = all content encrypted per field + item types.
 pub const SCHEMA_VERSION: u32 = 3;
 const MAX_NAME_LEN: usize = 200;
 const MAX_FIELD_LEN: usize = 64 * 1024;
@@ -40,68 +39,68 @@ const FIELD_URL: &str = "url";
 const FIELD_PASSWORD: &str = "password";
 const FIELD_NOTES: &str = "notes";
 
-/// Huidige tijd in seconden sinds 1970.
+/// Current time in seconds since 1970.
 pub fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-/// Soort item.
+/// Type of item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
-    /// Inloggegevens voor een website of dienst.
+    /// Credentials for a website or service.
     #[default]
     Login,
-    /// Een API-sleutel of token.
+    /// An API key or token.
     Api,
-    /// Een beveiligde notitie.
+    /// A secure note.
     Note,
 }
 
 impl Kind {
-    /// Korte Nederlandse naam.
+    /// Short display name.
     pub fn label(self) -> &'static str {
         match self {
             Kind::Login => "login",
-            Kind::Api => "api-sleutel",
-            Kind::Note => "notitie",
+            Kind::Api => "api key",
+            Kind::Note => "note",
         }
     }
 
-    /// Hoe het geheime veld heet bij deze soort.
+    /// What the secret field is called for this type.
     pub fn secret_label(self) -> &'static str {
         match self {
-            Kind::Login => "wachtwoord",
-            Kind::Api => "API-sleutel",
-            Kind::Note => "notitie",
+            Kind::Login => "password",
+            Kind::Api => "API key",
+            Kind::Note => "note",
         }
     }
 
-    /// Lees een soort uit tekst ("login", "api", "notitie", ...).
+    /// Read a type from text ("login", "api", "note", ...).
     pub fn parse(s: &str) -> Option<Kind> {
         match s.trim().to_lowercase().as_str() {
-            "login" | "wachtwoord" | "password" => Some(Kind::Login),
-            "api" | "api-sleutel" | "apikey" | "api-key" | "token" | "sleutel" => Some(Kind::Api),
-            "notitie" | "note" | "notities" | "notes" => Some(Kind::Note),
+            "login" | "password" => Some(Kind::Login),
+            "api" | "api key" | "api-key" | "apikey" | "key" | "token" => Some(Kind::Api),
+            "note" | "notes" | "secure-note" | "securenote" => Some(Kind::Note),
             _ => None,
         }
     }
 }
 
-/// Eén item in de kluis.
+/// One item in the vault.
 #[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop, PartialEq, Eq)]
 pub struct Entry {
     name: String,
     #[serde(default)]
     #[zeroize(skip)]
     kind: Kind,
-    /// Versleuteld: base64(nonce || ciphertext || tag).
+    /// Encrypted: base64(nonce || ciphertext || tag).
     username_sealed: String,
-    /// Versleuteld.
+    /// Encrypted.
     url_sealed: String,
-    /// Versleuteld: wachtwoord (login) of API-sleutel (api).
+    /// Encrypted: password (login) or API key (api).
     password_sealed: String,
-    /// Versleuteld: notities, of de inhoud van een notitie.
+    /// Encrypted: notes, or the contents of a note.
     notes_sealed: String,
     #[serde(default)]
     tags: Vec<String>,
@@ -111,26 +110,26 @@ pub struct Entry {
     modified: u64,
 }
 
-/// Velden voor een nieuw item (alles behalve de naam is optioneel).
+/// Fields for a new item (everything except the name is optional).
 ///
-/// Bevat tijdelijk geheimen in klare tekst; de wissende allocator in de
-/// binary ruimt het geheugen op. Roep `zeroize()` aan om het eerder te wissen.
+/// Temporarily holds secrets in plain text; the wiping allocator in the
+/// binary cleans up the memory. Call `zeroize()` to wipe it earlier.
 #[derive(Default, Zeroize)]
 pub struct NewEntry {
     pub name: String,
     #[zeroize(skip)]
     pub kind: Kind,
     pub username: String,
-    /// Wachtwoord (login) of API-sleutel (api); leeg bij een notitie.
+    /// Password (login) or API key (api); empty for a note.
     pub password: String,
     pub url: String,
-    /// Notities, of de tekst van een notitie.
+    /// Notes, or the text of a note.
     pub notes: String,
     pub tags: Vec<String>,
 }
 
 impl Entry {
-    /// Maak een gecontroleerd item; alle inhoud wordt direct versleuteld.
+    /// Create a validated item; all content is encrypted right away.
     pub fn new(fields: NewEntry, key: &ItemKey) -> Result<Entry> {
         let t = now();
         let mut e = Entry {
@@ -160,40 +159,40 @@ impl Entry {
     pub fn kind(&self) -> Kind {
         self.kind
     }
-    /// Ontsleutel de gebruikersnaam (of account/sleutel-ID bij een API-sleutel).
+    /// Decrypt the username (or account/key ID for an API key).
     pub fn username(&self, key: &ItemKey) -> Result<Zeroizing<String>> {
         key.open(FIELD_USERNAME, &self.username_sealed)
     }
-    /// Ontsleutel de URL.
+    /// Decrypt the URL.
     pub fn url(&self, key: &ItemKey) -> Result<Zeroizing<String>> {
         key.open(FIELD_URL, &self.url_sealed)
     }
-    /// Ontsleutel het wachtwoord of de API-sleutel. Alleen gebruiken om naar
-    /// het klembord te kopiëren of op uitdrukkelijk verzoek (`--show`) te tonen.
+    /// Decrypt the password or API key. Only use this to copy it to the
+    /// clipboard or to show it on explicit request (`--show`).
     pub fn password(&self, key: &ItemKey) -> Result<Zeroizing<String>> {
         key.open(FIELD_PASSWORD, &self.password_sealed)
     }
-    /// Ontsleutel de notities (of de inhoud van een notitie).
+    /// Decrypt the notes (or the contents of a note).
     pub fn notes(&self, key: &ItemKey) -> Result<Zeroizing<String>> {
         key.open(FIELD_NOTES, &self.notes_sealed)
     }
-    /// Ontsleutel het belangrijkste geheim van dit item: het wachtwoord, de
-    /// API-sleutel of de tekst van de notitie.
+    /// Decrypt the main secret of this item: the password, the API key or
+    /// the text of the note.
     pub fn secret(&self, key: &ItemKey) -> Result<Zeroizing<String>> {
         match self.kind {
             Kind::Note => self.notes(key),
             Kind::Login | Kind::Api => self.password(key),
         }
     }
-    /// Of er een wachtwoord/API-sleutel is (zonder te ontsleutelen).
+    /// Whether there is a password/API key (without decrypting).
     pub fn has_password(&self) -> bool {
         crypto::sealed_plaintext_len(&self.password_sealed) > 0
     }
-    /// Of er notities zijn (zonder te ontsleutelen).
+    /// Whether there are notes (without decrypting).
     pub fn has_notes(&self) -> bool {
         crypto::sealed_plaintext_len(&self.notes_sealed) > 0
     }
-    /// Of het hoofdgeheim gevuld is (zonder te ontsleutelen).
+    /// Whether the main secret is filled in (without decrypting).
     pub fn has_secret(&self) -> bool {
         match self.kind {
             Kind::Note => self.has_notes(),
@@ -221,13 +220,13 @@ impl Entry {
         Ok(())
     }
     pub fn set_username(&mut self, key: &ItemKey, v: &str) -> Result<()> {
-        self.username_sealed = key.seal(FIELD_USERNAME, validate_line("gebruikersnaam", v)?)?;
+        self.username_sealed = key.seal(FIELD_USERNAME, validate_line("username", v)?)?;
         self.touch();
         Ok(())
     }
     pub fn set_password(&mut self, key: &ItemKey, v: &str) -> Result<()> {
         if v.len() > MAX_FIELD_LEN {
-            return Err(Error::InvalidInput("wachtwoord of sleutel is te lang".into()));
+            return Err(Error::InvalidInput("password or key is too long".into()));
         }
         self.password_sealed = key.seal(FIELD_PASSWORD, v)?;
         self.touch();
@@ -240,12 +239,12 @@ impl Entry {
     }
     pub fn set_notes(&mut self, key: &ItemKey, v: &str) -> Result<()> {
         if v.len() > MAX_FIELD_LEN {
-            return Err(Error::InvalidInput("notities zijn te lang".into()));
+            return Err(Error::InvalidInput("notes are too long".into()));
         }
-        // Regeleinden en tabs mogen; andere stuurtekens (zoals ANSI-escapes
-        // die je terminal kunnen manipuleren) niet.
+        // Newlines and tabs are fine; other control characters (such as ANSI
+        // escapes that can manipulate your terminal) are not.
         if v.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
-            return Err(Error::InvalidInput("notities bevatten ongeldige tekens".into()));
+            return Err(Error::InvalidInput("notes contain invalid characters".into()));
         }
         self.notes_sealed = key.seal(FIELD_NOTES, v)?;
         self.touch();
@@ -265,8 +264,8 @@ impl Entry {
         Ok(())
     }
 
-    /// Versleutel alle inhoud opnieuw met een andere sleutel (na `passwd`,
-    /// bij export en import). De wijzigingsdatum blijft gelijk.
+    /// Re-encrypt all content with another key (after `passwd`, on export
+    /// and import). The modification date stays the same.
     fn reseal(&mut self, from: &ItemKey, to: &ItemKey) -> Result<()> {
         let username = self.username(from)?;
         let url = self.url(from)?;
@@ -279,9 +278,9 @@ impl Entry {
         Ok(())
     }
 
-    /// Of het item past bij een zoekterm (hoofdletterongevoelig). Zoekt in
-    /// naam, soort, tags, gebruikersnaam en URL (die laatste twee worden
-    /// daarvoor even ontsleuteld); nooit in wachtwoorden, sleutels of notities.
+    /// Whether the item matches a search term (case-insensitive). Searches
+    /// name, type, tags, username and URL (the last two are briefly decrypted
+    /// for that); never passwords, keys or notes.
     pub fn matches(&self, query: &str, key: &ItemKey) -> bool {
         let q = query.to_lowercase();
         let hit = |s: &str| s.to_lowercase().contains(&q);
@@ -303,13 +302,13 @@ impl std::fmt::Debug for Entry {
         f.debug_struct("Entry")
             .field("name", &self.name)
             .field("kind", &self.kind)
-            .field("inhoud", &"[VERSLEUTELD]")
+            .field("content", &"[ENCRYPTED]")
             .field("tags", &self.tags)
             .finish()
     }
 }
 
-/// Overschrijf een String veilig: wis eerst de oude inhoud.
+/// Overwrite a String safely: wipe the old contents first.
 fn replace_secret(target: &mut String, new: &str) {
     target.zeroize();
     target.push_str(new);
@@ -318,13 +317,13 @@ fn replace_secret(target: &mut String, new: &str) {
 fn validate_name(name: &str) -> Result<&str> {
     let name = name.trim();
     if name.is_empty() {
-        return Err(Error::InvalidInput("de naam mag niet leeg zijn".into()));
+        return Err(Error::InvalidInput("the name must not be empty".into()));
     }
     if name.chars().count() > MAX_NAME_LEN {
-        return Err(Error::InvalidInput("de naam is te lang (max. 200 tekens)".into()));
+        return Err(Error::InvalidInput("the name is too long (max. 200 characters)".into()));
     }
     if name.chars().any(char::is_control) {
-        return Err(Error::InvalidInput("de naam bevat ongeldige tekens".into()));
+        return Err(Error::InvalidInput("the name contains invalid characters".into()));
     }
     Ok(name)
 }
@@ -332,15 +331,15 @@ fn validate_name(name: &str) -> Result<&str> {
 fn validate_line<'a>(what: &str, v: &'a str) -> Result<&'a str> {
     let v = v.trim();
     if v.len() > MAX_FIELD_LEN {
-        return Err(Error::InvalidInput(format!("{what} is te lang")));
+        return Err(Error::InvalidInput(format!("{what} is too long")));
     }
     if v.chars().any(char::is_control) {
-        return Err(Error::InvalidInput(format!("{what} bevat ongeldige tekens")));
+        return Err(Error::InvalidInput(format!("{what} contains invalid characters")));
     }
     Ok(v)
 }
 
-/// "GitHub (2)" → "GitHub"; andere namen blijven gelijk.
+/// "GitHub (2)" → "GitHub"; other names stay the same.
 fn base_name(name: &str) -> &str {
     let name = name.trim();
     if let Some(open) = name.rfind(" (") {
@@ -359,15 +358,15 @@ fn same_name(a: &str, b: &str) -> bool {
     a.trim().to_lowercase() == b.trim().to_lowercase()
 }
 
-// ───────────────────────── oudere schema's (migratie) ─────────────────────────
+// ───────────────────────── older schemas (migration) ─────────────────────────
 
-/// Alleen om het schemanummer te lezen vóór de echte verwerking.
+/// Only to read the schema number before the real processing.
 #[derive(Deserialize)]
 struct SchemaPeek {
     schema: u32,
 }
 
-/// Schema 1: alles als gewone tekst (binnen de buitenste versleuteling).
+/// Schema 1: everything as plain text (inside the outer encryption).
 #[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
 struct VaultV1 {
     entries: Vec<EntryV1>,
@@ -392,7 +391,7 @@ struct EntryV1 {
     modified: u64,
 }
 
-/// Schema 2: wachtwoord en notities versleuteld, gebruikersnaam en URL niet.
+/// Schema 2: password and notes encrypted, username and URL not.
 #[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
 struct VaultV2 {
     entries: Vec<EntryV2>,
@@ -415,9 +414,9 @@ struct EntryV2 {
     modified: u64,
 }
 
-// ───────────────────────── de kluis ─────────────────────────
+// ───────────────────────── the vault ─────────────────────────
 
-/// De volledige kluisinhoud (met per veld versleutelde inhoud).
+/// The complete vault contents (with content encrypted per field).
 #[derive(Clone, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct Vault {
     schema: u32,
@@ -435,10 +434,10 @@ impl Vault {
         Vault::default()
     }
 
-    /// Lees de JSON-inhoud (na ontsleutelen van de buitenste laag).
+    /// Read the JSON contents (after decrypting the outer layer).
     ///
-    /// Geeft ook terug of de inhoud is omgezet vanuit een ouder schema; de
-    /// aanroeper moet de kluis dan opnieuw opslaan.
+    /// Also returns whether the contents were converted from an older schema;
+    /// the caller must then save the vault again.
     pub fn from_json(bytes: &[u8], key: &ItemKey) -> Result<(Vault, bool)> {
         let peek: SchemaPeek = serde_json::from_slice(bytes).map_err(|_| Error::CorruptPayload)?;
         let (mut v, migrated) = match peek.schema {
@@ -455,7 +454,7 @@ impl Vault {
         Ok((v, migrated))
     }
 
-    /// Schema 1 → 3: versleutel alle inhoud per veld.
+    /// Schema 1 → 3: encrypt all content per field.
     fn migrate_v1(bytes: &[u8], key: &ItemKey) -> Result<Vault> {
         let old: VaultV1 = serde_json::from_slice(bytes).map_err(|_| Error::CorruptPayload)?;
         let mut v = Vault::new();
@@ -480,7 +479,7 @@ impl Vault {
         Ok(v)
     }
 
-    /// Schema 2 → 3: versleutel ook gebruikersnaam en URL.
+    /// Schema 2 → 3: also encrypt username and URL.
     fn migrate_v2(bytes: &[u8], key: &ItemKey) -> Result<Vault> {
         let old: VaultV2 = serde_json::from_slice(bytes).map_err(|_| Error::CorruptPayload)?;
         let mut v = Vault::new();
@@ -502,8 +501,8 @@ impl Vault {
         Ok(v)
     }
 
-    /// Controleer elk item, ook uit (mogelijk kwaadaardige) importbestanden:
-    /// geldige velden, geldig versleutelde inhoud en unieke namen.
+    /// Validate every item, including those from (possibly malicious) import
+    /// files: valid fields, validly encrypted content and unique names.
     fn validate(&self) -> Result<()> {
         for (i, e) in self.entries.iter().enumerate() {
             let valid = validate_name(&e.name).is_ok_and(|n| n == e.name)
@@ -519,10 +518,10 @@ impl Vault {
         Ok(())
     }
 
-    /// Schrijf de inhoud als JSON rechtstreeks in beschermd geheugen.
+    /// Write the contents as JSON straight into protected memory.
     ///
-    /// We meten eerst de exacte grootte, zodat de buffer nooit hoeft te
-    /// groeien (groeien zou ongewiste kopieën kunnen achterlaten).
+    /// We first measure the exact size so the buffer never has to grow
+    /// (growing could leave unwiped copies behind).
     pub fn to_json(&self) -> Result<SecureBuf> {
         let mut counter = CountingWriter::default();
         serde_json::to_writer(&mut counter, self).map_err(|_| Error::CorruptPayload)?;
@@ -543,12 +542,12 @@ impl Vault {
         self.entries.is_empty()
     }
 
-    /// Alle items, gesorteerd op naam.
+    /// All items, sorted by name.
     pub fn entries(&self) -> &[Entry] {
         &self.entries
     }
 
-    /// Zoek een item op exacte naam (hoofdletterongevoelig).
+    /// Find an item by exact name (case-insensitive).
     pub fn get(&self, name: &str) -> Option<&Entry> {
         self.entries.iter().find(|e| same_name(&e.name, name))
     }
@@ -572,7 +571,7 @@ impl Vault {
             .iter()
             .position(|e| same_name(&e.name, name))
             .ok_or_else(|| Error::EntryNotFound(name.to_string()))?;
-        // `Entry` is ZeroizeOnDrop: het verwijderde item wordt gewist.
+        // `Entry` is ZeroizeOnDrop: the removed item is wiped.
         self.entries.remove(idx);
         Ok(())
     }
@@ -581,9 +580,9 @@ impl Vault {
         self.update(old, |e| e.set_name(new))
     }
 
-    /// Wijzig een item "alles of niets": de wijzigingen worden op een kopie
-    /// uitgevoerd en pas overgenomen als alles gelukt is en de (eventueel
-    /// nieuwe) naam niet botst met een ander item.
+    /// Change an item "all or nothing": the changes are made on a copy and
+    /// only adopted if everything succeeded and the (possibly new) name does
+    /// not clash with another item.
     pub fn update(&mut self, name: &str, f: impl FnOnce(&mut Entry) -> Result<()>) -> Result<()> {
         let idx = self
             .entries
@@ -600,12 +599,12 @@ impl Vault {
         Ok(())
     }
 
-    /// Items die bij de zoekterm passen.
+    /// Items that match the search term.
     pub fn search(&self, query: &str, key: &ItemKey) -> Vec<&Entry> {
         self.entries.iter().filter(|e| e.matches(query, key)).collect()
     }
 
-    /// Een vrije naam op basis van `base` ("naam", "naam (2)", "naam (3)", ...).
+    /// A free name based on `base` ("name", "name (2)", "name (3)", ...).
     pub fn unique_name(&self, base: &str) -> String {
         let base = base.trim();
         if !self.contains(base) {
@@ -614,10 +613,10 @@ impl Vault {
         (2..)
             .map(|n| format!("{base} ({n})"))
             .find(|candidate| !self.contains(candidate))
-            .expect("oneindige reeks")
+            .expect("infinite sequence")
     }
 
-    /// Versleutel alle inhoud opnieuw met een andere itemsleutel (alles of niets).
+    /// Re-encrypt all content with another item key (all or nothing).
     pub fn rekey(&mut self, from: &ItemKey, to: &ItemKey) -> Result<()> {
         let mut entries = self.entries.clone();
         for e in &mut entries {
@@ -627,17 +626,17 @@ impl Vault {
         Ok(())
     }
 
-    /// Voeg items uit een andere kluis toe (die met `other_key` versleuteld is).
-    /// Een gelijk item wordt overgeslagen; bij een naamconflict krijgt het
-    /// nieuwe item een volgnummer. Geeft (toegevoegd, overgeslagen) terug.
+    /// Add items from another vault (encrypted with `other_key`).
+    /// An identical item is skipped; on a name clash the new item gets a
+    /// sequence number. Returns (added, skipped).
     pub fn merge(&mut self, other: &Vault, other_key: &ItemKey, my_key: &ItemKey) -> Result<(usize, usize)> {
         let mut added = 0;
         let mut skipped = 0;
         for e in other.entries() {
             let theirs =
                 (e.username(other_key)?, e.url(other_key)?, e.password(other_key)?, e.notes(other_key)?);
-            // Duplicaat: zelfde naam (eventueel met volgnummer, zodat herhaald
-            // importeren geen kopieën maakt), soort en inhoud.
+            // Duplicate: same name (optionally with a sequence number, so importing
+            // repeatedly makes no copies), type and content.
             let mut duplicate = false;
             for existing in &self.entries {
                 if existing.kind != e.kind || !same_name(base_name(&existing.name), base_name(&e.name)) {
@@ -683,11 +682,11 @@ mod tests {
         Entry::new(
             NewEntry {
                 name: name.into(),
-                username: "jan".into(),
+                username: "john".into(),
                 password: pw.into(),
                 url: "https://example.org".into(),
-                notes: "geheime notitie".into(),
-                tags: vec!["Werk".into(), "werk".into(), " mail ".into(), String::new()],
+                notes: "secret note".into(),
+                tags: vec!["Work".into(), "work".into(), " mail ".into(), String::new()],
                 ..Default::default()
             },
             &test_item_key(1),
@@ -702,54 +701,54 @@ mod tests {
     }
 
     #[test]
-    fn toevoegen_opzoeken_verwijderen() {
+    fn add_find_remove() {
         let k = test_item_key(1);
         let mut v = Vault::new();
         v.add(entry("GitHub", "pw1")).unwrap();
         v.add(entry("abc", "pw2")).unwrap();
         assert_eq!(v.len(), 2);
-        assert_eq!(v.entries()[0].name(), "abc", "gesorteerd op naam");
+        assert_eq!(v.entries()[0].name(), "abc", "sorted by name");
         assert_eq!(v.get("github").unwrap().password(&k).unwrap().as_str(), "pw1");
         assert!(matches!(v.add(entry("GITHUB", "x")), Err(Error::EntryExists(_))));
         v.remove("GitHub").unwrap();
         assert!(v.get("github").is_none());
-        assert!(matches!(v.remove("bestaat-niet"), Err(Error::EntryNotFound(_))));
+        assert!(matches!(v.remove("does-not-exist"), Err(Error::EntryNotFound(_))));
     }
 
     #[test]
-    fn alle_inhoud_is_per_item_versleuteld() {
+    fn all_content_is_encrypted_per_item() {
         let k = test_item_key(1);
-        let e = entry("x", "supergeheim");
-        // In het model (en dus in het geheugen en in de JSON) staat geen klare tekst.
+        let e = entry("x", "supersecret");
+        // The model (and so memory and the JSON) holds no plain text.
         let json = json_of(&e);
-        for plain in ["supergeheim", "geheime notitie", "jan", "example.org"] {
-            assert!(!json.contains(plain), "{plain} staat leesbaar in de JSON");
+        for plain in ["supersecret", "secret note", "john", "example.org"] {
+            assert!(!json.contains(plain), "{plain} is readable in the JSON");
         }
         assert!(json.contains("username_sealed") && json.contains("password_sealed"));
-        // Alleen met de juiste sleutel te lezen.
-        assert_eq!(e.password(&k).unwrap().as_str(), "supergeheim");
-        assert_eq!(e.notes(&k).unwrap().as_str(), "geheime notitie");
-        assert_eq!(e.username(&k).unwrap().as_str(), "jan");
+        // Only readable with the right key.
+        assert_eq!(e.password(&k).unwrap().as_str(), "supersecret");
+        assert_eq!(e.notes(&k).unwrap().as_str(), "secret note");
+        assert_eq!(e.username(&k).unwrap().as_str(), "john");
         assert_eq!(e.url(&k).unwrap().as_str(), "https://example.org");
         for wrong in [e.password(&test_item_key(2)), e.username(&test_item_key(2))] {
             assert!(matches!(wrong, Err(Error::Decrypt)));
         }
         assert!(e.has_password() && e.has_notes());
-        // Twee items met hetzelfde wachtwoord zijn versleuteld toch verschillend.
-        assert_ne!(entry("a", "zelfde").password_sealed, entry("b", "zelfde").password_sealed);
-        let empty = Entry::new(NewEntry { name: "leeg".into(), ..Default::default() }, &k).unwrap();
+        // Two items with the same password still encrypt differently.
+        assert_ne!(entry("a", "same").password_sealed, entry("b", "same").password_sealed);
+        let empty = Entry::new(NewEntry { name: "empty".into(), ..Default::default() }, &k).unwrap();
         assert!(!empty.has_password() && !empty.has_notes());
     }
 
     #[test]
-    fn soorten_items() {
+    fn item_types() {
         let k = test_item_key(1);
         let api = Entry::new(
             NewEntry {
                 name: "OpenAI".into(),
                 kind: Kind::Api,
-                username: "projectsleutel-1".into(),
-                password: "sk-geheim-123".into(),
+                username: "project-key-1".into(),
+                password: "sk-secret-123".into(),
                 url: "https://api.example.com".into(),
                 ..Default::default()
             },
@@ -758,70 +757,70 @@ mod tests {
         .unwrap();
         let note = Entry::new(
             NewEntry {
-                name: "Herstelcodes".into(),
+                name: "Recovery codes".into(),
                 kind: Kind::Note,
-                notes: "regel 1\nregel 2\n\ttab".into(),
+                notes: "line 1\nline 2\n\ttab".into(),
                 ..Default::default()
             },
             &k,
         )
         .unwrap();
         assert_eq!(api.kind(), Kind::Api);
-        assert_eq!(api.secret(&k).unwrap().as_str(), "sk-geheim-123");
-        assert_eq!(note.secret(&k).unwrap().as_str(), "regel 1\nregel 2\n\ttab");
+        assert_eq!(api.secret(&k).unwrap().as_str(), "sk-secret-123");
+        assert_eq!(note.secret(&k).unwrap().as_str(), "line 1\nline 2\n\ttab");
         assert!(note.has_secret() && !note.has_password());
-        for (e, plain) in [(&api, "sk-geheim"), (&note, "regel 1")] {
+        for (e, plain) in [(&api, "sk-secret"), (&note, "line 1")] {
             assert!(!json_of(e).contains(plain));
         }
         assert!(json_of(&note).contains("\"kind\":\"note\""));
         assert_eq!(Kind::parse("API"), Some(Kind::Api));
-        assert_eq!(Kind::parse("notitie"), Some(Kind::Note));
+        assert_eq!(Kind::parse("notes"), Some(Kind::Note));
         assert_eq!(Kind::parse("note"), Some(Kind::Note));
-        assert_eq!(Kind::parse("iets"), None);
-        // Zoeken op soort werkt; zoeken in de geheime inhoud niet.
+        assert_eq!(Kind::parse("something"), None);
+        // Searching by type works; searching in the secret content does not.
         let mut v = Vault::new();
         v.add(api).unwrap();
         v.add(note).unwrap();
-        assert_eq!(v.search("api-sleutel", &k).len(), 1);
-        assert_eq!(v.search("notitie", &k).len(), 1);
-        assert_eq!(v.search("sk-geheim", &k).len(), 0);
-        assert_eq!(v.search("regel", &k).len(), 0);
-        assert_eq!(v.search("projectsleutel", &k).len(), 1);
+        assert_eq!(v.search("api key", &k).len(), 1);
+        assert_eq!(v.search("note", &k).len(), 1);
+        assert_eq!(v.search("sk-secret", &k).len(), 0);
+        assert_eq!(v.search("line", &k).len(), 0);
+        assert_eq!(v.search("project-key", &k).len(), 1);
     }
 
     #[test]
-    fn tags_worden_opgeschoond() {
+    fn tags_are_cleaned_up() {
         let e = entry("x", "y");
-        assert_eq!(e.tags(), &["Werk".to_string(), "mail".to_string()]);
-        assert!(e.has_tag("WERK"));
+        assert_eq!(e.tags(), &["Work".to_string(), "mail".to_string()]);
+        assert!(e.has_tag("WORK"));
     }
 
     #[test]
-    fn ongeldige_namen() {
+    fn invalid_names() {
         let k = test_item_key(1);
         let bad = |n: &str| Entry::new(NewEntry { name: n.into(), ..Default::default() }, &k).is_err();
         assert!(bad(""));
         assert!(bad("   "));
-        assert!(bad("met\nnieuwe regel"));
+        assert!(bad("with\nnewline"));
         assert!(bad(&"x".repeat(201)));
-        assert!(!bad("Bank – privé 🏦"));
+        assert!(!bad("Bank – café 🏦"));
     }
 
     #[test]
-    fn zoeken_niet_in_wachtwoord_of_notities() {
+    fn search_does_not_look_in_passwords_or_notes() {
         let k = test_item_key(1);
         let mut v = Vault::new();
-        v.add(entry("Mail", "supergeheim")).unwrap();
+        v.add(entry("Mail", "supersecret")).unwrap();
         assert_eq!(v.search("MAIL", &k).len(), 1);
         assert_eq!(v.search("example", &k).len(), 1);
-        assert_eq!(v.search("JAN", &k).len(), 1);
-        assert_eq!(v.search("supergeheim", &k).len(), 0);
-        assert_eq!(v.search("notitie", &k).len(), 0);
-        assert_eq!(v.search("example", &test_item_key(2)).len(), 0, "verkeerde sleutel vindt niets");
+        assert_eq!(v.search("JOHN", &k).len(), 1);
+        assert_eq!(v.search("supersecret", &k).len(), 0);
+        assert_eq!(v.search("secret note", &k).len(), 0);
+        assert_eq!(v.search("example", &test_item_key(2)).len(), 0, "wrong key finds nothing");
     }
 
     #[test]
-    fn hernoemen() {
+    fn renaming() {
         let mut v = Vault::new();
         v.add(entry("a", "1")).unwrap();
         v.add(entry("b", "2")).unwrap();
@@ -832,36 +831,36 @@ mod tests {
     }
 
     #[test]
-    fn update_is_alles_of_niets() {
+    fn update_is_all_or_nothing() {
         let k = test_item_key(1);
         let mut v = Vault::new();
         v.add(entry("a", "1")).unwrap();
         v.add(entry("b", "2")).unwrap();
-        // Botsende naam: niets wordt gewijzigd.
+        // Clashing name: nothing is changed.
         let r = v.update("a", |e| {
-            e.set_username(&k, "nieuw")?;
+            e.set_username(&k, "new")?;
             e.set_name("B")
         });
         assert!(matches!(r, Err(Error::EntryExists(_))));
-        assert_eq!(v.get("a").unwrap().username(&k).unwrap().as_str(), "jan");
-        // Fout halverwege: ook niets gewijzigd.
+        assert_eq!(v.get("a").unwrap().username(&k).unwrap().as_str(), "john");
+        // Error halfway: nothing is changed either.
         let r = v.update("a", |e| {
-            e.set_username(&k, "nieuw")?;
-            e.set_url(&k, "met\nnieuwe regel")
+            e.set_username(&k, "new")?;
+            e.set_url(&k, "with\nnewline")
         });
         assert!(r.is_err());
-        assert_eq!(v.get("a").unwrap().username(&k).unwrap().as_str(), "jan");
-        v.update("a", |e| e.set_username(&k, "nieuw")).unwrap();
-        assert_eq!(v.get("a").unwrap().username(&k).unwrap().as_str(), "nieuw");
+        assert_eq!(v.get("a").unwrap().username(&k).unwrap().as_str(), "john");
+        v.update("a", |e| e.set_username(&k, "new")).unwrap();
+        assert_eq!(v.get("a").unwrap().username(&k).unwrap().as_str(), "new");
     }
 
     #[test]
-    fn json_heen_en_terug() {
+    fn json_round_trip() {
         let k = test_item_key(1);
         let mut v = Vault::new();
-        v.add(entry("één \"quote\" \\ test", "p@ss\"wo\\rd")).unwrap();
+        v.add(entry("one \"quote\" \\ test", "p@ss\"wo\\rd")).unwrap();
         let json = v.to_json().unwrap();
-        assert_eq!(json.len(), json.capacity(), "exacte grootte, geen herallocatie");
+        assert_eq!(json.len(), json.capacity(), "exact size, no reallocation");
         let (back, migrated) = Vault::from_json(json.as_slice(), &k).unwrap();
         assert!(!migrated);
         assert_eq!(back.entries(), v.entries());
@@ -869,43 +868,43 @@ mod tests {
     }
 
     #[test]
-    fn migratie_van_schema_1() {
+    fn migration_from_schema_1() {
         let k = test_item_key(1);
-        let old = br#"{"schema":1,"entries":[{"name":"Oud","username":"u","password":"oud-pw","notes":"n","tags":["t"],"created":5,"modified":6}]}"#;
+        let old = br#"{"schema":1,"entries":[{"name":"Old","username":"u","password":"old-pw","notes":"n","tags":["t"],"created":5,"modified":6}]}"#;
         let (v, migrated) = Vault::from_json(old, &k).unwrap();
         assert!(migrated);
-        let e = v.get("oud").unwrap();
+        let e = v.get("old").unwrap();
         assert_eq!(e.kind(), Kind::Login);
-        assert_eq!(e.password(&k).unwrap().as_str(), "oud-pw");
+        assert_eq!(e.password(&k).unwrap().as_str(), "old-pw");
         assert_eq!(e.notes(&k).unwrap().as_str(), "n");
         assert_eq!(e.username(&k).unwrap().as_str(), "u");
-        assert_eq!((e.created(), e.modified()), (5, 6), "datums blijven behouden");
+        assert_eq!((e.created(), e.modified()), (5, 6), "dates are preserved");
         let json = String::from_utf8(v.to_json().unwrap().as_slice().to_vec()).unwrap();
-        assert!(!json.contains("oud-pw") && json.contains("\"schema\":3"));
+        assert!(!json.contains("old-pw") && json.contains("\"schema\":3"));
     }
 
     #[test]
-    fn migratie_van_schema_2() {
+    fn migration_from_schema_2() {
         let k = test_item_key(1);
         let pw = k.seal("password", "v2-pw").unwrap();
-        let notes = k.seal("notes", "v2-notitie").unwrap();
+        let notes = k.seal("notes", "v2-note").unwrap();
         let old = format!(
-            r#"{{"schema":2,"entries":[{{"name":"Twee","username":"gebruiker2","password_sealed":"{pw}","url":"https://twee.nl","notes_sealed":"{notes}","tags":[],"created":7,"modified":8}}]}}"#
+            r#"{{"schema":2,"entries":[{{"name":"Two","username":"user2","password_sealed":"{pw}","url":"https://two.nl","notes_sealed":"{notes}","tags":[],"created":7,"modified":8}}]}}"#
         );
         let (v, migrated) = Vault::from_json(old.as_bytes(), &k).unwrap();
         assert!(migrated);
-        let e = v.get("twee").unwrap();
-        assert_eq!(e.username(&k).unwrap().as_str(), "gebruiker2");
-        assert_eq!(e.url(&k).unwrap().as_str(), "https://twee.nl");
+        let e = v.get("two").unwrap();
+        assert_eq!(e.username(&k).unwrap().as_str(), "user2");
+        assert_eq!(e.url(&k).unwrap().as_str(), "https://two.nl");
         assert_eq!(e.password(&k).unwrap().as_str(), "v2-pw");
-        assert_eq!(e.notes(&k).unwrap().as_str(), "v2-notitie");
+        assert_eq!(e.notes(&k).unwrap().as_str(), "v2-note");
         assert_eq!((e.created(), e.modified()), (7, 8));
         let json = String::from_utf8(v.to_json().unwrap().as_slice().to_vec()).unwrap();
-        assert!(!json.contains("gebruiker2") && !json.contains("twee.nl"));
+        assert!(!json.contains("user2") && !json.contains("two.nl"));
     }
 
     #[test]
-    fn kapotte_of_te_nieuwe_inhoud() {
+    fn broken_or_too_new_contents() {
         let k = test_item_key(1);
         let s = k.seal("x", "").unwrap();
         let item = |extra: &str| {
@@ -913,7 +912,7 @@ mod tests {
                 r#"{{"schema":3,"entries":[{{{extra},"username_sealed":"{s}","url_sealed":"{s}","password_sealed":"{s}","notes_sealed":"{s}"}}]}}"#
             )
         };
-        assert!(matches!(Vault::from_json(b"{niet json", &k), Err(Error::CorruptPayload)));
+        assert!(matches!(Vault::from_json(b"{not json", &k), Err(Error::CorruptPayload)));
         assert!(matches!(Vault::from_json(b"[]", &k), Err(Error::CorruptPayload)));
         assert!(matches!(
             Vault::from_json(br#"{"schema":99,"entries":[]}"#, &k),
@@ -921,15 +920,15 @@ mod tests {
         ));
         assert!(Vault::from_json(item(r#""name":"x""#).as_bytes(), &k).is_ok());
         assert!(Vault::from_json(item(r#""name":"x","kind":"api""#).as_bytes(), &k).is_ok());
-        // Ongeldige items uit een (kwaadaardig) bestand worden geweigerd.
+        // Invalid items from a (malicious) file are rejected.
         for bad in [
             item(r#""name":"""#),
             item(r#""name":" x""#),
             item(r#""name":"x\u001b[31m""#),
             item(r#""name":"x","tags":["\u0007"]"#),
-            item(r#""name":"x","kind":"onbekend""#),
+            item(r#""name":"x","kind":"unknown""#),
             format!(
-                r#"{{"schema":3,"entries":[{{"name":"x","username_sealed":"onzin","url_sealed":"{s}","password_sealed":"{s}","notes_sealed":"{s}"}}]}}"#
+                r#"{{"schema":3,"entries":[{{"name":"x","username_sealed":"nonsense","url_sealed":"{s}","password_sealed":"{s}","notes_sealed":"{s}"}}]}}"#
             ),
             r#"{"schema":3,"entries":[{"name":"x"}]}"#.to_string(),
             r#"{"schema":2,"entries":[{"name":"x","username":"\u0007","password_sealed":"a","notes_sealed":"b"}]}"#
@@ -942,14 +941,14 @@ mod tests {
     }
 
     #[test]
-    fn debug_toont_geen_geheimen() {
-        let s = format!("{:?}", entry("x", "supergeheim"));
-        assert!(!s.contains("supergeheim"));
-        assert!(!s.contains("geheime notitie"));
+    fn debug_shows_no_secrets() {
+        let s = format!("{:?}", entry("x", "supersecret"));
+        assert!(!s.contains("supersecret"));
+        assert!(!s.contains("secret note"));
     }
 
     #[test]
-    fn opnieuw_versleutelen() {
+    fn re_encrypting() {
         let (k1, k2) = (test_item_key(1), test_item_key(2));
         let mut v = Vault::new();
         v.add(entry("x", "pw")).unwrap();
@@ -957,30 +956,30 @@ mod tests {
         v.rekey(&k1, &k2).unwrap();
         let e = v.get("x").unwrap();
         assert_eq!(e.password(&k2).unwrap().as_str(), "pw");
-        assert_eq!(e.username(&k2).unwrap().as_str(), "jan");
+        assert_eq!(e.username(&k2).unwrap().as_str(), "john");
         assert!(e.password(&k1).is_err() && e.url(&k1).is_err());
         assert_eq!(e.modified(), before);
-        // Verkeerde bronsleutel: niets gewijzigd.
+        // Wrong source key: nothing changed.
         assert!(v.rekey(&k1, &k2).is_err());
         assert_eq!(v.get("x").unwrap().password(&k2).unwrap().as_str(), "pw");
     }
 
     #[test]
-    fn samenvoegen() {
+    fn merging() {
         let k = test_item_key(1);
         let mut a = Vault::new();
         a.add(entry("x", "1")).unwrap();
         let mut b = Vault::new();
-        b.add(entry("x", "1")).unwrap(); // identiek → overslaan
-        b.add(entry("X", "anders")).unwrap_err(); // zelfde naam in b kan niet
+        b.add(entry("x", "1")).unwrap(); // identical → skip
+        b.add(entry("X", "different")).unwrap_err(); // same name in b is not possible
         let mut c = Vault::new();
-        c.add(entry("x", "anders")).unwrap(); // conflict → hernoemen
+        c.add(entry("x", "different")).unwrap(); // conflict → rename
         c.add(entry("y", "2")).unwrap();
         assert_eq!(a.merge(&b, &k, &k).unwrap(), (0, 1));
         assert_eq!(a.merge(&c, &k, &k).unwrap(), (2, 0));
         assert!(a.get("x (2)").is_some());
         assert_eq!(a.unique_name("x"), "x (3)");
-        // Nogmaals importeren maakt geen nieuwe kopieën.
+        // Importing again makes no new copies.
         assert_eq!(a.merge(&c, &k, &k).unwrap(), (0, 2));
         assert_eq!(base_name("GitHub (12)"), "GitHub");
         assert_eq!(base_name("GitHub (x)"), "GitHub (x)");
@@ -988,7 +987,7 @@ mod tests {
     }
 
     #[test]
-    fn samenvoegen_met_andere_sleutel() {
+    fn merging_with_another_key() {
         let (mine, theirs) = (test_item_key(1), test_item_key(2));
         let mut other = Vault::new();
         other.add(entry("z", "pw")).unwrap();
@@ -997,6 +996,6 @@ mod tests {
         assert_eq!(a.merge(&other, &theirs, &mine).unwrap(), (1, 0));
         assert_eq!(a.get("z").unwrap().password(&mine).unwrap().as_str(), "pw");
         assert_eq!(a.merge(&other, &theirs, &mine).unwrap(), (0, 1));
-        assert!(a.merge(&other, &mine, &mine).is_err(), "verkeerde sleutel van de andere kluis");
+        assert!(a.merge(&other, &mine, &mine).is_err(), "wrong key for the other vault");
     }
 }

@@ -1,20 +1,24 @@
-//! Cryptografie: sleutelafleiding en authenticated encryption.
+//! Cryptography: key derivation and authenticated encryption.
 //!
-//! BEVEILIGINGSKRITIEK. We implementeren hier zelf GEEN primitieven; we
-//! gebruiken alleen de door experts geschreven en geaudite RustCrypto-crates:
+//! SECURITY-CRITICAL. We do NOT implement any primitives ourselves; we only
+//! use the expert-written and audited RustCrypto crates:
 //!
-//! - **Argon2id** (`argon2`): maakt van het hoofdwachtwoord + een willekeurige
-//!   salt een sleutel van 256 bits. Argon2id is bewust traag en gebruikt veel
-//!   geheugen, zodat raden met GPU's duur wordt.
-//! - **XChaCha20-Poly1305** (`chacha20poly1305`): versleutelt én authenticeert.
-//!   Elke wijziging aan het bestand (ook aan de header, die als "associated
-//!   data" meedoet) maakt het ontsleutelen onmogelijk. De 24-byte nonce is zo
-//!   groot dat een willekeurige nonce per schrijfactie veilig is.
-//! - **HKDF-SHA256** (`hkdf`): leidt uit de Argon2-sleutel aparte
-//!   subsleutels af voor het kluisbestand en voor de losse wachtwoorden en
-//!   notities ("key separation"), zodat één sleutel nooit voor twee doelen dient.
-//! - Willekeur komt alleen van de OS-CSPRNG (`getrandom`, op Linux de
-//!   `getrandom(2)`-systeemaanroep).
+//! - **Argon2id** (`argon2`): turns the master password plus a random salt
+//!   into a 256-bit key. Argon2id is deliberately slow and memory-hungry, so
+//!   guessing with GPUs becomes expensive.
+//! - **XChaCha20-Poly1305** (`chacha20poly1305`): encrypts and authenticates.
+//!   Any change to the file (including the header, which is part of the
+//!   "associated data") makes decryption impossible. The 24-byte nonce is
+//!   large enough that a random nonce per write is safe.
+//! - **HKDF-SHA256** (`hkdf`): derives separate subkeys from the Argon2 key
+//!   for the vault file and for the individual passwords and notes ("key
+//!   separation"), so one key never serves two purposes.
+//! - Randomness only comes from the OS CSPRNG (`getrandom`, on Linux the
+//!   `getrandom(2)` system call).
+//!
+//! The HKDF `info` labels and the AEAD associated-data strings are part of
+//! the on-disk format. They are fixed protocol constants and must never be
+//! changed (vaults would no longer open).
 
 use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::aead::AeadInOut;
@@ -26,58 +30,58 @@ use zeroize::Zeroizing;
 use crate::error::{Error, Result};
 use crate::secure_mem::SecureBuf;
 
-/// Lengte van de afgeleide sleutel (256 bits).
+/// Length of the derived key (256 bits).
 pub const KEY_LEN: usize = 32;
-/// Lengte van de salt die we bij nieuwe kluizen gebruiken.
+/// Length of the salt we use for new vaults.
 pub const SALT_LEN: usize = 32;
-/// XChaCha20-Poly1305 nonce-lengte.
+/// XChaCha20-Poly1305 nonce length.
 pub const NONCE_LEN: usize = 24;
-/// Poly1305 tag-lengte.
+/// Poly1305 tag length.
 pub const TAG_LEN: usize = 16;
 
-/// Instelbare Argon2id-parameters.
+/// Configurable Argon2id parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KdfParams {
-    /// Geheugengebruik in KiB.
+    /// Memory use in KiB.
     pub memory_kib: u32,
-    /// Aantal passes (t).
+    /// Number of passes (t).
     pub iterations: u32,
-    /// Aantal parallelle lanes (p).
+    /// Number of parallel lanes (p).
     pub parallelism: u32,
 }
 
 impl KdfParams {
-    /// Standaard: 64 MiB, t=3, p=4 (zoals gevraagd; sterker dan het OWASP-minimum).
+    /// Default: 64 MiB, t=3, p=4 (stronger than the OWASP minimum).
     pub const DEFAULT: KdfParams = KdfParams { memory_kib: 64 * 1024, iterations: 3, parallelism: 4 };
-    /// Ondergrens die we accepteren (8 MiB). Lager is te zwak.
+    /// Lower bound we accept (8 MiB). Anything lower is too weak.
     pub const MIN_MEMORY_KIB: u32 = 8 * 1024;
-    /// Bovengrens (4 GiB), zodat een gemanipuleerde header geen geheugen-DoS geeft.
+    /// Upper bound (4 GiB), so a tampered header cannot cause a memory DoS.
     pub const MAX_MEMORY_KIB: u32 = 4 * 1024 * 1024;
     pub const MAX_ITERATIONS: u32 = 64;
     pub const MAX_PARALLELISM: u32 = 64;
 
-    /// Controleer of de parameters binnen veilige grenzen liggen.
+    /// Check that the parameters are within safe limits.
     pub fn validate(&self) -> Result<()> {
         if self.memory_kib < Self::MIN_MEMORY_KIB {
-            return Err(Error::InvalidKdfParams("geheugen moet minstens 8 MiB zijn"));
+            return Err(Error::InvalidKdfParams("memory must be at least 8 MiB"));
         }
         if self.memory_kib > Self::MAX_MEMORY_KIB {
-            return Err(Error::InvalidKdfParams("geheugen mag hoogstens 4096 MiB zijn"));
+            return Err(Error::InvalidKdfParams("memory must be at most 4096 MiB"));
         }
         if self.iterations == 0 || self.iterations > Self::MAX_ITERATIONS {
-            return Err(Error::InvalidKdfParams("iteraties moeten tussen 1 en 64 liggen"));
+            return Err(Error::InvalidKdfParams("iterations must be between 1 and 64"));
         }
         if self.parallelism == 0 || self.parallelism > Self::MAX_PARALLELISM {
-            return Err(Error::InvalidKdfParams("parallelisme moet tussen 1 en 64 liggen"));
+            return Err(Error::InvalidKdfParams("parallelism must be between 1 and 64"));
         }
-        // Argon2 eist minstens 8 KiB per lane.
+        // Argon2 requires at least 8 KiB per lane.
         if self.memory_kib < 8 * self.parallelism {
-            return Err(Error::InvalidKdfParams("te weinig geheugen voor dit parallelisme"));
+            return Err(Error::InvalidKdfParams("not enough memory for this parallelism"));
         }
         Ok(())
     }
 
-    /// Of deze parameters zwakker zijn dan de standaard (voor een waarschuwing).
+    /// Whether these parameters are weaker than the default (for a warning).
     pub fn weaker_than_default(&self) -> bool {
         self.memory_kib < Self::DEFAULT.memory_kib || self.iterations < Self::DEFAULT.iterations
     }
@@ -89,7 +93,7 @@ impl Default for KdfParams {
     }
 }
 
-/// De 256-bit sleutel, in vergrendeld geheugen dat bij opruimen gewist wordt.
+/// The 256-bit key, in locked memory that is wiped when dropped.
 pub struct MasterKey(SecureBuf);
 
 impl MasterKey {
@@ -97,26 +101,26 @@ impl MasterKey {
         self.0.as_slice()
     }
 
-    /// Vergelijk twee sleutels in constante tijd.
+    /// Compare two keys in constant time.
     pub fn ct_eq(&self, other: &MasterKey) -> bool {
         use subtle::ConstantTimeEq;
         bool::from(self.as_bytes().ct_eq(other.as_bytes()))
     }
 
-    /// Leid met HKDF-SHA256 een subsleutel af voor één specifiek doel (`info`).
+    /// Derive a subkey for one specific purpose (`info`) with HKDF-SHA256.
     pub fn derive_subkey(&self, info: &[u8]) -> MasterKey {
         let hk = Hkdf::<Sha256>::new(None, self.as_bytes());
         let mut out = SecureBuf::zeroed(KEY_LEN);
-        hk.expand(info, out.as_mut_slice()).expect("32 bytes is een geldige HKDF-lengte");
+        hk.expand(info, out.as_mut_slice()).expect("32 bytes is a valid HKDF length");
         MasterKey(out)
     }
 
-    /// Een kopie in nieuw vergrendeld geheugen.
+    /// A copy in newly locked memory.
     pub fn duplicate(&self) -> MasterKey {
         MasterKey(SecureBuf::from_slice(self.as_bytes()))
     }
 
-    /// Maak een sleutel van ruwe bytes (alleen voor tests).
+    /// Create a key from raw bytes (tests only).
     #[cfg(test)]
     pub(crate) fn from_bytes_for_test(bytes: &[u8; KEY_LEN]) -> Self {
         MasterKey(SecureBuf::from_slice(bytes))
@@ -125,20 +129,19 @@ impl MasterKey {
 
 impl std::fmt::Debug for MasterKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("MasterKey([VERBORGEN])")
+        f.write_str("MasterKey([HIDDEN])")
     }
 }
 
-/// Sleutel voor de tweede versleutelingslaag: elk wachtwoord en elke notitie
-/// wordt afzonderlijk versleuteld (eigen willekeurige nonce per veld).
+/// Key for the second encryption layer: every field of every item is
+/// encrypted separately (own random nonce per field).
 ///
-/// Ook als de kluis geopend is, staan wachtwoorden en notities dus
-/// versleuteld in het geheugen. Ze worden pas ontsleuteld op het moment dat
-/// je er één opvraagt (`get --show`, klembord, export), en direct daarna
-/// weer gewist.
+/// Even while the vault is open, item contents therefore stay encrypted in
+/// memory. They are only decrypted at the moment you ask for one
+/// (`get --show`, clipboard, export), and wiped again right afterwards.
 pub struct ItemKey(MasterKey);
 
-/// Overhead per versleuteld veld: nonce + tag.
+/// Overhead per encrypted field: nonce + tag.
 pub const SEALED_OVERHEAD: usize = NONCE_LEN + TAG_LEN;
 
 impl ItemKey {
@@ -147,12 +150,12 @@ impl ItemKey {
     }
 
     fn aad(field: &str) -> Vec<u8> {
-        // Het veldtype doet mee in de authenticatie, zodat een versleuteld
-        // wachtwoord niet als notitie (of andersom) kan worden ingezet.
+        // The field name takes part in the authentication, so an encrypted
+        // password cannot be passed off as a note (or the other way around).
         format!("kluis/item/v1/{field}").into_bytes()
     }
 
-    /// Versleutel een veld. Resultaat: base64(nonce || ciphertext || tag).
+    /// Encrypt a field. Result: base64(nonce || ciphertext || tag).
     pub fn seal(&self, field: &str, plaintext: &str) -> Result<String> {
         use base64ct::{Base64, Encoding};
         let nonce = random_array::<NONCE_LEN>()?;
@@ -163,18 +166,18 @@ impl ItemKey {
         Ok(Base64::encode_string(&raw))
     }
 
-    /// Ontsleutel een veld dat met [`ItemKey::seal`] is versleuteld.
+    /// Decrypt a field that was encrypted with [`ItemKey::seal`].
     pub fn open(&self, field: &str, sealed: &str) -> Result<Zeroizing<String>> {
         let raw = decode_sealed(sealed)?;
         let (nonce, ct) = raw.split_at(NONCE_LEN);
-        let nonce: [u8; NONCE_LEN] = nonce.try_into().expect("lengte gecontroleerd");
+        let nonce: [u8; NONCE_LEN] = nonce.try_into().expect("length was checked");
         let plain = decrypt(&self.0, &nonce, &Self::aad(field), ct)?;
         let text = std::str::from_utf8(plain.as_slice()).map_err(|_| Error::CorruptPayload)?;
         Ok(Zeroizing::new(text.to_string()))
     }
 }
 
-/// Een vaste itemsleutel voor tests.
+/// A fixed item key for tests.
 #[cfg(test)]
 pub(crate) fn test_item_key(n: u8) -> ItemKey {
     ItemKey::new(MasterKey::from_bytes_for_test(&[n; KEY_LEN]))
@@ -182,11 +185,11 @@ pub(crate) fn test_item_key(n: u8) -> ItemKey {
 
 impl std::fmt::Debug for ItemKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("ItemKey([VERBORGEN])")
+        f.write_str("ItemKey([HIDDEN])")
     }
 }
 
-/// Controleer en decodeer een versleuteld veld (zonder te ontsleutelen).
+/// Validate and decode an encrypted field (without decrypting it).
 pub fn decode_sealed(sealed: &str) -> Result<Vec<u8>> {
     use base64ct::{Base64, Encoding};
     let raw = Base64::decode_vec(sealed).map_err(|_| Error::CorruptPayload)?;
@@ -196,28 +199,28 @@ pub fn decode_sealed(sealed: &str) -> Result<Vec<u8>> {
     Ok(raw)
 }
 
-/// Lengte van de klare tekst van een versleuteld veld (zonder te ontsleutelen).
+/// Length of the plaintext of an encrypted field (without decrypting it).
 pub fn sealed_plaintext_len(sealed: &str) -> usize {
     decode_sealed(sealed).map_or(0, |raw| raw.len() - SEALED_OVERHEAD)
 }
 
-/// Vul een buffer met cryptografisch veilige willekeurige bytes van het OS.
+/// Fill a buffer with cryptographically secure random bytes from the OS.
 pub fn fill_random(buf: &mut [u8]) -> Result<()> {
     getrandom::fill(buf).map_err(|_| Error::Rng)
 }
 
-/// Geef `N` willekeurige bytes terug.
+/// Return `N` random bytes.
 pub fn random_array<const N: usize>() -> Result<[u8; N]> {
     let mut out = [0u8; N];
     fill_random(&mut out)?;
     Ok(out)
 }
 
-/// Leid met Argon2id een sleutel af uit wachtwoord en salt.
+/// Derive a key from a password and salt with Argon2id.
 pub fn derive_key(password: &[u8], salt: &[u8], params: &KdfParams) -> Result<MasterKey> {
     params.validate()?;
     let argon_params = Params::new(params.memory_kib, params.iterations, params.parallelism, Some(KEY_LEN))
-        .map_err(|_| Error::InvalidKdfParams("geweigerd door Argon2"))?;
+        .map_err(|_| Error::InvalidKdfParams("rejected by Argon2"))?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon_params);
     let mut key = SecureBuf::zeroed(KEY_LEN);
     argon.hash_password_into(password, salt, key.as_mut_slice()).map_err(|_| Error::Kdf)?;
@@ -225,16 +228,16 @@ pub fn derive_key(password: &[u8], salt: &[u8], params: &KdfParams) -> Result<Ma
 }
 
 fn cipher(key: &MasterKey) -> XChaCha20Poly1305 {
-    // De cipher-struct bevat een kopie van de sleutel en wist die zelf bij Drop.
-    XChaCha20Poly1305::new_from_slice(key.as_bytes()).expect("sleutel is 32 bytes")
+    // The cipher struct holds a copy of the key and wipes it itself on Drop.
+    XChaCha20Poly1305::new_from_slice(key.as_bytes()).expect("key is 32 bytes")
 }
 
-/// Versleutel `plaintext`. Geeft `ciphertext || tag` terug.
+/// Encrypt `plaintext`. Returns `ciphertext || tag`.
 ///
-/// `aad` (associated data) wordt niet versleuteld maar wel geauthenticeerd.
+/// `aad` (associated data) is not encrypted but is authenticated.
 pub fn encrypt(key: &MasterKey, nonce: &[u8; NONCE_LEN], aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
-    // We versleutelen "in place": de buffer bevat heel even de klare tekst en
-    // wordt daarna direct overschreven met de ciphertext.
+    // We encrypt "in place": the buffer briefly holds the plaintext and is
+    // then immediately overwritten with the ciphertext.
     let mut buf = Vec::with_capacity(plaintext.len() + TAG_LEN);
     buf.extend_from_slice(plaintext);
     let nonce = XNonce::from(*nonce);
@@ -245,11 +248,11 @@ pub fn encrypt(key: &MasterKey, nonce: &[u8; NONCE_LEN], aad: &[u8], plaintext: 
     Ok(buf)
 }
 
-/// Ontsleutel en controleer `ciphertext || tag`.
+/// Decrypt and verify `ciphertext || tag`.
 ///
-/// De klare tekst komt in een [`SecureBuf`]. Bij een verkeerde sleutel of
-/// welke wijziging dan ook faalt dit met [`Error::Decrypt`]; de tag-controle
-/// in de crate is constant-time.
+/// The plaintext ends up in a [`SecureBuf`]. With a wrong key, or any change
+/// at all, this fails with [`Error::Decrypt`]; the tag check in the crate is
+/// constant-time.
 pub fn decrypt(key: &MasterKey, nonce: &[u8; NONCE_LEN], aad: &[u8], ciphertext: &[u8]) -> Result<SecureBuf> {
     let Some(msg_len) = ciphertext.len().checked_sub(TAG_LEN) else {
         return Err(Error::Truncated);
@@ -268,12 +271,12 @@ pub fn decrypt(key: &MasterKey, nonce: &[u8; NONCE_LEN], aad: &[u8], ciphertext:
 mod tests {
     use super::*;
 
-    /// Snelle parameters voor tests (sterkte is hier niet relevant).
+    /// Fast parameters for tests (strength is irrelevant here).
     pub(crate) const TEST_PARAMS: KdfParams =
         KdfParams { memory_kib: 8 * 1024, iterations: 1, parallelism: 1 };
 
     #[test]
-    fn standaardparameters_zijn_geldig() {
+    fn default_parameters_are_valid() {
         KdfParams::DEFAULT.validate().unwrap();
         assert_eq!(KdfParams::DEFAULT.memory_kib, 65536);
         assert_eq!(KdfParams::DEFAULT.iterations, 3);
@@ -283,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn ongeldige_parameters_worden_geweigerd() {
+    fn invalid_parameters_are_rejected() {
         let p = |m, t, par| KdfParams { memory_kib: m, iterations: t, parallelism: par };
         assert!(p(1024, 3, 4).validate().is_err());
         assert!(p(u32::MAX, 3, 4).validate().is_err());
@@ -294,9 +297,9 @@ mod tests {
     }
 
     #[test]
-    fn argon2id_officiele_testvector_rfc9106() {
-        // RFC 9106, paragraaf 5.3: controleert dat de crate echt Argon2id
-        // (versie 0x13) berekent.
+    fn argon2id_official_test_vector_rfc9106() {
+        // RFC 9106, section 5.3: checks that the crate really computes
+        // Argon2id (version 0x13).
         use argon2::{AssociatedData, ParamsBuilder};
         let params = ParamsBuilder::new()
             .m_cost(32)
@@ -314,11 +317,11 @@ mod tests {
     }
 
     #[test]
-    fn sleutelafleiding_is_deterministisch_en_salt_afhankelijk() {
-        let a = derive_key(b"wachtwoord", &[1u8; 32], &TEST_PARAMS).unwrap();
-        let b = derive_key(b"wachtwoord", &[1u8; 32], &TEST_PARAMS).unwrap();
-        let c = derive_key(b"wachtwoord", &[2u8; 32], &TEST_PARAMS).unwrap();
-        let d = derive_key(b"Wachtwoord", &[1u8; 32], &TEST_PARAMS).unwrap();
+    fn key_derivation_is_deterministic_and_salt_dependent() {
+        let a = derive_key(b"password", &[1u8; 32], &TEST_PARAMS).unwrap();
+        let b = derive_key(b"password", &[1u8; 32], &TEST_PARAMS).unwrap();
+        let c = derive_key(b"password", &[2u8; 32], &TEST_PARAMS).unwrap();
+        let d = derive_key(b"Password", &[1u8; 32], &TEST_PARAMS).unwrap();
         assert_eq!(a.as_bytes(), b.as_bytes());
         assert_ne!(a.as_bytes(), c.as_bytes());
         assert_ne!(a.as_bytes(), d.as_bytes());
@@ -326,30 +329,30 @@ mod tests {
     }
 
     #[test]
-    fn versleutelen_en_ontsleutelen() {
+    fn encrypt_and_decrypt() {
         let key = MasterKey::from_bytes_for_test(&[7u8; 32]);
         let nonce = random_array::<NONCE_LEN>().unwrap();
-        let ct = encrypt(&key, &nonce, b"header", b"geheime data").unwrap();
-        assert_eq!(ct.len(), b"geheime data".len() + TAG_LEN);
-        assert!(!ct.windows(6).any(|w| w == b"geheim"));
+        let ct = encrypt(&key, &nonce, b"header", b"secret data").unwrap();
+        assert_eq!(ct.len(), b"secret data".len() + TAG_LEN);
+        assert!(!ct.windows(6).any(|w| w == b"secret"));
         let pt = decrypt(&key, &nonce, b"header", &ct).unwrap();
-        assert_eq!(pt.as_slice(), b"geheime data");
+        assert_eq!(pt.as_slice(), b"secret data");
     }
 
     #[test]
-    fn elke_wijziging_faalt() {
+    fn any_change_fails() {
         let key = MasterKey::from_bytes_for_test(&[7u8; 32]);
         let other = MasterKey::from_bytes_for_test(&[8u8; 32]);
         let nonce = [3u8; NONCE_LEN];
-        let ct = encrypt(&key, &nonce, b"aad", b"inhoud").unwrap();
+        let ct = encrypt(&key, &nonce, b"aad", b"content").unwrap();
 
-        // Verkeerde sleutel.
+        // Wrong key.
         assert!(matches!(decrypt(&other, &nonce, b"aad", &ct), Err(Error::Decrypt)));
-        // Andere associated data (= gemanipuleerde header).
+        // Different associated data (= tampered header).
         assert!(matches!(decrypt(&key, &nonce, b"aaD", &ct), Err(Error::Decrypt)));
-        // Andere nonce.
+        // Different nonce.
         assert!(matches!(decrypt(&key, &[4u8; NONCE_LEN], b"aad", &ct), Err(Error::Decrypt)));
-        // Elke afzonderlijke bitflip in ciphertext of tag.
+        // Every single bit flip in the ciphertext or tag.
         for i in 0..ct.len() {
             for bit in 0..8 {
                 let mut bad = ct.clone();
@@ -357,14 +360,14 @@ mod tests {
                 assert!(matches!(decrypt(&key, &nonce, b"aad", &bad), Err(Error::Decrypt)));
             }
         }
-        // Afgekapt.
+        // Truncated.
         assert!(decrypt(&key, &nonce, b"aad", &ct[..ct.len() - 1]).is_err());
         assert!(matches!(decrypt(&key, &nonce, b"aad", &ct[..5]), Err(Error::Truncated)));
     }
 
     #[test]
-    fn hkdf_officiele_testvector_rfc5869() {
-        // RFC 5869, testgeval 3 (zonder salt en info): controleert de HKDF-crate.
+    fn hkdf_official_test_vector_rfc5869() {
+        // RFC 5869, test case 3 (no salt, no info): checks the HKDF crate.
         let hk = Hkdf::<Sha256>::new(None, &[0x0b; 22]);
         let mut okm = [0u8; 42];
         hk.expand(&[], &mut okm).unwrap();
@@ -376,39 +379,39 @@ mod tests {
     }
 
     #[test]
-    fn subsleutels_zijn_verschillend() {
+    fn subkeys_are_different() {
         let m = MasterKey::from_bytes_for_test(&[7u8; 32]);
-        let a = m.derive_subkey(b"doel a");
-        let b = m.derive_subkey(b"doel b");
+        let a = m.derive_subkey(b"purpose a");
+        let b = m.derive_subkey(b"purpose b");
         assert!(!a.ct_eq(&b));
         assert!(!a.ct_eq(&m));
-        assert!(a.ct_eq(&m.derive_subkey(b"doel a")));
+        assert!(a.ct_eq(&m.derive_subkey(b"purpose a")));
     }
 
     #[test]
-    fn veldversleuteling() {
+    fn field_encryption() {
         let k = ItemKey::new(MasterKey::from_bytes_for_test(&[1u8; 32]));
         let other = ItemKey::new(MasterKey::from_bytes_for_test(&[2u8; 32]));
-        let a = k.seal("password", "geheim").unwrap();
-        let b = k.seal("password", "geheim").unwrap();
-        assert_ne!(a, b, "elke versleuteling heeft een eigen nonce");
-        assert!(!a.contains("geheim"));
-        assert_eq!(k.open("password", &a).unwrap().as_str(), "geheim");
+        let a = k.seal("password", "secret").unwrap();
+        let b = k.seal("password", "secret").unwrap();
+        assert_ne!(a, b, "every encryption has its own nonce");
+        assert!(!a.contains("secret"));
+        assert_eq!(k.open("password", &a).unwrap().as_str(), "secret");
         assert_eq!(sealed_plaintext_len(&a), 6);
         assert_eq!(sealed_plaintext_len(&k.seal("password", "").unwrap()), 0);
-        // Verkeerde sleutel, verkeerd veldtype, gemanipuleerd of onzin: altijd fout.
+        // Wrong key, wrong field type, tampered or nonsense: always an error.
         assert!(matches!(other.open("password", &a), Err(Error::Decrypt)));
         assert!(matches!(k.open("notes", &a), Err(Error::Decrypt)));
         let mut raw = decode_sealed(&a).unwrap();
         raw[30] ^= 1;
         use base64ct::{Base64, Encoding};
         assert!(matches!(k.open("password", &Base64::encode_string(&raw)), Err(Error::Decrypt)));
-        assert!(matches!(k.open("password", "geen base64!"), Err(Error::CorruptPayload)));
+        assert!(matches!(k.open("password", "not base64!"), Err(Error::CorruptPayload)));
         assert!(matches!(k.open("password", "AAAA"), Err(Error::CorruptPayload)));
     }
 
     #[test]
-    fn nonces_zijn_willekeurig() {
+    fn nonces_are_random() {
         let a = random_array::<NONCE_LEN>().unwrap();
         let b = random_array::<NONCE_LEN>().unwrap();
         assert_ne!(a, b);
