@@ -1,6 +1,6 @@
-//! # kluis
+//! # cakepass
 //!
-//! Core library of the offline password manager `kluis` (CakePass).
+//! Core library of the offline password manager `cakepass` (CakePass).
 //!
 //! The library contains everything except the user interface, so a TUI or
 //! GUI can be built on top of it later without rewriting the core:

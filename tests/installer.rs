@@ -1,7 +1,7 @@
 //! Tests for `install.sh`.
 //!
 //! The installer is run for real (as `curl ... | bash` would run it: the script
-//! arrives on stdin), but with fake `pacman`, `sudo`, `makepkg` and `kluis`
+//! arrives on stdin), but with fake `pacman`, `sudo`, `makepkg` and `cakepass`
 //! commands that only write down that they were called, and a local bare git
 //! repository standing in for GitHub. So no network, no root and no real
 //! package installation are needed.
@@ -81,8 +81,9 @@ impl World {
         write_script(
             &bin.join("pacman"),
             &format!(
-                "echo \"pacman $*\" >> '{log}'\ncase \"$1\" in -Q) [ -f '{m}' ] && exit 0 || exit 1 ;; esac\nexit 0",
-                m = w.path("everything-installed").display()
+                "echo \"pacman $*\" >> '{log}'\ncase \"$1\" in -Q) if [ \"$2\" = kluis ]; then [ -f '{old}' ] && exit 0 || exit 1; fi; [ -f '{m}' ] && exit 0 || exit 1 ;; esac\nexit 0",
+                m = w.path("everything-installed").display(),
+                old = w.path("old-kluis-installed").display()
             ),
         );
         write_script(&bin.join("sudo"), &format!("echo \"sudo $*\" >> '{log}'\nexec \"$@\""));
@@ -94,9 +95,9 @@ impl World {
             ),
         );
         write_script(
-            &bin.join("kluis"),
+            &bin.join("cakepass"),
             &format!(
-                "case \"$1\" in\n  --version) echo 'kluis 9.9.9 (commit abc123abc123)' ;;\n  setup) echo 'kluis setup ran' >> '{log}' ;;\n  *) echo \"kluis $*\" >> '{log}' ;;\nesac\nexit 0"
+                "case \"$1\" in\n  --version) echo 'cakepass 9.9.9 (commit abc123abc123)' ;;\n  setup) echo 'cakepass setup ran' >> '{log}' ;;\n  *) echo \"cakepass $*\" >> '{log}' ;;\nesac\nexit 0"
             ),
         );
         fs::create_dir(w.path("home")).unwrap();
@@ -172,7 +173,7 @@ fn fresh_install_from_a_pipe() {
     let r = w.piped(&["--yes", "--no-setup"], &[("WAYLAND_DISPLAY", "wayland-0")]);
     assert!(r.ok(), "stdout: {}\nstderr: {}", r.stdout(), r.stderr());
     assert!(r.stdout().contains("All done"), "{}", r.stdout());
-    assert!(r.stdout().contains("installed: kluis 9.9.9"), "{}", r.stdout());
+    assert!(r.stdout().contains("installed: cakepass 9.9.9"), "{}", r.stdout());
 
     let calls = w.calls();
     // Packages: missing ones are installed with sudo pacman, including the Wayland clipboard tool.
@@ -185,6 +186,21 @@ fn fresh_install_from_a_pipe() {
     assert!(build.ends_with("cakepass/packaging/arch"), "{build}");
     assert!(w.source_dir().join(".git").exists());
     assert!(!calls.iter().any(|c| c.contains("setup ran")), "--no-setup skips the wizard");
+}
+
+#[test]
+fn the_old_kluis_package_is_replaced() {
+    let w = World::new();
+    fs::write(w.path("old-kluis-installed"), "").unwrap();
+    assert!(w.piped(&["--yes", "--no-setup"], &[]).ok());
+    let calls = w.calls();
+    let removed = calls.iter().position(|c| c == "pacman -R --noconfirm kluis").expect("old package removed");
+    let built = calls.iter().position(|c| c.starts_with("makepkg")).expect("new package built");
+    assert!(removed < built, "remove the old one before installing: {calls:?}");
+    // Nothing to remove on a normal install.
+    let fresh = World::new();
+    assert!(fresh.piped(&["--yes", "--no-setup"], &[]).ok());
+    assert!(fresh.calls().iter().all(|c| c != "pacman -R --noconfirm kluis"));
 }
 
 #[test]
@@ -274,7 +290,7 @@ fn uninstall_keeps_the_vault() {
     let w = World::new();
     let r = w.piped(&["--uninstall", "--yes"], &[]);
     assert!(r.ok(), "{}", r.stderr());
-    assert!(w.calls().iter().any(|c| c == "pacman -R --noconfirm kluis"));
+    assert!(w.calls().iter().any(|c| c == "pacman -R --noconfirm cakepass"));
     assert!(r.stdout().contains("was NOT removed"));
     assert!(w.calls().iter().all(|c| !c.starts_with("makepkg")));
 }
@@ -336,7 +352,7 @@ fn setup_runs_in_a_real_terminal() {
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "{text}\n{}", String::from_utf8_lossy(&out.stderr));
-    assert!(w.calls().iter().any(|c| c == "kluis setup ran"), "setup should run: {:?}", w.calls());
+    assert!(w.calls().iter().any(|c| c == "cakepass setup ran"), "setup should run: {:?}", w.calls());
     assert!(text.contains("A short wizard follows"), "{text}");
 }
 

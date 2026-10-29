@@ -225,7 +225,7 @@ impl io::Write for CountingWriter {
     }
 }
 
-/// Result of [`harden_process`], for `kluis info`.
+/// Result of [`harden_process`], for `cakepass info`.
 #[derive(Debug, Clone, Copy)]
 pub struct Hardening {
     pub core_dumps_disabled: bool,
@@ -261,7 +261,7 @@ pub fn memlock_limit() -> Option<u64> {
     Some(lim.rlim_cur)
 }
 
-/// Try to lock a single page; used by `kluis info`.
+/// Try to lock a single page; used by `cakepass info`.
 pub fn mlock_works() -> bool {
     SecureBuf::with_capacity(1).is_locked()
 }

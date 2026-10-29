@@ -6,13 +6,13 @@
 
 use std::path::PathBuf;
 
+use cakepass::vault::Kind;
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
-use kluis::vault::Kind;
 
 use super::update::AutoMode;
 
-/// Version for `kluis --version`: number + the git commit it was built from.
-const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (commit ", env!("KLUIS_GIT_COMMIT"), ")");
+/// Version for `cakepass --version`: number + the git commit it was built from.
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (commit ", env!("CAKEPASS_GIT_COMMIT"), ")");
 
 /// Parse an item type ("login", "api" or "note") for clap.
 fn parse_kind(s: &str) -> Result<Kind, String> {
@@ -26,13 +26,13 @@ fn with_template(cmd: clap::Command) -> clap::Command {
     cmd.help_template(HELP_TEMPLATE).mut_subcommands(with_template)
 }
 
-/// The full command-line definition of `kluis`.
+/// The full command-line definition of `cakepass`.
 pub fn command() -> clap::Command {
     use clap::CommandFactory;
     with_template(Cli::command())
 }
 
-/// The definition used to parse lines typed inside `kluis shell`.
+/// The definition used to parse lines typed inside `cakepass shell`.
 pub fn shell_command() -> clap::Command {
     use clap::CommandFactory;
     with_template(ShellLine::command())
@@ -40,9 +40,9 @@ pub fn shell_command() -> clap::Command {
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "kluis",
+    name = "cakepass",
     version = VERSION,
-    about = "CakePass – offline, encrypted vault for passwords, API keys and notes\n(command: kluis)",
+    about = "CakePass – offline, encrypted vault for passwords, API keys and notes\n(command: cakepass)",
     help_template = HELP_TEMPLATE,
     disable_help_flag = true,
     disable_version_flag = true,
@@ -51,20 +51,21 @@ pub fn shell_command() -> clap::Command {
     subcommand_value_name = "COMMAND",
     next_help_heading = "Options",
     after_help = "Examples:\n  \
-        kluis setup                   first-time setup (animation, master password)\n  \
-        kluis                         login screen + interactive mode\n  \
-        kluis add GitHub              add a login (asks for every field)\n  \
-        kluis add OpenAI --type api   store an API key\n  \
-        kluis add Recovery --type note   secure note\n  \
-        kluis get GitHub              copy the password to the clipboard (20 s)\n  \
-        kluis generate --passphrase   make a passphrase\n  \
-        kluis config set animation off   turn the intro animation off\n  \
-        kluis --update                update CakePass to the newest version (your vault is kept)\n\n\
+        cakepass setup                   first-time setup (animation, master password)\n  \
+        cakepass                         login screen + interactive mode\n  \
+        cakepass add GitHub              add a login (asks for every field)\n  \
+        cakepass add OpenAI --type api   store an API key\n  \
+        cakepass add Recovery --type note   secure note\n  \
+        cakepass get GitHub              copy the password to the clipboard (20 s)\n  \
+        cakepass generate --passphrase   make a passphrase\n  \
+        cakepass generate --save Mail    generate, change it if you like, save it\n  \
+        cakepass config set animation off   turn the intro animation off\n  \
+        cakepass --update                update CakePass to the newest version (your vault is kept)\n\n\
         Passwords are never passed as arguments; you type them in a hidden prompt."
 )]
 pub struct Cli {
-    /// Path to the vault file [default: ~/.local/share/kluis/vault.enc]
-    #[arg(long, global = true, env = "KLUIS_VAULT", hide_env_values = true, value_name = "PATH")]
+    /// Path to the vault file [default: ~/.local/share/cakepass/vault.enc]
+    #[arg(long, global = true, env = "CAKEPASS_VAULT", hide_env_values = true, value_name = "PATH")]
     pub vault: Option<PathBuf>,
 
     /// Do not use colors
@@ -88,10 +89,10 @@ pub struct Cli {
     pub command: Option<Cmd>,
 }
 
-/// Used to parse lines inside `kluis shell`.
+/// Used to parse lines inside `cakepass shell`.
 #[derive(Parser, Debug)]
 #[command(
-    name = "kluis",
+    name = "cakepass",
     help_template = "{all-args}",
     disable_help_flag = true,
     disable_version_flag = true,
@@ -122,14 +123,14 @@ pub enum Cmd {
         kdf: KdfArgs,
     },
 
-    /// Add a login, API key or note (without options, kluis asks for everything)
+    /// Add a login, API key or note (without options, cakepass asks for everything)
     Add(AddArgs),
 
     /// Show an item and copy its secret (password, key, note) to the clipboard
     #[command(alias = "show")]
     Get(GetArgs),
 
-    /// Change an item (without options, kluis asks for each field)
+    /// Change an item (without options, cakepass asks for each field)
     Edit(EditArgs),
 
     /// Remove an item
@@ -153,19 +154,23 @@ pub enum Cmd {
         kind: Option<Kind>,
     },
 
-    /// Search name, type, tags, username and URL
+    /// Search name, type, tags, username, e-mail address and URL
     #[command(alias = "find")]
     Search {
         /// Search term (case-insensitive)
         query: String,
     },
 
-    /// Generate a password or passphrase (to the clipboard)
+    /// Generate a password or passphrase; in a terminal you can view, edit,
+    /// regenerate, copy or save it straight into the vault
     #[command(alias = "gen")]
     Generate {
         /// Show the result on screen instead of copying it
         #[arg(long)]
         show: bool,
+        /// Save the result as a new login with this name (asks for the master password)
+        #[arg(long, value_name = "NAME")]
+        save: Option<String>,
         #[command(flatten)]
         opts: GenArgs,
     },
@@ -185,7 +190,7 @@ pub enum Cmd {
 
     /// Add items from an encrypted export file
     Import {
-        /// Export file made with `kluis export`
+        /// Export file made with `cakepass export`
         file: PathBuf,
     },
 
@@ -213,7 +218,7 @@ pub enum Cmd {
     /// Interactive mode: unlock once, locks after inactivity
     Shell {
         /// Lock automatically after this many seconds without input
-        /// [default: 300, or the value set with `kluis config`]
+        /// [default: 300, or the value set with `cakepass config`]
         #[arg(long, value_name = "SECONDS")]
         timeout: Option<u64>,
     },
@@ -225,7 +230,7 @@ pub enum Cmd {
     },
 }
 
-/// What `kluis config` can do.
+/// What `cakepass config` can do.
 #[derive(Subcommand, Debug, Clone)]
 pub enum ConfigAction {
     /// Show the current settings
@@ -342,9 +347,12 @@ pub struct AddArgs {
     /// Type of item: login, api (API key/token) or note
     #[arg(long = "type", short = 'k', value_name = "TYPE", value_parser = parse_kind, default_value = "login")]
     pub kind: Kind,
-    /// Username or e-mail address (for an API key: account or key ID)
+    /// Username (for an API key: account or key ID)
     #[arg(short, long)]
     pub username: Option<String>,
+    /// E-mail address that belongs to this item
+    #[arg(short, long)]
+    pub email: Option<String>,
     /// Web address (for an API key: the service)
     #[arg(long)]
     pub url: Option<String>,
@@ -366,10 +374,13 @@ pub struct GetArgs {
     #[arg(long)]
     pub show: bool,
     /// Copy the username instead of the secret
-    #[arg(long, conflicts_with = "show")]
+    #[arg(long, conflicts_with_all = ["show", "copy_email"])]
     pub copy_username: bool,
+    /// Copy the e-mail address instead of the secret
+    #[arg(long, conflicts_with_all = ["show", "copy_username"])]
+    pub copy_email: bool,
     /// Copy nothing
-    #[arg(long, conflicts_with = "copy_username")]
+    #[arg(long, conflicts_with_all = ["copy_username", "copy_email"])]
     pub no_copy: bool,
 }
 
@@ -383,6 +394,9 @@ pub struct EditArgs {
     /// New username
     #[arg(short, long)]
     pub username: Option<String>,
+    /// New e-mail address
+    #[arg(short, long)]
+    pub email: Option<String>,
     /// New web address
     #[arg(long)]
     pub url: Option<String>,

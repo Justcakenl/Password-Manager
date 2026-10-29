@@ -3,10 +3,10 @@
 ![CakePass login screen](docs/cakepass-login.gif)
 
 An **offline vault for the terminal** on Arch Linux, for **passwords, API keys
-and secure notes**. The command is called `kluis` (Dutch for "vault").
+and secure notes**. The command is called `cakepass`.
 Everything lives in one encrypted file on your own computer.
 No cloud, no account, no telemetry. The program itself never makes a network
-connection; only `kluis --update` lets `git` fetch your newest version.
+connection; only `cakepass --update` lets `git` fetch your newest version.
 
 > 🔒 This is a **private repository**. Only people you give access on GitHub
 > (Settings → Collaborators) can see and install the code. Your vault itself is
@@ -60,6 +60,10 @@ Options: `--yes` (no confirmations), `--no-setup`, `--dir DIR`, `--branch B`,
 
 Prefer to do it by hand? See [Manual install](#manual-install).
 
+> **Coming from the first version?** The command used to be called `kluis`. It is
+> now `cakepass`. Run the installer again: the old package is replaced and your
+> old `kluis` folders are moved to `cakepass` automatically, so your vault is kept.
+
 ## Contents
 
 1. [First-time setup](#first-time-setup)
@@ -84,7 +88,7 @@ Prefer to do it by hand? See [Manual install](#manual-install).
 The installer starts it for you. You can also run it yourself at any time:
 
 ```bash
-kluis setup
+cakepass setup
 ```
 
 ```text
@@ -95,63 +99,66 @@ Step 2 of 3 — Auto-lock
 Step 3 of 3 — Master password
   New master password:
   Repeat master password:
-✔ Vault created: ~/.local/share/kluis/vault.enc
+✔ Vault created: ~/.local/share/cakepass/vault.enc
 ```
 
 - **Animation**: the 3D CakePass logo that spins in when you start the program.
   Turn it off if you prefer a still logo; change it later with
-  `kluis config set animation off`.
+  `cakepass config set animation off`.
 - **Auto-lock**: after this many idle minutes the interactive mode locks itself
   and wipes your secrets from memory.
-- **Master password**: the **only** key to your vault. `kluis` checks it with
+- **Master password**: the **only** key to your vault. `cakepass` checks it with
   zxcvbn (score 3 of 4 or higher). A great choice is a phrase of five or more
-  random words; let kluis make one: `kluis generate --passphrase --show`.
+  random words; let cakepass make one: `cakepass generate --passphrase --show`.
   If you forget it, your data is gone ([details](#forgot-your-master-password)).
 
-If a vault already exists, `kluis setup` only asks the first two questions and
+If a vault already exists, `cakepass setup` only asks the first two questions and
 leaves your vault exactly as it is.
 
-The vault goes to `~/.local/share/kluis/vault.enc` (or
-`$XDG_DATA_HOME/kluis/vault.enc`). Use `--vault <path>` or the environment
-variable `KLUIS_VAULT` to choose another place.
+The vault goes to `~/.local/share/cakepass/vault.enc` (or
+`$XDG_DATA_HOME/cakepass/vault.enc`). Use `--vault <path>` or the environment
+variable `CAKEPASS_VAULT` to choose another place.
 
 ---
 
 ## Daily use
 
-Type `kluis` to open the login screen and the interactive mode (see
+Type `cakepass` to open the login screen and the interactive mode (see
 [below](#login-screen-settings-and-auto-lock)). Or run single commands; each one
 asks for your master password in a hidden prompt (you see nothing while typing,
 that is on purpose).
 
 | What | Command |
 |---|---|
-| Add an item (kluis asks for each field) | `kluis add GitHub` |
-| Add with options and a generated password | `kluis add GitHub -u john --url https://github.com -t work,code --generate` |
-| Copy the password to the clipboard (20 s) | `kluis get GitHub` |
-| Copy the username instead | `kluis get GitHub --copy-username` |
-| Show password and notes on screen | `kluis get GitHub --show` |
-| List all items (no secrets) | `kluis list` |
-| Only items with a tag / of a type | `kluis list --tag work` / `kluis list --type api` |
-| Search name, type, tags, username, URL | `kluis search git` |
-| Change an item (asks per field) | `kluis edit GitHub` |
-| Only generate a new password | `kluis edit GitHub --generate` |
-| Rename | `kluis edit GitHub --rename "GitHub work"` |
-| Remove | `kluis rm GitHub` |
-| Change the master password | `kluis passwd` |
-| Information about the vault and security (no password needed) | `kluis info` |
-| Help | `kluis --help` or `kluis add --help` |
+| Add an item (cakepass asks for each field) | `cakepass add GitHub` |
+| Add with options and a generated password | `cakepass add GitHub -u john -e john@example.org --url https://github.com -t work,code --generate` |
+| Copy the password to the clipboard (20 s) | `cakepass get GitHub` |
+| Copy the username / the e-mail address instead | `cakepass get GitHub --copy-username` / `--copy-email` |
+| Show password and notes on screen | `cakepass get GitHub --show` |
+| List all items (no secrets) | `cakepass list` |
+| Only items with a tag / of a type | `cakepass list --tag work` / `cakepass list --type api` |
+| Search name, type, tags, username, e-mail, URL | `cakepass search git` |
+| Change an item (asks per field) | `cakepass edit GitHub` |
+| Only generate a new password | `cakepass edit GitHub --generate` |
+| Change only the e-mail address | `cakepass edit GitHub --email john@work.example` (`-e ""` clears it) |
+| Generate a password, tweak it and save it | `cakepass generate --save GitHub` |
+| Rename | `cakepass edit GitHub --rename "GitHub work"` |
+| Remove | `cakepass rm GitHub` |
+| Change the master password | `cakepass passwd` |
+| Information about the vault and security (no password needed) | `cakepass info` |
+| Help | `cakepass --help` or `cakepass add --help` |
 
 Tips:
 
-- Names are case-insensitive: `kluis get github` works too.
-- Put names with spaces in quotes: `kluis get "My Bank"`.
-- If you leave the password empty in `add`, kluis generates a strong 24-character
-  password and puts it on the clipboard.
+- Names are case-insensitive: `cakepass get github` works too.
+- Put names with spaces in quotes: `cakepass get "My Bank"`.
+- If you leave the password empty in `add`, cakepass generates a strong 24-character
+  password. In a terminal you can then **view, edit, regenerate or accept** it
+  before it is saved (see [Generating passwords](#generating-passwords)).
 - **You never pass passwords as arguments.** That is deliberate: arguments are
   visible to other programs (`ps`) and end up in your shell history.
 - To feed a password from another program, use a pipe, for example
-  `my-generator | kluis add Site -u john --url x -t y`. Do **not** use
+  `my-generator | cakepass add Site -u john --url x -t y`. Do **not** use
   `echo secret | ...`, because then the secret is in your shell history.
 
 ---
@@ -163,21 +170,22 @@ You can store three kinds of things. All of them are encrypted equally strongly
 
 | Type | What | Add it with |
 |---|---|---|
-| **login** | username, URL, password, notes | `kluis add GitHub` |
-| **api** | account/key ID, service, the API key or token, notes | `kluis add OpenAI --type api` |
-| **note** | multi-line text, e.g. recovery codes, PINs, Wi-Fi | `kluis add "Recovery codes" --type note` |
+| **login** | username, e-mail address, URL, password, notes | `cakepass add GitHub` |
+| **api** | account/key ID, e-mail address, service, the API key or token, notes | `cakepass add OpenAI --type api` |
+| **note** | multi-line text, e.g. recovery codes, PINs, Wi-Fi | `cakepass add "Recovery codes" --type note` |
 
 ```text
-$ kluis add OpenAI --type api
+$ cakepass add OpenAI --type api
 Master password:
 Account or key ID (optional): project-1
+E-mail address (optional): me@work.example
 Service URL (optional): https://api.openai.com
 Tags, separated by commas (optional): ai, work
 Notes (optional, one line):
 API key (hidden input; pasting is fine):
 ✔ API key 'OpenAI' saved (encrypted).
 
-$ kluis add "Recovery codes" --type note
+$ cakepass add "Recovery codes" --type note
 Master password:
 Tags, separated by commas (optional): google
 Type or paste the text of your note (it is stored encrypted):
@@ -188,9 +196,9 @@ Type or paste the text of your note (it is stored encrypted):
 ✔ Note 'Recovery codes' saved (encrypted).
 ```
 
-- `kluis get OpenAI` copies the API key to the clipboard (20 s); `kluis get "Recovery codes"` copies the note text. With `--show` you see it on screen.
-- `kluis list --type api` or `--type note` shows only that type.
-- Replace a key: `kluis edit OpenAI --password`. Change a note: `kluis edit "Recovery codes" --notes`.
+- `cakepass get OpenAI` copies the API key to the clipboard (20 s); `cakepass get "Recovery codes"` copies the note text. With `--show` you see it on screen.
+- `cakepass list --type api` or `--type note` shows only that type.
+- Replace a key: `cakepass edit OpenAI --password`. Change a note: `cakepass edit "Recovery codes" --notes`.
 - An API key is typed in a hidden prompt (pasting with Ctrl+Shift+V works); it
   never ends up in your shell history.
 
@@ -199,39 +207,66 @@ Type or paste the text of your note (it is stored encrypted):
 ## Generating passwords
 
 ```bash
-kluis generate                         # 24 characters → clipboard
-kluis generate --show -l 32            # 32 characters, on screen
-kluis generate --no-symbols            # without symbols
-kluis generate --no-lookalikes         # without 0 O 1 l I |
-kluis generate --passphrase            # 6 words, e.g. grape-lantern-oyster-…
-kluis generate -p -w 8 --separator .   # 8 words with dots
+cakepass generate                         # 24 characters → clipboard
+cakepass generate --show -l 32            # 32 characters, on screen
+cakepass generate --no-symbols            # without symbols
+cakepass generate --no-lookalikes         # without 0 O 1 l I |
+cakepass generate --passphrase            # 6 words, e.g. grape-lantern-oyster-…
+cakepass generate -p -w 8 --separator .   # 8 words with dots
 ```
 
 Passphrases come from the EFF diceware word list (7776 words, 12.9 bits per
 word). Six words give about 77 bits, which is plenty for a master password.
 
+### View, edit and save in one go
+
+In a terminal, a generated password is not final until you say so. You get a
+small menu:
+
+```text
+$ cakepass generate --save GitHub
+Master password:
+🔑 Password: 24 characters, about 156 bits
+   [Enter] save  [v]iew  [e]dit  [r]egenerate  [c]opy  [q]uit without saving
+   ❯ r                      ← not happy? make another one
+   ❯ e                      ← or type your own (hidden, asked twice)
+   ❯                        ← Enter: save it
+Username (optional): john
+E-mail address (optional): john@example.org
+…
+✔ Login 'GitHub' saved (encrypted).
+```
+
+- `generate` without `--save` shows the same menu with `[s]ave to vault`; Enter
+  copies it to the clipboard like before.
+- The same menu appears when `add` or `edit` generate a password for you
+  (`--generate`, an empty password, or choosing `g` in `edit`).
+- `v` prints the password on screen, `e` lets you type a password of your own
+  (cakepass tells you if it is weak), `q` throws it away.
+- In scripts (no terminal) there is no menu: `generate` behaves exactly as before.
+
 ---
 
 ## Login screen, settings and auto-lock
 
-Type `kluis` (or `kluis shell`) and you get the **CakePass login screen**: a 3D
+Type `cakepass` (or `cakepass shell`) and you get the **CakePass login screen**: a 3D
 logo that spins into view (pink frosting, cake layers, sprinkles and a shine),
 then the question for your master password. You get three attempts. If there is
-no vault yet, `kluis` starts the [first-time setup](#first-time-setup) instead.
+no vault yet, `cakepass` starts the [first-time setup](#first-time-setup) instead.
 
 - The logo is truly 3D: every letter is a block with depth, with light, shadow
   and perspective, drawn with half blocks (▀) in truecolor.
 - It only shows in a color terminal. In scripts and pipes it never appears.
-- **Animation on/off**: `kluis config set animation off` shows a still logo
-  instead. For a single run: `--no-animation` or `KLUIS_NO_ANIMATION=1`.
-  Just look at it: `kluis logo`.
+- **Animation on/off**: `cakepass config set animation off` shows a still logo
+  instead. For a single run: `--no-animation` or `CAKEPASS_NO_ANIMATION=1`.
+  Just look at it: `cakepass logo`.
 
-**Settings** are kept in `~/.config/kluis/config` (plain text, no secrets):
+**Settings** are kept in `~/.config/cakepass/config` (plain text, no secrets):
 
 ```bash
-kluis config                           # show the settings
-kluis config set animation off         # on / off
-kluis config set lock-timeout 10       # minutes of inactivity before auto-lock
+cakepass config                           # show the settings
+cakepass config set animation off         # on / off
+cakepass config set lock-timeout 10       # minutes of inactivity before auto-lock
 ```
 
 **Auto-lock.** A single command asks for your master password every time; when
@@ -247,7 +282,7 @@ cakepass ❯ exit
 
 - After the configured idle time (default 5 minutes) the key is wiped and the
   mode ends. That also happens if you walk away in the middle of a question.
-  One-off override: `kluis shell --timeout 120` (seconds).
+  One-off override: `cakepass shell --timeout 120` (seconds).
 - `passwd` and `export` ask for the master password again.
 - `exit`, `quit`, `lock` or Ctrl+D locks at once.
 - On locking, the screen **and the scrollback** of your terminal are cleared, so
@@ -258,18 +293,18 @@ cakepass ❯ exit
 
 ## Switching from another password manager (CSV)
 
-`kluis` reads CSV exports from **Bitwarden, KeePassXC, 1Password, Firefox and
+`cakepass` reads CSV exports from **Bitwarden, KeePassXC, 1Password, Firefox and
 Chrome/Chromium**, among others.
 
 ```bash
-kluis import-csv ~/Downloads/bitwarden_export.csv
+cakepass import-csv ~/Downloads/bitwarden_export.csv
 ```
 
 > ⚠️ **A CSV export is NOT encrypted.** Anyone who can read the file sees all
 > your passwords. Do it like this:
 >
 > 1. Export, import and delete right afterwards.
-> 2. After importing, `kluis` offers to overwrite and delete the file. Say yes.
+> 2. After importing, `cakepass` offers to overwrite and delete the file. Say yes.
 > 3. Also check your trash, your Downloads folder and any backups or sync
 >    folders (Nextcloud, Syncthing, Dropbox).
 > 4. On SSDs and on btrfs/ZFS, overwriting is no guarantee that the data is
@@ -281,8 +316,8 @@ Items with a name that already exists get a sequence number, for example
 ### Encrypted export and import (between your own computers)
 
 ```bash
-kluis export /run/media/john/usb/kluis-export.kluis   # asks for an export password
-kluis import /path/to/kluis-export.kluis               # on the other computer
+cakepass export /run/media/john/usb/cakepass-export.cakepass   # asks for an export password
+cakepass import /path/to/cakepass-export.cakepass               # on the other computer
 ```
 
 The export file is encrypted with a password of its own (the same strong
@@ -298,10 +333,10 @@ Which files exist:
 
 | File | What |
 |---|---|
-| `~/.local/share/kluis/vault.enc` | your vault (encrypted) |
-| `~/.local/share/kluis/vault.enc.bak` | automatic copy of the **previous** version (encrypted) |
-| `~/.local/share/kluis/vault.enc.pre-update-<time>` | extra copies made before an update (last three kept) |
-| `~/.local/share/kluis/vault.enc.lock` | empty lock file, may be deleted |
+| `~/.local/share/cakepass/vault.enc` | your vault (encrypted) |
+| `~/.local/share/cakepass/vault.enc.bak` | automatic copy of the **previous** version (encrypted) |
+| `~/.local/share/cakepass/vault.enc.pre-update-<time>` | extra copies made before an update (last three kept) |
+| `~/.local/share/cakepass/vault.enc.lock` | empty lock file, may be deleted |
 
 How:
 
@@ -309,25 +344,25 @@ How:
    to a second place as well. The file is encrypted, so that is safe as long as
    your master password is strong.
    ```bash
-   cp ~/.local/share/kluis/vault.enc /run/media/$USER/USB/kluis-$(date +%F).enc
+   cp ~/.local/share/cakepass/vault.enc /run/media/$USER/USB/cakepass-$(date +%F).enc
    ```
 2. **Test your backup**: open it without changing anything.
    ```bash
-   kluis --vault /run/media/$USER/USB/kluis-2026-10-29.enc list
+   cakepass --vault /run/media/$USER/USB/cakepass-2026-10-29.enc list
    ```
 3. Restoring = putting the backup file back as `vault.enc`.
 4. Did the last change go wrong? The previous version is in `vault.enc.bak`:
    ```bash
-   kluis --vault ~/.local/share/kluis/vault.enc.bak list
+   cakepass --vault ~/.local/share/cakepass/vault.enc.bak list
    ```
 
 Good to know:
 
 - A backup opens with the master password that applied **when you made it**.
-  After `kluis passwd`, an old copy still works with the old password. If your
+  After `cakepass passwd`, an old copy still works with the old password. If your
   old password leaked, throw away old copies and make new ones. (The automatic
   `.bak` is re-encrypted with the new password right away.)
-- After `kluis rm`, the removed item is still in `.bak` until the next change.
+- After `cakepass rm`, the removed item is still in `.bak` until the next change.
 
 ---
 
@@ -336,11 +371,11 @@ Good to know:
 When you (or someone with write access) pushed changes to GitHub, update with:
 
 ```bash
-kluis --update
+cakepass --update
 ```
 
 ```text
-$ kluis --update
+$ cakepass --update
 Checking GitHub via git (/home/john/cakepass).
 ┌──────────────────────────────────────────────────────────────┐
 │ There is a new version of CakePass.                          │
@@ -350,26 +385,26 @@ Checking GitHub via git (/home/john/cakepass).
   • 4f2a9c1 New item type: bank card
   • 9be01d7 Faster logo
 Update now? [y/N] y
-✔ Extra backup of your vault: ~/.local/share/kluis/vault.enc.pre-update-1793284980
+✔ Extra backup of your vault: ~/.local/share/cakepass/vault.enc.pre-update-1793284980
 ✔ New code fetched.
 …building, testing, installing (you type your password once)…
-✔ CakePass has been updated. Start `kluis` again to use the new version.
+✔ CakePass has been updated. Start `cakepass` again to use the new version.
 ```
 
 **You do not lose your data.**
 
-- Your vault is in `~/.local/share/kluis/`, outside the installation. An update
+- Your vault is in `~/.local/share/cakepass/`, outside the installation. An update
   never touches that folder.
-- Before every update `kluis` makes an extra copy (`vault.enc.pre-update-<time>`;
-  the last three are kept). It opens like any vault: `kluis --vault <copy> list`.
+- Before every update `cakepass` makes an extra copy (`vault.enc.pre-update-<time>`;
+  the last three are kept). It opens like any vault: `cakepass --vault <copy> list`.
 - New versions read your old vault and convert it automatically to the newest
   format the next time you unlock. An older version refuses a newer format with a
   clear message, so nothing breaks.
 - If building, a test or the installation fails, everything is restored and
   your current version keeps working.
-- Your settings (`~/.config/kluis/`) are not touched either.
+- Your settings (`~/.config/cakepass/`) are not touched either.
 
-**What `kluis --update` does and does not do:**
+**What `cakepass --update` does and does not do:**
 
 - It does not unlock your vault; there is no key in memory while updating.
 - It only fetches new commits that do not rewrite your history
@@ -377,18 +412,18 @@ Update now? [y/N] y
 - It builds with `makepkg` and runs all tests; only then it installs.
 - You see where the update comes from and what is in it, and must confirm.
 
-Options: `kluis --update --check` (only look), `--yes` (no confirmation),
+Options: `cakepass --update --check` (only look), `--yes` (no confirmation),
 `--source <dir>` (another source folder).
 
 ### Automatic checking
 
 ```bash
-kluis --update --auto on       # check every day (turn off: off, look: status)
+cakepass --update --auto on       # check every day (turn off: off, look: status)
 ```
 
 Once a day a small systemd timer looks for a new version. If there is one you
-get a desktop notification (with `libnotify`) and a line in `kluis` and
-`kluis info`. **You install it yourself** with `kluis --update`.
+get a desktop notification (with `libnotify`) and a line in `cakepass` and
+`cakepass info`. **You install it yourself** with `cakepass --update`.
 
 > **Why not install fully automatically?** A password manager that replaces
 > itself without you looking is risky: if someone got into your GitHub account,
@@ -398,7 +433,7 @@ get a desktop notification (with `libnotify`) and a line in `kluis` and
 >
 > The automatic check only works without a password prompt if your GitHub access
 > works by itself (an SSH key without passphrase or with ssh-agent, or
-> `gh auth setup-git`). If that does not work, manual `kluis --update` still does.
+> `gh auth setup-git`). If that does not work, manual `cakepass --update` still does.
 
 ---
 
@@ -417,14 +452,14 @@ That is not a bug but exactly how it is supposed to work:
 
 What you can do to prevent it:
 
-1. Pick a passphrase you can remember (`kluis generate --passphrase --show`) and
+1. Pick a passphrase you can remember (`cakepass generate --passphrase --show`) and
    use it often during the first weeks.
 2. Write the master password on paper and keep that somewhere safe (for example
    with your passport). Against online attackers, paper is safe.
-3. Not sure you still know it? Test it with `kluis list` before you change it.
+3. Not sure you still know it? Test it with `cakepass list` before you change it.
 
 If you really cannot remember it, the only thing left is to create a new vault
-(`kluis setup` with another `--vault`, or first delete `~/.local/share/kluis/`)
+(`cakepass setup` with another `--vault`, or first delete `~/.local/share/cakepass/`)
 and set new passwords on every website via "forgot password".
 
 ---
@@ -440,19 +475,24 @@ In plain language:
 2. **Two layers of encryption.** From that key, HKDF-SHA256 makes two separate keys:
    - the **file key** encrypts the whole vault on disk;
    - the **item key** additionally encrypts **all the content of every item
-     separately**: username, URL, password or API key, and notes. Every field has
-     its own random nonce.
+     separately**: username, e-mail address, URL, password or API key, and notes.
+     Every field has its own random nonce.
 
    Even while your vault is open (for example in the interactive mode), that
    content is only in memory in encrypted form. Only the name, type and tags are
-   readable, so you can search. A field is decrypted only at the moment it is
-   needed (`get`; `list` shows usernames and URLs) and wiped right afterwards.
-   Tested: in the memory of an open vault the password, API key, note, username
-   and URL are found 0 times as readable text, also right after `list` and
-   `get --show`.
+   readable inside the program while it is open, so you can search (on disk they
+   are encrypted by the first layer like everything else). A field is decrypted
+   only at the moment it is needed (`get`; `list` shows usernames and URLs) and
+   wiped right afterwards. Tested: in the memory of an open vault the password,
+   API key, note, username, e-mail address and URL are found 0 times as readable
+   text, also right after `list` and `get --show`.
+   Tested too: after adding, editing, exporting and changing settings, **no
+   readable piece of your data is in any file the program wrote** (vault, backup,
+   export). The only plain-text file is the settings file (`animation=off`,
+   `lock_timeout_minutes=7`): it holds no user data and is needed before you log in.
 3. The whole vault is encrypted with **XChaCha20-Poly1305**. That encrypts and
    checks at the same time ("authenticated encryption"). If even one bit in the
-   file changes, `kluis` refuses to open it. Every save uses a new random nonce.
+   file changes, `cakepass` refuses to open it. Every save uses a new random nonce.
 4. The file starts with a header with version number and settings. The header is
    part of the check, so it cannot be tampered with either.
 5. Saving is **atomic**: first to a temporary file, then `fsync`, then rename. After a
@@ -463,11 +503,11 @@ In plain language:
    memory locked with `mlock`, so not in swap. Core dumps are off and other
    programs cannot look into the memory (`PR_SET_DUMPABLE=0`).
 8. All randomness comes from the operating system (`getrandom`).
-9. `kluis` itself contains no network code. Only the command `kluis --update`
+9. `cakepass` itself contains no network code. Only the command `cakepass --update`
    starts `git` to fetch your repository, and then your vault is not open.
 
 The crates used (among others `argon2`, `chacha20poly1305`, `hkdf`, `sha2`,
-`blake2`, `zeroize` and `subtle`) come from the RustCrypto project. `kluis`
+`blake2`, `zeroize` and `subtle`) come from the RustCrypto project. `cakepass`
 implements no cryptography itself. More details are in [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ---
@@ -478,7 +518,7 @@ I went through the code myself and found and fixed these problems:
 
 | Found | Fixed |
 |---|---|
-| In `kluis shell` the inactivity timer did not work if you walked away in the middle of a question (e.g. at "Username:") | A watchdog now locks then too, and restores the terminal |
+| In `cakepass shell` the inactivity timer did not work if you walked away in the middle of a question (e.g. at "Username:") | A watchdog now locks then too, and restores the terminal |
 | If the clipboard-clearing helper could not start, the password stayed on the clipboard indefinitely | The clipboard is then cleared immediately |
 | A malicious import or CSV file could contain control characters (ANSI escapes) that manipulate your terminal | They are rejected or replaced on import, and made visible as `\u{1b}` with `--show` |
 | A password you displayed could stay behind in Rust's output buffer | Secrets are written to the terminal without a buffer, and wiped |
@@ -502,8 +542,8 @@ no known vulnerabilities.
    (LUKS), zram, or no swap at all.
 3. **The clipboard.** While a password is on the clipboard (max. 20 s), any
    program in your session can read it. Clipboard managers (KDE Klipper,
-   cliphist, CopyQ, GNOME extensions) sometimes keep a **history** that `kluis`
-   cannot clear. Turn that off or exclude kluis.
+   cliphist, CopyQ, GNOME extensions) sometimes keep a **history** that `cakepass`
+   cannot clear. Turn that off or exclude cakepass.
 4. **Onlookers and scrollback.** `--show` puts the password on your screen and
    in your terminal's scrollback.
 5. **A weak or leaked master password.** Everything stands or falls with your
@@ -517,7 +557,7 @@ no known vulnerabilities.
 9. **Root and the operating system.** Root can do anything, including `ptrace`
    and reading memory. `PR_SET_DUMPABLE=0` only protects against other
    processes of the same user.
-10. **Updating from GitHub.** `kluis --update` installs code from your
+10. **Updating from GitHub.** `cakepass --update` installs code from your
     repository. Anyone with write access to it (or who takes over your GitHub
     account) can prepare a malicious update. You see what changes and must
     confirm, but you will probably not read the code itself. Limit who has write
@@ -534,17 +574,17 @@ no known vulnerabilities.
 
 | Message | Fix |
 |---|---|
-| `no clipboard tool found` | Install `wl-clipboard` (Wayland) or `xclip` (X11), or use `--show`. Check with `kluis info`. |
+| `no clipboard tool found` | Install `wl-clipboard` (Wayland) or `xclip` (X11), or use `--show`. Check with `cakepass info`. |
 | `Memory could not be locked (mlock)` | Your limit is too low. See it with `ulimit -l` (Arch default: 8192 KiB, plenty). You can raise it in `/etc/security/limits.conf`. |
 | `wrong master password, or the file is damaged` | Check Caps Lock and your keyboard layout. Is the file damaged? Try `--vault …/vault.enc.bak` or a backup. |
-| `the vault was changed by another kluis process` | You had two terminals open. Run the command again. Your other change was kept. |
+| `the vault was changed by another cakepass process` | You had two terminals open. Run the command again. Your other change was kept. |
 | `is a symbolic link` | Give the real path with `--vault`. |
 | After Ctrl+C you cannot see what you type | Type `reset` and press Enter. |
-| The logo looks wrong or choppy | Try a wider/other terminal, or turn the animation off: `kluis config set animation off`. |
+| The logo looks wrong or choppy | Try a wider/other terminal, or turn the animation off: `cakepass config set animation off`. |
 | Installer: `could not download the code` | The repository is private. Log in: `gh auth login`, or set up an SSH key, then run the installer again. |
-| `kluis --update`: `I do not know where the source code is` | You did not install with `makepkg -si`/the installer, or the folder was moved. Give it: `kluis --update --source ~/cakepass`. |
-| `kluis --update`: `git fetch failed` | No internet, or GitHub does not know you. Test with `git -C ~/cakepass fetch` and log in (SSH key or `gh auth login`). |
-| `kluis --update`: `local changes` or `differs from GitHub` | You changed something in `~/cakepass`. Look with `git -C ~/cakepass status`; nothing is overwritten. |
+| `cakepass --update`: `I do not know where the source code is` | You did not install with `makepkg -si`/the installer, or the folder was moved. Give it: `cakepass --update --source ~/cakepass`. |
+| `cakepass --update`: `git fetch failed` | No internet, or GitHub does not know you. Test with `git -C ~/cakepass fetch` and log in (SSH key or `gh auth login`). |
+| `cakepass --update`: `local changes` or `differs from GitHub` | You changed something in `~/cakepass`. Look with `git -C ~/cakepass status`; nothing is overwritten. |
 
 ---
 
@@ -574,12 +614,12 @@ Then:
 ```bash
 cd ~/cakepass/packaging/arch
 makepkg -si
-kluis setup
+cakepass setup
 ```
 
-> **Keep the folder `~/cakepass`.** `kluis --update` uses it to fetch new versions.
+> **Keep the folder `~/cakepass`.** `cakepass --update` uses it to fetch new versions.
 
-`makepkg` builds the program, runs all tests and then installs `/usr/bin/kluis`,
+`makepkg` builds the program, runs all tests and then installs `/usr/bin/cakepass`,
 shell completions for bash, zsh and fish, and the daily update check (off by
 default). Skip the tests (faster): `makepkg -si --nocheck`.
 
@@ -587,7 +627,7 @@ Only build, without installing:
 
 ```bash
 cargo build --release --locked
-./target/release/kluis --help
+./target/release/cakepass --help
 ```
 
 ---
@@ -603,7 +643,7 @@ Deliberately not in this version (fewer features that work well beats many):
 - More item types (bank card, SSH keys, file attachments).
 - Editing notes in `$EDITOR`. Not in yet on purpose: an editor writes temporary
   files unencrypted to disk.
-- A Dutch diceware word list and a translated interface.
+- A translated interface and a non-English diceware word list.
 - Configurable clipboard time and a `--clip-time` option.
 - Telling clipboard managers that it is a password (`x-kde-passwordManagerHint`).
 - Man page (`clap_mangen`).
@@ -630,7 +670,7 @@ src/
 └── cli/            arguments, prompts, commands, interactive mode,
                     setup.rs + config.rs: first-time setup and settings
                     logo.rs: the 3D login screen
-                    update.rs: kluis --update (via git and makepkg)
+                    update.rs: cakepass --update (via git and makepkg)
 build.rs            records which git commit it was built from
 tests/              integration tests (cli, update, installer)
 packaging/arch/     PKGBUILD + systemd timer for the update check

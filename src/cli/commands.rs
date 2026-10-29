@@ -15,13 +15,13 @@ use std::sync::OnceLock;
 use secrecy::{ExposeSecret, SecretString};
 use zeroize::Zeroizing;
 
-use kluis::clipboard::{self, CLEAR_AFTER_SECS};
-use kluis::crypto::{ItemKey, KdfParams};
-use kluis::generator::{self, PassphraseOptions, PasswordOptions};
-use kluis::secure_mem::{self, Hardening};
-use kluis::storage::{self, UnlockedVault, VaultPaths};
-use kluis::vault::{Entry, Kind, NewEntry, Vault};
-use kluis::{Error, Result, import};
+use cakepass::clipboard::{self, CLEAR_AFTER_SECS};
+use cakepass::crypto::{ItemKey, KdfParams};
+use cakepass::generator::{self, PassphraseOptions, PasswordOptions};
+use cakepass::secure_mem::{self, Hardening};
+use cakepass::storage::{self, UnlockedVault, VaultPaths};
+use cakepass::vault::{Entry, Kind, NewEntry, Vault};
+use cakepass::{Error, Result, import};
 
 use super::args::{self, AddArgs, Cmd, EditArgs, GenArgs, GetArgs, KdfArgs, KdfChangeArgs};
 use super::{config, logo, prompt, setup, shell, ui, update};
@@ -30,7 +30,7 @@ static HARDENING: OnceLock<Hardening> = OnceLock::new();
 const LABEL_WIDTH: usize = 16;
 const TAGLINE: &str = "offline · encrypted · yours alone";
 
-/// Remember the result of the process hardening (for `kluis info`).
+/// Remember the result of the process hardening (for `cakepass info`).
 pub fn set_hardening(h: Hardening) {
     let _ = HARDENING.set(h);
 }
@@ -43,7 +43,7 @@ pub fn run(cli: args::Cli) -> Result<()> {
     };
     let cfg = config::load();
     let Some(command) = cli.command else {
-        // `kluis` without a command: login screen + interactive mode, or the
+        // `cakepass` without a command: login screen + interactive mode, or the
         // first-time setup when there is no vault yet.
         if fs::symlink_metadata(&paths.file).is_err() {
             if prompt::stdin_is_tty() {
@@ -51,7 +51,7 @@ pub fn run(cli: args::Cli) -> Result<()> {
             }
             logo::show(true);
             logo::tagline(TAGLINE);
-            ui::info("There is no vault yet. Set one up with:  kluis setup");
+            ui::info("There is no vault yet. Set one up with:  cakepass setup");
             return Ok(());
         }
         return shell::run(&paths, cfg.lock_timeout_secs());
@@ -59,7 +59,7 @@ pub fn run(cli: args::Cli) -> Result<()> {
     match command {
         Cmd::Setup { kdf } => setup::run(&paths, &kdf),
         Cmd::Init { kdf } => init(&paths, &kdf),
-        Cmd::Generate { opts, show } => generate(&opts, show),
+        Cmd::Generate { opts, show, save } => generate(&paths, None, &opts, show, save),
         Cmd::Info => info(&paths),
         Cmd::Config { action } => setup::config_command(action),
         Cmd::Logo => show_logo(),
@@ -82,7 +82,7 @@ pub fn run(cli: args::Cli) -> Result<()> {
     }
 }
 
-/// Run a command on an unlocked vault (also from `kluis shell`).
+/// Run a command on an unlocked vault (also from `cakepass shell`).
 pub fn execute(uv: &mut UnlockedVault, cmd: Cmd, in_shell: bool) -> Result<()> {
     match cmd {
         Cmd::Add(a) => add(uv, a),
@@ -105,13 +105,16 @@ pub fn execute(uv: &mut UnlockedVault, cmd: Cmd, in_shell: bool) -> Result<()> {
         }
         Cmd::Import { file } => import_vault(uv, &file),
         Cmd::ImportCsv { file } => import_csv(uv, &file),
-        Cmd::Generate { opts, show } => generate(&opts, show),
+        Cmd::Generate { opts, show, save } => {
+            let paths = uv.paths().clone();
+            generate(&paths, Some(uv), &opts, show, save)
+        }
         Cmd::Info => info(uv.paths()),
         Cmd::Config { action } => setup::config_command(action),
         Cmd::Logo => show_logo(),
         Cmd::Completions { shell } => completions(shell),
         Cmd::Update(_) => Err(Error::InvalidInput(
-            "close the vault first (exit) and then type `kluis --update`; the vault should be closed while updating"
+            "close the vault first (exit) and then type `cakepass --update`; the vault should be closed while updating"
                 .into(),
         )),
         Cmd::Init { .. } | Cmd::Setup { .. } | Cmd::Shell { .. } => {
@@ -146,7 +149,7 @@ fn after_unlock(uv: &mut UnlockedVault) {
         ui::info(&n);
     }
     if secure_mem::mlock_failed() {
-        ui::warn("Memory could not be locked (mlock). Secrets may end up in swap. See `kluis info`.");
+        ui::warn("Memory could not be locked (mlock). Secrets may end up in swap. See `cakepass info`.");
     }
 }
 
@@ -256,12 +259,13 @@ fn find_entry<'a>(vault: &'a Vault, key: &ItemKey, name: &str) -> Result<&'a Ent
 }
 
 /// Ask for a new password for a login (with repetition in a terminal).
-/// Empty = generate. Returns (password, strength if generated).
+/// Empty = generate one, which you can then view, edit or redo.
+/// Returns (password, entropy bits if it is a generated one).
 fn ask_item_password(g: &GenArgs) -> Result<(Zeroizing<String>, Option<f64>)> {
-    let first = prompt::secret("Password (leave empty to let kluis generate one): ")?;
+    let first = prompt::secret("Password (leave empty to let cakepass generate one): ")?;
     if first.expose_secret().is_empty() {
         let (pw, bits) = generate_secret(g)?;
-        return Ok((pw, Some(bits)));
+        return review_for_saving(g, pw, bits);
     }
     if prompt::stdin_is_tty() {
         let again = prompt::secret("Repeat password: ")?;
@@ -291,9 +295,121 @@ fn report_generated(name: &str, pw: &str, bits: f64) {
     match copy_to_clipboard(pw, "The password") {
         Ok(()) => {}
         Err(Error::NoClipboard) => {
-            ui::info(&format!("No clipboard tool found; view it with `kluis get \"{name}\" --show`."));
+            ui::info(&format!("No clipboard tool found; view it with `cakepass get \"{name}\" --show`."));
         }
         Err(e) => ui::warn(&format!("Copying failed: {e}")),
+    }
+}
+
+/// What the user decided in the password review menu.
+enum Review {
+    /// Use / save the password.
+    Save,
+    /// Copy the password to the clipboard and finish (`generate` only).
+    Copy,
+    /// Throw the password away.
+    Cancel,
+}
+
+/// "24 characters, about 150 bits" (generated) or "... strength 3/4" (typed).
+fn strength_text(secret: &str, bits: Option<f64>) -> String {
+    let n = secret.chars().count();
+    match bits {
+        Some(b) => format!("{n} characters, about {b:.0} bits"),
+        None => format!("{n} characters, strength {}/4", prompt::strength(secret).0),
+    }
+}
+
+/// Let the user look at, change or redo a generated password before it is used.
+///
+/// In a terminal this shows a small menu: view it, type your own instead
+/// (edit), generate a new one, copy it, or accept it. Without a terminal
+/// (scripts, pipes) the password is accepted as it is.
+///
+/// `saving` is true when the password goes straight into an item (`add`,
+/// `edit`, `generate --save`): Enter then means "save". For a plain
+/// `generate` Enter means "copy" and `s` saves it to the vault.
+fn review_password(
+    g: &GenArgs,
+    secret: &mut Zeroizing<String>,
+    bits: &mut Option<f64>,
+    saving: bool,
+) -> Result<Review> {
+    let default = if saving { Review::Save } else { Review::Copy };
+    if !prompt::stdin_is_tty() {
+        return Ok(default);
+    }
+    let menu = if saving {
+        "[Enter] save  [v]iew  [e]dit  [r]egenerate  [c]opy  [q]uit without saving"
+    } else {
+        "[Enter] copy  [s]ave to vault  [v]iew  [e]dit  [r]egenerate  [q]uit"
+    };
+    let mut show_header = true;
+    loop {
+        if show_header {
+            ui::info(&format!("🔑 Password: {}", strength_text(secret, *bits)));
+            ui::info(&ui::dim_err(&format!("   {menu}")));
+            show_header = false;
+        }
+        let answer = prompt::line(&format!("   {} ", ui::pink_bold("❯")))?.to_lowercase();
+        match answer.as_str() {
+            "" => return Ok(default),
+            "s" | "save" if !saving => return Ok(Review::Save),
+            "v" | "view" => ui::print_secret_line("   ", secret)?,
+            "e" | "edit" => {
+                let first = prompt::secret("   Type the password you want (hidden, empty = keep): ")?;
+                if first.expose_secret().is_empty() {
+                    continue;
+                }
+                let again = prompt::secret("   Repeat password: ")?;
+                if !prompt::secrets_equal(&first, &again) {
+                    ui::warn("The passwords do not match; the password is unchanged.");
+                    continue;
+                }
+                *secret = Zeroizing::new(first.expose_secret().to_string());
+                *bits = None;
+                if prompt::strength(secret).0 < prompt::MIN_SCORE {
+                    ui::warn(
+                        "This password is on the weak side. You can still use it, or press r to generate one.",
+                    );
+                }
+                show_header = true;
+            }
+            "r" | "regenerate" => {
+                let (pw, b) = generate_secret(g)?;
+                *secret = pw;
+                *bits = Some(b);
+                show_header = true;
+            }
+            "c" | "copy" => {
+                if saving {
+                    match copy_to_clipboard(secret, "The password") {
+                        Ok(()) => {}
+                        Err(Error::NoClipboard) => ui::info("No clipboard tool found; use v to view it."),
+                        Err(e) => ui::warn(&format!("Copying failed: {e}")),
+                    }
+                } else {
+                    return Ok(Review::Copy);
+                }
+            }
+            "q" | "quit" | "cancel" => return Ok(Review::Cancel),
+            _ => ui::warn("Choose one of the options shown above."),
+        }
+    }
+}
+
+/// Review a freshly generated password that is about to be saved in an item.
+/// Returns the final password and the bits of entropy if it is still the
+/// generated one (`None` once the user typed their own).
+fn review_for_saving(
+    g: &GenArgs,
+    secret: Zeroizing<String>,
+    bits: f64,
+) -> Result<(Zeroizing<String>, Option<f64>)> {
+    let (mut secret, mut bits) = (secret, Some(bits));
+    match review_password(g, &mut secret, &mut bits, true)? {
+        Review::Cancel => Err(Error::Cancelled),
+        Review::Save | Review::Copy => Ok((secret, bits)),
     }
 }
 
@@ -364,21 +480,33 @@ fn init(paths: &VaultPaths, kdf_args: &KdfArgs) -> Result<()> {
     logo::tagline("welcome! let's create your vault");
     create_vault(paths, kdf)?;
     ui::info(
-        "Next: `kluis add <name>` (login), `--type api` (API key) or `--type note`. \
+        "Next: `cakepass add <name>` (login), `--type api` (API key) or `--type note`. \
          Make regular copies of the vault file (see the README).",
     );
     Ok(())
 }
 
 fn add(uv: &mut UnlockedVault, a: AddArgs) -> Result<()> {
+    add_item(uv, a, None)
+}
+
+/// Add an item. `preset` is a password that was already chosen (by
+/// `generate --save`); the question for the password is then skipped.
+fn add_item(
+    uv: &mut UnlockedVault,
+    a: AddArgs,
+    mut preset: Option<(Zeroizing<String>, Option<f64>)>,
+) -> Result<()> {
     if uv.vault.contains(&a.name) {
         return Err(Error::EntryExists(a.name.trim().to_string()));
     }
     let kind = a.kind;
-    if kind == Kind::Note && (a.username.is_some() || a.url.is_some() || a.generate) {
-        return Err(Error::InvalidInput("a note has no username, URL or password; use only --tags".into()));
+    if kind == Kind::Note && (a.username.is_some() || a.email.is_some() || a.url.is_some() || a.generate) {
+        return Err(Error::InvalidInput(
+            "a note has no username, e-mail address, URL or password; use only --tags".into(),
+        ));
     }
-    let interactive = a.username.is_none() && a.url.is_none() && a.tags.is_none();
+    let interactive = a.username.is_none() && a.email.is_none() && a.url.is_none() && a.tags.is_none();
     let (user_q, url_q) = match kind {
         Kind::Api => ("Account or key ID (optional): ", "Service URL (optional): "),
         _ => ("Username (optional): ", "URL (optional): "),
@@ -388,6 +516,12 @@ fn add(uv: &mut UnlockedVault, a: AddArgs) -> Result<()> {
         (_, Some(u)) => u,
         (_, None) => prompt::line(user_q)?,
     };
+    let email = match (kind, a.email) {
+        (Kind::Note, _) => String::new(),
+        (_, Some(e)) => e,
+        (_, None) => prompt::line("E-mail address (optional): ")?,
+    };
+    warn_if_not_email(&email);
     let url = match (kind, a.url) {
         (Kind::Note, _) => String::new(),
         (_, Some(u)) => u,
@@ -402,20 +536,25 @@ fn add(uv: &mut UnlockedVault, a: AddArgs) -> Result<()> {
         _ if interactive => Zeroizing::new(prompt::line("Notes (optional, one line): ")?),
         _ => Zeroizing::new(String::new()),
     };
-    let (secret, generated_bits) = match kind {
-        Kind::Note => (Zeroizing::new(String::new()), None),
-        _ if a.generate => {
-            let (pw, bits) = generate_secret(&a.gen_opts)?;
-            (pw, Some(bits))
+    let (secret, generated_bits) = if kind != Kind::Note && preset.is_some() {
+        preset.take().expect("checked above")
+    } else {
+        match kind {
+            Kind::Note => (Zeroizing::new(String::new()), None),
+            _ if a.generate => {
+                let (pw, bits) = generate_secret(&a.gen_opts)?;
+                review_for_saving(&a.gen_opts, pw, bits)?
+            }
+            Kind::Login => ask_item_password(&a.gen_opts)?,
+            Kind::Api => (ask_api_key()?, None),
         }
-        Kind::Login => ask_item_password(&a.gen_opts)?,
-        Kind::Api => (ask_api_key()?, None),
     };
     let entry = Entry::new(
         NewEntry {
             name: a.name.clone(),
             kind,
             username,
+            email,
             password: secret.to_string(),
             url,
             notes: notes.to_string(),
@@ -433,6 +572,14 @@ fn add(uv: &mut UnlockedVault, a: AddArgs) -> Result<()> {
     Ok(())
 }
 
+/// A gentle hint (not an error) when an e-mail address looks wrong.
+fn warn_if_not_email(email: &str) {
+    let e = email.trim();
+    if !e.is_empty() && !(e.contains('@') && !e.starts_with('@') && !e.ends_with('@') && !e.contains(' ')) {
+        ui::warn(&format!("'{}' does not look like an e-mail address (saved anyway).", ui::safe(e, false)));
+    }
+}
+
 fn get(uv: &UnlockedVault, g: &GetArgs) -> Result<()> {
     let key = uv.item_key();
     let e = find_entry(&uv.vault, key, &g.name)?;
@@ -447,10 +594,12 @@ fn get(uv: &UnlockedVault, g: &GetArgs) -> Result<()> {
     match kind {
         Kind::Login => {
             field("Username", &value(&e.username(key)?))?;
+            field("E-mail", &value(&e.email(key)?))?;
             field("URL", &value(&e.url(key)?))?;
         }
         Kind::Api => {
             field("Account / ID", &value(&e.username(key)?))?;
+            field("E-mail", &value(&e.email(key)?))?;
             field("Service", &value(&e.url(key)?))?;
         }
         Kind::Note => {}
@@ -490,6 +639,12 @@ fn get(uv: &UnlockedVault, g: &GetArgs) -> Result<()> {
             return Err(Error::InvalidInput("this item has no username".into()));
         }
         copy_to_clipboard(&user, "The username")
+    } else if g.copy_email {
+        let mail = e.email(key)?;
+        if mail.is_empty() {
+            return Err(Error::InvalidInput("this item has no e-mail address".into()));
+        }
+        copy_to_clipboard(&mail, "The e-mail address")
     } else if !e.has_secret() {
         ui::info(&format!("This item has no {}.", kind.secret_label()));
         Ok(())
@@ -513,18 +668,21 @@ fn keep_or(input: String) -> Option<String> {
 }
 
 fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
-    let (old_name, kind, cur_user, cur_url, cur_tags) = {
+    let (old_name, kind, cur_user, cur_email, cur_url, cur_tags) = {
         let key = uv.item_key();
         let e = find_entry(&uv.vault, key, &a.name)?;
-        (e.name().to_string(), e.kind(), e.username(key)?, e.url(key)?, e.tags().join(", "))
+        (e.name().to_string(), e.kind(), e.username(key)?, e.email(key)?, e.url(key)?, e.tags().join(", "))
     };
-    if kind == Kind::Note && (a.username.is_some() || a.url.is_some() || a.password || a.generate) {
+    if kind == Kind::Note
+        && (a.username.is_some() || a.email.is_some() || a.url.is_some() || a.password || a.generate)
+    {
         return Err(Error::InvalidInput(
-            "a note has no username, URL or password; use --notes for the contents".into(),
+            "a note has no username, e-mail address, URL or password; use --notes for the contents".into(),
         ));
     }
     let interactive = a.rename.is_none()
         && a.username.is_none()
+        && a.email.is_none()
         && a.url.is_none()
         && a.tags.is_none()
         && !a.password
@@ -533,6 +691,7 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
 
     let mut rename = a.rename;
     let mut username = a.username;
+    let mut email = a.email;
     let mut url = a.url;
     let mut tags = a.tags;
     let mut notes: Option<Zeroizing<String>> = None;
@@ -546,6 +705,7 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
             let (uq, lq) =
                 if kind == Kind::Api { ("Account / ID", "Service URL") } else { ("Username", "URL") };
             username = keep_or(prompt::line(&format!("{uq} [{}]: ", cur_user.as_str()))?);
+            email = keep_or(prompt::line(&format!("E-mail address [{}]: ", cur_email.as_str()))?);
             url = keep_or(prompt::line(&format!("{lq} [{}]: ", cur_url.as_str()))?);
         }
         tags = keep_or(prompt::line(&format!("Tags [{cur_tags}]: "))?).map(|t| split_tags(&t));
@@ -569,8 +729,9 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
                     "t" | "type" => new_secret = Some(ask_item_password(&a.gen_opts)?.0),
                     "g" | "generate" => {
                         let (pw, bits) = generate_secret(&a.gen_opts)?;
+                        let (pw, bits) = review_for_saving(&a.gen_opts, pw, bits)?;
                         new_secret = Some(pw);
-                        generated_bits = Some(bits);
+                        generated_bits = bits;
                     }
                     _ => return Err(Error::InvalidInput("choose k, t or g".into())),
                 }
@@ -591,8 +752,9 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
         }
         if a.generate {
             let (pw, bits) = generate_secret(&a.gen_opts)?;
+            let (pw, bits) = review_for_saving(&a.gen_opts, pw, bits)?;
             new_secret = Some(pw);
-            generated_bits = Some(bits);
+            generated_bits = bits;
         } else if a.password {
             new_secret = Some(match kind {
                 Kind::Api => ask_api_key()?,
@@ -610,11 +772,18 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
         }
     }
 
+    if let Some(e) = &email {
+        warn_if_not_email(e);
+    }
+
     // All or nothing: on an error (e.g. an existing name) the item stays unchanged.
     let (vault, key) = uv.parts_mut();
     vault.update(&old_name, |entry| {
         if let Some(u) = &username {
             entry.set_username(key, u)?;
+        }
+        if let Some(m) = &email {
+            entry.set_email(key, m)?;
         }
         if let Some(u) = &url {
             entry.set_url(key, u)?;
@@ -715,7 +884,7 @@ fn list(vault: &Vault, key: &ItemKey, tag: Option<&str>, kind: Option<Kind>) -> 
         .collect();
     if entries.is_empty() {
         if vault.is_empty() {
-            ui::info("The vault is still empty. Add an item with `kluis add <name>`.");
+            ui::info("The vault is still empty. Add an item with `cakepass add <name>`.");
         } else {
             ui::info("No items match.");
         }
@@ -743,15 +912,72 @@ pub fn vault_summary(vault: &Vault) -> String {
     if all.is_empty() { "the vault is still empty".into() } else { summary(&all) }
 }
 
-fn generate(g: &GenArgs, show: bool) -> Result<()> {
+fn generate(
+    paths: &VaultPaths,
+    uv: Option<&mut UnlockedVault>,
+    g: &GenArgs,
+    show: bool,
+    save: Option<String>,
+) -> Result<()> {
+    // With --save we know up front that the vault is needed: ask for the master
+    // password first, so a typo does not cost you a carefully edited password.
+    let mut unlocked: Option<UnlockedVault> = None;
+    if save.is_some() && uv.is_none() {
+        unlocked = Some(unlock(paths)?);
+    }
+    if let Some(name) = &save {
+        let vault = uv.as_ref().map(|u| &u.vault).or_else(|| unlocked.as_ref().map(|u| &u.vault));
+        if vault.is_some_and(|v| v.contains(name)) {
+            return Err(Error::EntryExists(name.trim().to_string()));
+        }
+    }
     let (secret, bits) = generate_secret(g)?;
+    let (mut secret, mut bits) = (secret, Some(bits));
     if show {
         ui::print_secret_line("", &secret)?;
-    } else {
-        copy_to_clipboard(&secret, "The generated password")?;
     }
-    ui::info(&format!("Strength: about {bits:.0} bits."));
-    Ok(())
+    let choice = review_password(g, &mut secret, &mut bits, save.is_some())?;
+    let choice = match (choice, save.is_some()) {
+        (Review::Copy, true) => Review::Save,
+        (c, _) => c,
+    };
+    match choice {
+        Review::Cancel => {
+            ui::info("Nothing saved, nothing copied.");
+            Ok(())
+        }
+        Review::Copy => {
+            if !show {
+                copy_to_clipboard(&secret, "The generated password")?;
+            }
+            ui::info(&format!("Strength: {}.", strength_text(&secret, bits)));
+            Ok(())
+        }
+        Review::Save => {
+            let name = match save {
+                Some(n) => n,
+                None => prompt::line("Name for this login (e.g. GitHub): ")?,
+            };
+            if uv.is_none() && unlocked.is_none() {
+                unlocked = Some(unlock(paths)?);
+            }
+            let uv: &mut UnlockedVault = match uv {
+                Some(u) => u,
+                None => unlocked.as_mut().expect("unlocked above"),
+            };
+            let args = AddArgs {
+                name,
+                kind: Kind::Login,
+                username: None,
+                email: None,
+                url: None,
+                tags: None,
+                generate: false,
+                gen_opts: g.clone(),
+            };
+            add_item(uv, args, Some((secret, bits)))
+        }
+    }
 }
 
 fn passwd(uv: &mut UnlockedVault, a: &KdfChangeArgs) -> Result<()> {
@@ -789,7 +1015,7 @@ fn export(uv: &UnlockedVault, file: &Path) -> Result<()> {
         plural(uv.vault.len(), "item", "items"),
         file.display()
     ));
-    ui::info("Without the export password this file is useless. Import it with `kluis import <file>`.");
+    ui::info("Without the export password this file is useless. Import it with `cakepass import <file>`.");
     Ok(())
 }
 
@@ -813,7 +1039,7 @@ fn import_csv(uv: &mut UnlockedVault, file: &Path) -> Result<()> {
     ui::banner(&[
         "NOTE: a CSV export is NOT encrypted.",
         "Anyone who can read this file can see all your passwords.",
-        "Delete it right after importing (kluis offers to do that)",
+        "Delete it right after importing (cakepass offers to do that)",
         "and also check your Downloads folder, the trash and your backups.",
     ]);
     let f =
@@ -854,7 +1080,7 @@ fn info(paths: &VaultPaths) -> Result<()> {
     println!("{}", ui::bold("CakePass vault"));
     println!("  File:             {}", paths.file.display());
     match fs::symlink_metadata(&paths.file) {
-        Err(_) => println!("  Status:           does not exist yet (create one with `kluis setup`)"),
+        Err(_) => println!("  Status:           does not exist yet (create one with `cakepass setup`)"),
         Ok(meta) => {
             let mode = meta.mode() & 0o777;
             let mode_ok = mode & 0o077 == 0;
@@ -877,8 +1103,8 @@ fn info(paths: &VaultPaths) -> Result<()> {
                     println!("  Encryption:       XChaCha20-Poly1305");
                     if h.version >= 2 {
                         println!(
-                            "  Second layer:     all item content encrypted separately per field \
-                             (XChaCha20-Poly1305, own HKDF subkey)"
+                            "  Second layer:     every item field (username, e-mail, URL, password/key, notes) \
+                             encrypted separately (XChaCha20-Poly1305, own HKDF subkey)"
                         );
                     } else {
                         println!("  Second layer:     not yet (old format; upgraded when opened)");
@@ -901,7 +1127,7 @@ fn info(paths: &VaultPaths) -> Result<()> {
     println!("  This program:     {} (commit {})", env!("CARGO_PKG_VERSION"), update::INSTALLED_COMMIT);
     match update::pending_notice() {
         Some(n) => println!("  Update:           {n}"),
-        None => println!("  Update:           no new version known (check with `kluis --update --check`)"),
+        None => println!("  Update:           no new version known (check with `cakepass --update --check`)"),
     }
 
     let cfg = config::load();
@@ -930,6 +1156,6 @@ fn info(paths: &VaultPaths) -> Result<()> {
 }
 
 fn completions(shell: clap_complete::Shell) -> Result<()> {
-    clap_complete::generate(shell, &mut args::command(), "kluis", &mut io::stdout());
+    clap_complete::generate(shell, &mut args::command(), "cakepass", &mut io::stdout());
     Ok(())
 }

@@ -4,10 +4,10 @@
 //! - Secrets are NEVER read from arguments or environment variables.
 //! - In a terminal we use a hidden prompt (rpassword, via `/dev/tty`);
 //!   characters are not echoed.
-//! - When stdin is not a terminal (e.g. `generator | kluis add x`) we read
+//! - When stdin is not a terminal (e.g. `generator | cakepass add x`) we read
 //!   one line per question from stdin.
 //! - We read stdin without a buffer, byte by byte. This leaves no secrets in
-//!   a hidden read buffer, and makes the inactivity timer of `kluis shell`
+//!   a hidden read buffer, and makes the inactivity timer of `cakepass shell`
 //!   (poll) reliable.
 
 use std::io::{self, IsTerminal, Write};
@@ -17,7 +17,7 @@ use secrecy::{ExposeSecret, SecretString};
 use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, Zeroizing};
 
-use kluis::{Error, Result};
+use cakepass::{Error, Result};
 
 const MAX_LINE: usize = 1024 * 1024;
 const MAX_MASTER_LEN: usize = 1024;
@@ -25,7 +25,7 @@ const MAX_MASTER_LEN: usize = 1024;
 pub const MIN_SCORE: u8 = 3;
 
 /// Time (seconds since 1970) of the last input; for the inactivity
-/// watchdog of `kluis shell`.
+/// watchdog of `cakepass shell`.
 static LAST_ACTIVITY: AtomicU64 = AtomicU64::new(0);
 
 fn now_secs() -> u64 {
@@ -185,7 +185,7 @@ pub fn strength(password: &str) -> (u8, Option<String>) {
     // zxcvbn gets slow on very long input; the first 100 characters are
     // plenty for a reliable lower bound.
     let prefix: Zeroizing<String> = Zeroizing::new(password.chars().take(100).collect());
-    let estimate = zxcvbn::zxcvbn(&prefix, &["kluis", "cakepass", "password"]);
+    let estimate = zxcvbn::zxcvbn(&prefix, &["cakepass", "password"]);
     let score = u8::from(estimate.score());
     let advice = estimate.feedback().and_then(|f| f.warning()).map(|w| w.to_string());
     (score, advice)
@@ -213,7 +213,7 @@ pub fn new_strong_password(what: &str) -> Result<SecretString> {
                     super::ui::info(&format!("  zxcvbn: {a}"));
                 }
                 super::ui::info(
-                    "  Tip: use 5 or more random words, e.g. from `kluis generate --passphrase --show`.",
+                    "  Tip: use 5 or more random words, e.g. from `cakepass generate --passphrase --show`.",
                 );
             } else {
                 let again = secret(&format!("Repeat {what}: "))?;

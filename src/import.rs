@@ -16,8 +16,8 @@ use crate::vault::{Entry, Kind, NewEntry, Vault};
 
 const NAME: &[&str] = &["name", "title", "account", "item name", "site"];
 const URL: &[&str] = &["url", "login_uri", "uri", "website", "web site", "login url", "urls"];
-const USERNAME: &[&str] =
-    &["username", "login_username", "user", "login", "user name", "login name", "email"];
+const USERNAME: &[&str] = &["username", "login_username", "user", "login", "user name", "login name"];
+const EMAIL: &[&str] = &["email", "e-mail", "email address", "e-mail address", "login_email", "mail"];
 const PASSWORD: &[&str] = &["password", "login_password", "pass"];
 const NOTES: &[&str] = &["notes", "note", "extra", "comments", "comment"];
 const TAGS: &[&str] = &["tags", "folder", "group", "grouping", "category", "collection"];
@@ -28,6 +28,7 @@ struct Columns {
     name: Option<usize>,
     url: Option<usize>,
     username: Option<usize>,
+    email: Option<usize>,
     password: Option<usize>,
     notes: Option<usize>,
     tags: Option<usize>,
@@ -70,6 +71,7 @@ pub fn parse_csv(reader: impl Read, key: &ItemKey) -> Result<CsvImport> {
         name: find(&headers, NAME),
         url: find(&headers, URL),
         username: find(&headers, USERNAME),
+        email: find(&headers, EMAIL),
         password: find(&headers, PASSWORD),
         notes: find(&headers, NOTES),
         tags: find(&headers, TAGS),
@@ -103,6 +105,7 @@ pub fn parse_csv(reader: impl Read, key: &ItemKey) -> Result<CsvImport> {
             kind,
             name: get(cols.name),
             username: get(cols.username),
+            email: get(cols.email),
             password: record.get(cols.password.unwrap_or(usize::MAX)).unwrap_or("").to_string(),
             url: get(cols.url),
             notes: get(cols.notes),
@@ -114,6 +117,7 @@ pub fn parse_csv(reader: impl Read, key: &ItemKey) -> Result<CsvImport> {
         };
         if fields.name.is_empty()
             && fields.username.is_empty()
+            && fields.email.is_empty()
             && fields.password.is_empty()
             && fields.url.is_empty()
         {
@@ -123,6 +127,7 @@ pub fn parse_csv(reader: impl Read, key: &ItemKey) -> Result<CsvImport> {
         if fields.name.is_empty() {
             fields.name = host_from_url(&fields.url)
                 .or_else(|| (!fields.username.is_empty()).then(|| fields.username.clone()))
+                .or_else(|| (!fields.email.is_empty()).then(|| fields.email.clone()))
                 .unwrap_or_else(|| "Imported".into());
         }
         // Multiple lines in a URL field (Bitwarden): take the first one.
@@ -131,6 +136,7 @@ pub fn parse_csv(reader: impl Read, key: &ItemKey) -> Result<CsvImport> {
         }
         fields.name = vault.unique_name(&fields.name.replace(char::is_control, " "));
         fields.username = fields.username.replace(char::is_control, " ");
+        fields.email = fields.email.replace(char::is_control, " ");
         fields.url = fields.url.replace(char::is_control, " ");
         fields.notes = fields.notes.replace(|c: char| c.is_control() && c != '\n' && c != '\t', " ");
         fields.tags = fields.tags.iter().map(|t| t.replace(char::is_control, " ")).collect();

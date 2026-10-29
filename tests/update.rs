@@ -1,10 +1,10 @@
-//! Integration tests for `kluis --update`.
+//! Integration tests for `cakepass --update`.
 //!
 //! "GitHub" here is a local bare git repo; `makepkg` is a fake script that
 //! only records that it was called. This tests the real logic (git fetch,
 //! fast-forward, backup, restoring after a failure) without network, root or
 //! pacman. The tests only work in debug builds, where the installed commit
-//! can be simulated through KLUIS_TEST_INSTALLED_COMMIT.
+//! can be simulated through CAKEPASS_TEST_INSTALLED_COMMIT.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -97,16 +97,16 @@ impl World {
         git(&dev, &["rev-parse", "HEAD"])
     }
 
-    fn kluis(&self, installed: &str) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_kluis"));
+    fn cakepass(&self, installed: &str) -> Command {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_cakepass"));
         let path = format!("{}:{}", self.path("bin").display(), std::env::var("PATH").unwrap_or_default());
         c.env("PATH", path)
             .env("NO_COLOR", "1")
-            .env("KLUIS_VAULT", self.vault())
+            .env("CAKEPASS_VAULT", self.vault())
             .env("XDG_CACHE_HOME", self.path("cache"))
             .env("XDG_CONFIG_HOME", self.path("config-home"))
-            .env("KLUIS_TEST_ALLOW_ROOT", "1")
-            .env("KLUIS_TEST_INSTALLED_COMMIT", installed)
+            .env("CAKEPASS_TEST_ALLOW_ROOT", "1")
+            .env("CAKEPASS_TEST_INSTALLED_COMMIT", installed)
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env_remove("WAYLAND_DISPLAY")
@@ -116,20 +116,20 @@ impl World {
     }
 
     fn update(&self, installed: &str, args: &[&str]) -> Command {
-        let mut c = self.kluis(installed);
+        let mut c = self.cakepass(installed);
         c.args(["--update", "--source"]).arg(self.src()).args(args);
         c
     }
 
     fn init_vault(&self, installed: &str) {
-        self.kluis(installed)
+        self.cakepass(installed)
             .arg("init")
             .args(FAST_KDF)
             .write_stdin(format!("{PW}\n{PW}\n"))
             .assert()
             .success();
-        self.kluis(installed)
-            .args(["add", "Bank", "-u", "john", "--url", "https://bank.nl", "-t", "money"])
+        self.cakepass(installed)
+            .args(["add", "Bank", "-u", "john", "-e", "", "--url", "https://bank.nl", "-t", "money"])
             .write_stdin(format!("{PW}\nSecret-Bank-PW-1!\n"))
             .assert()
             .success();
@@ -156,7 +156,7 @@ impl World {
     }
 
     fn assert_vault_works(&self, installed: &str) {
-        self.kluis(installed)
+        self.cakepass(installed)
             .args(["get", "bank", "--show"])
             .write_stdin(format!("{PW}\n"))
             .assert()
@@ -185,13 +185,13 @@ fn checking_finds_an_update_and_remembers_it() {
     // Nothing was installed or pulled into the working folder.
     assert!(w.makepkg_calls().is_empty());
     assert_eq!(git(&w.src(), &["rev-parse", "HEAD"]), git(&w.src(), &["rev-parse", "origin/main~1"]));
-    // The result is in the cache, and `kluis info` shows it (without network).
-    let cache = fs::read_to_string(w.path("cache/kluis/update-status")).unwrap();
+    // The result is in the cache, and `cakepass info` shows it (without network).
+    let cache = fs::read_to_string(w.path("cache/cakepass/update-status")).unwrap();
     assert!(cache.contains(&format!("remote={new}")));
-    w.kluis(&installed).arg("info").assert().success().stdout(contains("kluis --update"));
+    w.cakepass(&installed).arg("info").assert().success().stdout(contains("cakepass --update"));
     // After a new check with no news the notice disappears again.
     w.update(&new[..12], &["--check"]).assert().success();
-    w.kluis(&new[..12]).arg("info").assert().success().stdout(contains("no new version known"));
+    w.cakepass(&new[..12]).arg("info").assert().success().stdout(contains("no new version known"));
     // --notify without notify-send in PATH is not an error.
     w.update(&installed, &["--check", "--notify"]).assert().success();
 }
@@ -227,7 +227,7 @@ fn full_update_leaves_the_vault_alone() {
     assert_eq!(fs::metadata(&backup).unwrap().permissions().mode() & 0o777, 0o600);
     w.assert_vault_works(&new[..12]);
     // The backup opens on its own as well.
-    Command::new(env!("CARGO_BIN_EXE_kluis"))
+    Command::new(env!("CARGO_BIN_EXE_cakepass"))
         .args(["--vault", backup.to_str().unwrap(), "list"])
         .write_stdin(format!("{PW}\n"))
         .assert()
@@ -317,7 +317,7 @@ fn reachability_and_source_folder_errors() {
     let w = World::new();
     let installed = w.installed();
     // Invalid source folder.
-    w.kluis(&installed)
+    w.cakepass(&installed)
         .args(["--update", "--source", "/tmp"])
         .assert()
         .failure()
@@ -333,7 +333,7 @@ fn not_inside_the_vault_shell() {
     let w = World::new();
     let installed = w.installed();
     w.init_vault(&installed);
-    w.kluis(&installed)
+    w.cakepass(&installed)
         .arg("shell")
         .write_stdin(format!("{PW}\nupdate\nexit\n"))
         .assert()
@@ -355,7 +355,7 @@ fn update_never_opens_the_vault() {
 
 #[test]
 fn version_contains_the_commit() {
-    Command::new(env!("CARGO_BIN_EXE_kluis"))
+    Command::new(env!("CARGO_BIN_EXE_cakepass"))
         .arg("--version")
         .assert()
         .success()

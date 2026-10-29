@@ -1,7 +1,7 @@
 //! The vault model: items and operations on them. Purely in-memory; no I/O.
 //!
 //! SECURITY-CRITICAL – second encryption layer.
-//! All content of an item (username, URL, password/API key and notes) is
+//! All content of an item (username, e-mail address, URL, password/API key and notes) is
 //! encrypted per field with the item key ([`ItemKey`]), each with its own
 //! random nonce. Even while the vault is open, that content therefore only
 //! exists encrypted in memory. It can only be read through the methods that
@@ -12,8 +12,8 @@
 //! protected by the outer layer on disk), so you can find and sort items.
 //!
 //! Item types ([`Kind`]):
-//! - **login**: username, URL, password, notes
-//! - **api**: account/key ID, service URL, the API key, notes
+//! - **login**: username, e-mail address, URL, password, notes
+//! - **api**: account/key ID, e-mail address, service URL, the API key, notes
 //! - **note**: text only (multiple lines), e.g. recovery codes
 //!
 //! All fields are wiped on drop (`ZeroizeOnDrop`). `Debug` never shows secrets.
@@ -30,11 +30,13 @@ use crate::secure_mem::{CountingWriter, SecureBuf};
 
 /// Current version of the (encrypted) JSON contents.
 /// 1 = everything as text inside the vault; 2 = password and notes encrypted
-/// per field; 3 = all content encrypted per field + item types.
-pub const SCHEMA_VERSION: u32 = 3;
+/// per field; 3 = all content encrypted per field + item types; 4 = adds the
+/// encrypted e-mail address.
+pub const SCHEMA_VERSION: u32 = 4;
 const MAX_NAME_LEN: usize = 200;
 const MAX_FIELD_LEN: usize = 64 * 1024;
 const FIELD_USERNAME: &str = "username";
+const FIELD_EMAIL: &str = "email";
 const FIELD_URL: &str = "url";
 const FIELD_PASSWORD: &str = "password";
 const FIELD_NOTES: &str = "notes";
@@ -96,6 +98,10 @@ pub struct Entry {
     kind: Kind,
     /// Encrypted: base64(nonce || ciphertext || tag).
     username_sealed: String,
+    /// Encrypted: the e-mail address that belongs to this item. Missing in
+    /// vaults of schema 3; filled in (empty) when such a vault is opened.
+    #[serde(default)]
+    email_sealed: String,
     /// Encrypted.
     url_sealed: String,
     /// Encrypted: password (login) or API key (api).
@@ -120,6 +126,8 @@ pub struct NewEntry {
     #[zeroize(skip)]
     pub kind: Kind,
     pub username: String,
+    /// E-mail address that belongs to the item.
+    pub email: String,
     /// Password (login) or API key (api); empty for a note.
     pub password: String,
     pub url: String,
@@ -136,6 +144,7 @@ impl Entry {
             name: String::new(),
             kind: fields.kind,
             username_sealed: String::new(),
+            email_sealed: String::new(),
             url_sealed: String::new(),
             password_sealed: String::new(),
             notes_sealed: String::new(),
@@ -145,6 +154,7 @@ impl Entry {
         };
         e.set_name(&fields.name)?;
         e.set_username(key, &fields.username)?;
+        e.set_email(key, &fields.email)?;
         e.set_password(key, &fields.password)?;
         e.set_url(key, &fields.url)?;
         e.set_notes(key, &fields.notes)?;
@@ -162,6 +172,10 @@ impl Entry {
     /// Decrypt the username (or account/key ID for an API key).
     pub fn username(&self, key: &ItemKey) -> Result<Zeroizing<String>> {
         key.open(FIELD_USERNAME, &self.username_sealed)
+    }
+    /// Decrypt the e-mail address.
+    pub fn email(&self, key: &ItemKey) -> Result<Zeroizing<String>> {
+        key.open(FIELD_EMAIL, &self.email_sealed)
     }
     /// Decrypt the URL.
     pub fn url(&self, key: &ItemKey) -> Result<Zeroizing<String>> {
@@ -183,6 +197,10 @@ impl Entry {
             Kind::Note => self.notes(key),
             Kind::Login | Kind::Api => self.password(key),
         }
+    }
+    /// Whether there is an e-mail address (without decrypting).
+    pub fn has_email(&self) -> bool {
+        crypto::sealed_plaintext_len(&self.email_sealed) > 0
     }
     /// Whether there is a password/API key (without decrypting).
     pub fn has_password(&self) -> bool {
@@ -221,6 +239,11 @@ impl Entry {
     }
     pub fn set_username(&mut self, key: &ItemKey, v: &str) -> Result<()> {
         self.username_sealed = key.seal(FIELD_USERNAME, validate_line("username", v)?)?;
+        self.touch();
+        Ok(())
+    }
+    pub fn set_email(&mut self, key: &ItemKey, v: &str) -> Result<()> {
+        self.email_sealed = key.seal(FIELD_EMAIL, validate_line("e-mail address", v)?)?;
         self.touch();
         Ok(())
     }
@@ -268,10 +291,12 @@ impl Entry {
     /// and import). The modification date stays the same.
     fn reseal(&mut self, from: &ItemKey, to: &ItemKey) -> Result<()> {
         let username = self.username(from)?;
+        let email = self.email(from)?;
         let url = self.url(from)?;
         let pw = self.password(from)?;
         let notes = self.notes(from)?;
         self.username_sealed = to.seal(FIELD_USERNAME, &username)?;
+        self.email_sealed = to.seal(FIELD_EMAIL, &email)?;
         self.url_sealed = to.seal(FIELD_URL, &url)?;
         self.password_sealed = to.seal(FIELD_PASSWORD, &pw)?;
         self.notes_sealed = to.seal(FIELD_NOTES, &notes)?;
@@ -279,8 +304,8 @@ impl Entry {
     }
 
     /// Whether the item matches a search term (case-insensitive). Searches
-    /// name, type, tags, username and URL (the last two are briefly decrypted
-    /// for that); never passwords, keys or notes.
+    /// name, type, tags, username, e-mail address and URL (the last three are
+    /// briefly decrypted for that); never passwords, keys or notes.
     pub fn matches(&self, query: &str, key: &ItemKey) -> bool {
         let q = query.to_lowercase();
         let hit = |s: &str| s.to_lowercase().contains(&q);
@@ -288,6 +313,7 @@ impl Entry {
             || hit(self.kind.label())
             || self.tags.iter().any(|t| hit(t))
             || self.username(key).is_ok_and(|u| hit(&u))
+            || self.email(key).is_ok_and(|u| hit(&u))
             || self.url(key).is_ok_and(|u| hit(&u))
     }
 
@@ -443,6 +469,7 @@ impl Vault {
         let (mut v, migrated) = match peek.schema {
             1 => (Self::migrate_v1(bytes, key)?, true),
             2 => (Self::migrate_v2(bytes, key)?, true),
+            3 => (Self::migrate_v3(bytes, key)?, true),
             SCHEMA_VERSION => {
                 (serde_json::from_slice::<Vault>(bytes).map_err(|_| Error::CorruptPayload)?, false)
             }
@@ -454,7 +481,7 @@ impl Vault {
         Ok((v, migrated))
     }
 
-    /// Schema 1 → 3: encrypt all content per field.
+    /// Schema 1 → 4: encrypt all content per field.
     fn migrate_v1(bytes: &[u8], key: &ItemKey) -> Result<Vault> {
         let old: VaultV1 = serde_json::from_slice(bytes).map_err(|_| Error::CorruptPayload)?;
         let mut v = Vault::new();
@@ -464,6 +491,7 @@ impl Vault {
                     name: e.name.clone(),
                     kind: Kind::Login,
                     username: e.username.clone(),
+                    email: String::new(),
                     password: e.password.clone(),
                     url: e.url.clone(),
                     notes: e.notes.clone(),
@@ -479,7 +507,7 @@ impl Vault {
         Ok(v)
     }
 
-    /// Schema 2 → 3: also encrypt username and URL.
+    /// Schema 2 → 4: also encrypt username and URL.
     fn migrate_v2(bytes: &[u8], key: &ItemKey) -> Result<Vault> {
         let old: VaultV2 = serde_json::from_slice(bytes).map_err(|_| Error::CorruptPayload)?;
         let mut v = Vault::new();
@@ -490,6 +518,7 @@ impl Vault {
                 name: e.name.clone(),
                 kind: Kind::Login,
                 username_sealed: key.seal(FIELD_USERNAME, username)?,
+                email_sealed: key.seal(FIELD_EMAIL, "")?,
                 url_sealed: key.seal(FIELD_URL, url)?,
                 password_sealed: e.password_sealed.clone(),
                 notes_sealed: e.notes_sealed.clone(),
@@ -501,13 +530,24 @@ impl Vault {
         Ok(v)
     }
 
+    /// Schema 3 → 4: add the (empty) encrypted e-mail address.
+    fn migrate_v3(bytes: &[u8], key: &ItemKey) -> Result<Vault> {
+        let mut v: Vault = serde_json::from_slice(bytes).map_err(|_| Error::CorruptPayload)?;
+        for e in &mut v.entries {
+            if e.email_sealed.is_empty() {
+                e.email_sealed = key.seal(FIELD_EMAIL, "")?;
+            }
+        }
+        Ok(v)
+    }
+
     /// Validate every item, including those from (possibly malicious) import
     /// files: valid fields, validly encrypted content and unique names.
     fn validate(&self) -> Result<()> {
         for (i, e) in self.entries.iter().enumerate() {
             let valid = validate_name(&e.name).is_ok_and(|n| n == e.name)
                 && e.tags.iter().all(|t| validate_line("", t).is_ok_and(|v| !v.is_empty() && v == t))
-                && [&e.username_sealed, &e.url_sealed, &e.password_sealed, &e.notes_sealed]
+                && [&e.username_sealed, &e.email_sealed, &e.url_sealed, &e.password_sealed, &e.notes_sealed]
                     .iter()
                     .all(|s| crypto::decode_sealed(s).is_ok())
                 && !self.entries[..i].iter().any(|other| same_name(&other.name, &e.name));
@@ -633,8 +673,13 @@ impl Vault {
         let mut added = 0;
         let mut skipped = 0;
         for e in other.entries() {
-            let theirs =
-                (e.username(other_key)?, e.url(other_key)?, e.password(other_key)?, e.notes(other_key)?);
+            let theirs = (
+                e.username(other_key)?,
+                e.email(other_key)?,
+                e.url(other_key)?,
+                e.password(other_key)?,
+                e.notes(other_key)?,
+            );
             // Duplicate: same name (optionally with a sequence number, so importing
             // repeatedly makes no copies), type and content.
             let mut duplicate = false;
@@ -644,6 +689,7 @@ impl Vault {
                 }
                 let mine = (
                     existing.username(my_key)?,
+                    existing.email(my_key)?,
                     existing.url(my_key)?,
                     existing.password(my_key)?,
                     existing.notes(my_key)?,
@@ -653,6 +699,7 @@ impl Vault {
                     && eq(&mine.1, &theirs.1)
                     && eq(&mine.2, &theirs.2)
                     && eq(&mine.3, &theirs.3)
+                    && eq(&mine.4, &theirs.4)
                 {
                     duplicate = true;
                     break;
@@ -683,6 +730,7 @@ mod tests {
             NewEntry {
                 name: name.into(),
                 username: "john".into(),
+                email: "john@example.org".into(),
                 password: pw.into(),
                 url: "https://example.org".into(),
                 notes: "secret note".into(),
@@ -721,7 +769,7 @@ mod tests {
         let e = entry("x", "supersecret");
         // The model (and so memory and the JSON) holds no plain text.
         let json = json_of(&e);
-        for plain in ["supersecret", "secret note", "john", "example.org"] {
+        for plain in ["supersecret", "secret note", "john", "john@example.org", "example.org"] {
             assert!(!json.contains(plain), "{plain} is readable in the JSON");
         }
         assert!(json.contains("username_sealed") && json.contains("password_sealed"));
@@ -729,15 +777,18 @@ mod tests {
         assert_eq!(e.password(&k).unwrap().as_str(), "supersecret");
         assert_eq!(e.notes(&k).unwrap().as_str(), "secret note");
         assert_eq!(e.username(&k).unwrap().as_str(), "john");
+        assert_eq!(e.email(&k).unwrap().as_str(), "john@example.org");
         assert_eq!(e.url(&k).unwrap().as_str(), "https://example.org");
-        for wrong in [e.password(&test_item_key(2)), e.username(&test_item_key(2))] {
+        for wrong in
+            [e.password(&test_item_key(2)), e.username(&test_item_key(2)), e.email(&test_item_key(2))]
+        {
             assert!(matches!(wrong, Err(Error::Decrypt)));
         }
-        assert!(e.has_password() && e.has_notes());
+        assert!(e.has_password() && e.has_notes() && e.has_email());
         // Two items with the same password still encrypt differently.
         assert_ne!(entry("a", "same").password_sealed, entry("b", "same").password_sealed);
         let empty = Entry::new(NewEntry { name: "empty".into(), ..Default::default() }, &k).unwrap();
-        assert!(!empty.has_password() && !empty.has_notes());
+        assert!(!empty.has_password() && !empty.has_notes() && !empty.has_email());
     }
 
     #[test]
@@ -814,6 +865,7 @@ mod tests {
         assert_eq!(v.search("MAIL", &k).len(), 1);
         assert_eq!(v.search("example", &k).len(), 1);
         assert_eq!(v.search("JOHN", &k).len(), 1);
+        assert_eq!(v.search("john@example", &k).len(), 1, "the e-mail address is searchable");
         assert_eq!(v.search("supersecret", &k).len(), 0);
         assert_eq!(v.search("secret note", &k).len(), 0);
         assert_eq!(v.search("example", &test_item_key(2)).len(), 0, "wrong key finds nothing");
@@ -880,7 +932,7 @@ mod tests {
         assert_eq!(e.username(&k).unwrap().as_str(), "u");
         assert_eq!((e.created(), e.modified()), (5, 6), "dates are preserved");
         let json = String::from_utf8(v.to_json().unwrap().as_slice().to_vec()).unwrap();
-        assert!(!json.contains("old-pw") && json.contains("\"schema\":3"));
+        assert!(!json.contains("old-pw") && json.contains("\"schema\":4"));
     }
 
     #[test]
@@ -898,9 +950,39 @@ mod tests {
         assert_eq!(e.url(&k).unwrap().as_str(), "https://two.nl");
         assert_eq!(e.password(&k).unwrap().as_str(), "v2-pw");
         assert_eq!(e.notes(&k).unwrap().as_str(), "v2-note");
+        assert_eq!(e.email(&k).unwrap().as_str(), "");
         assert_eq!((e.created(), e.modified()), (7, 8));
         let json = String::from_utf8(v.to_json().unwrap().as_slice().to_vec()).unwrap();
         assert!(!json.contains("user2") && !json.contains("two.nl"));
+    }
+
+    #[test]
+    fn migration_from_schema_3() {
+        let k = test_item_key(1);
+        let s = |f: &str, v: &str| k.seal(f, v).unwrap();
+        let old = format!(
+            r#"{{"schema":3,"entries":[{{"name":"Three","kind":"api","username_sealed":"{}","url_sealed":"{}","password_sealed":"{}","notes_sealed":"{}","tags":["t"],"created":9,"modified":10}}]}}"#,
+            s("username", "key-id"),
+            s("url", "https://three.example"),
+            s("password", "sk-three"),
+            s("notes", "n3"),
+        );
+        let (v, migrated) = Vault::from_json(old.as_bytes(), &k).unwrap();
+        assert!(migrated, "an old vault is saved again in the new schema");
+        let e = v.get("three").unwrap();
+        assert_eq!(e.kind(), Kind::Api);
+        assert_eq!(e.username(&k).unwrap().as_str(), "key-id");
+        assert_eq!(e.email(&k).unwrap().as_str(), "", "no e-mail address yet");
+        assert_eq!(e.password(&k).unwrap().as_str(), "sk-three");
+        assert_eq!((e.created(), e.modified()), (9, 10));
+        let json = String::from_utf8(v.to_json().unwrap().as_slice().to_vec()).unwrap();
+        assert!(json.contains("\"schema\":4") && json.contains("email_sealed"));
+        // Now an e-mail address can be set and is encrypted too.
+        let mut e2 = e.clone();
+        e2.set_email(&k, "me@three.example").unwrap();
+        assert_eq!(e2.email(&k).unwrap().as_str(), "me@three.example");
+        assert!(!json_of(&e2).contains("me@three.example"));
+        assert!(e2.set_email(&k, "bad\nline").is_err());
     }
 
     #[test]
@@ -909,7 +991,7 @@ mod tests {
         let s = k.seal("x", "").unwrap();
         let item = |extra: &str| {
             format!(
-                r#"{{"schema":3,"entries":[{{{extra},"username_sealed":"{s}","url_sealed":"{s}","password_sealed":"{s}","notes_sealed":"{s}"}}]}}"#
+                r#"{{"schema":4,"entries":[{{{extra},"username_sealed":"{s}","email_sealed":"{s}","url_sealed":"{s}","password_sealed":"{s}","notes_sealed":"{s}"}}]}}"#
             )
         };
         assert!(matches!(Vault::from_json(b"{not json", &k), Err(Error::CorruptPayload)));
@@ -928,9 +1010,9 @@ mod tests {
             item(r#""name":"x","tags":["\u0007"]"#),
             item(r#""name":"x","kind":"unknown""#),
             format!(
-                r#"{{"schema":3,"entries":[{{"name":"x","username_sealed":"nonsense","url_sealed":"{s}","password_sealed":"{s}","notes_sealed":"{s}"}}]}}"#
+                r#"{{"schema":4,"entries":[{{"name":"x","username_sealed":"nonsense","email_sealed":"{s}","url_sealed":"{s}","password_sealed":"{s}","notes_sealed":"{s}"}}]}}"#
             ),
-            r#"{"schema":3,"entries":[{"name":"x"}]}"#.to_string(),
+            r#"{"schema":4,"entries":[{"name":"x"}]}"#.to_string(),
             r#"{"schema":2,"entries":[{"name":"x","username":"\u0007","password_sealed":"a","notes_sealed":"b"}]}"#
                 .to_string(),
             r#"{"schema":1,"entries":[{"name":"x","notes":"\u001b[2J"}]}"#.to_string(),
@@ -957,7 +1039,8 @@ mod tests {
         let e = v.get("x").unwrap();
         assert_eq!(e.password(&k2).unwrap().as_str(), "pw");
         assert_eq!(e.username(&k2).unwrap().as_str(), "john");
-        assert!(e.password(&k1).is_err() && e.url(&k1).is_err());
+        assert_eq!(e.email(&k2).unwrap().as_str(), "john@example.org");
+        assert!(e.password(&k1).is_err() && e.url(&k1).is_err() && e.email(&k1).is_err());
         assert_eq!(e.modified(), before);
         // Wrong source key: nothing changed.
         assert!(v.rekey(&k1, &k2).is_err());

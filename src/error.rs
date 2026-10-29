@@ -17,7 +17,7 @@ pub enum Error {
     #[error("the vault file is too short or truncated")]
     Truncated,
 
-    #[error("file version {0} is not supported; use a newer version of kluis")]
+    #[error("file version {0} is not supported; use a newer version of cakepass")]
     UnsupportedVersion(u16),
 
     #[error("the vault file uses an unknown algorithm")]
@@ -44,13 +44,13 @@ pub enum Error {
     #[error("the operating system could not provide random numbers")]
     Rng,
 
-    #[error("there is no vault at {0} yet. Create one with `kluis setup`.")]
+    #[error("there is no vault at {0} yet. Create one with `cakepass setup`.")]
     VaultNotFound(PathBuf),
 
     #[error("a file already exists at {0}; I will not overwrite it")]
     AlreadyExists(PathBuf),
 
-    #[error("the vault was changed by another kluis process in the meantime; try again")]
+    #[error("the vault was changed by another cakepass process in the meantime; try again")]
     ConcurrentModification,
 
     #[error("no item found with the name '{0}'")]

@@ -14,8 +14,8 @@
 //!
 //! The logo only appears when the output is a color terminal. In pipes,
 //! scripts and tests nothing happens. With the animation switched off
-//! (`kluis config set animation off`, `--no-animation` or
-//! `KLUIS_NO_ANIMATION=1`) the logo is shown as a still image.
+//! (`cakepass config set animation off`, `--no-animation` or
+//! `CAKEPASS_NO_ANIMATION=1`) the logo is shown as a still image.
 
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -46,7 +46,7 @@ pub fn set_animation(on: bool) {
 /// Whether the animation is currently enabled.
 fn animation_enabled() -> bool {
     !ANIMATION_OFF.load(Ordering::Relaxed)
-        && std::env::var_os("KLUIS_NO_ANIMATION").is_none_or(|v| v.is_empty() || v == "0")
+        && std::env::var_os("CAKEPASS_NO_ANIMATION").is_none_or(|v| v.is_empty() || v == "0")
 }
 
 fn glyph(c: char) -> [&'static str; GLYPH_H] {

@@ -1,10 +1,10 @@
-//! User settings, stored in `~/.config/kluis/config` (XDG: `$XDG_CONFIG_HOME`).
+//! User settings, stored in `~/.config/cakepass/config` (XDG: `$XDG_CONFIG_HOME`).
 //!
 //! The file is a plain `key=value` list. It contains no secrets, only
 //! preferences:
 //!
 //! ```text
-//! # CakePass settings (change them with `kluis config`)
+//! # CakePass settings (change them with `cakepass config`)
 //! animation=on
 //! lock_timeout_minutes=5
 //! ```
@@ -17,7 +17,7 @@ use std::fs;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
-use kluis::{Error, Result, storage};
+use cakepass::{Error, Result, storage};
 
 /// Default idle time before the interactive mode locks, in minutes.
 pub const DEFAULT_LOCK_MINUTES: u64 = 5;
@@ -83,7 +83,7 @@ impl Config {
     /// The text to write to a config file.
     pub fn to_text(&self) -> String {
         format!(
-            "# CakePass settings (change them with `kluis config`)\nanimation={}\nlock_timeout_minutes={}\n",
+            "# CakePass settings (change them with `cakepass config`)\nanimation={}\nlock_timeout_minutes={}\n",
             if self.animation { "on" } else { "off" },
             self.lock_timeout_minutes
         )
@@ -101,7 +101,7 @@ pub fn path() -> Option<PathBuf> {
         Some(p) if p.is_absolute() => p,
         _ => PathBuf::from(std::env::var_os("HOME")?).join(".config"),
     };
-    Some(base.join("kluis").join("config"))
+    Some(storage::app_dir(&base).join("config"))
 }
 
 /// Load the settings from `path` (defaults if missing or unreadable).

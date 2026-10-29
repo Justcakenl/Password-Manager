@@ -3,7 +3,7 @@
 //! SECURITY-CRITICAL.
 //! - The secret goes to `wl-copy`/`xclip` via stdin, never as an argument
 //!   (arguments are visible to everyone in `ps`).
-//! - After copying, a detached helper process (`kluis __clipboard-clear <tool>`)
+//! - After copying, a detached helper process (`cakepass __clipboard-clear <tool>`)
 //!   clears the clipboard after 20 seconds. The helper only receives a
 //!   BLAKE2b hash of the secret (via stdin) and only clears the clipboard if
 //!   it still holds that secret (compared in constant time). This way we never
@@ -25,7 +25,7 @@ use crate::error::{Error, Result};
 
 /// The clipboard is cleared after this many seconds.
 pub const CLEAR_AFTER_SECS: u64 = 20;
-/// First argument with which `kluis` starts as the clearing helper process.
+/// First argument with which `cakepass` starts as the clearing helper process.
 pub const HELPER_ARG: &str = "__clipboard-clear";
 const HASH_LEN: usize = 64;
 
@@ -174,12 +174,12 @@ fn spawn_clear_helper(tool: Tool, digest: &[u8; HASH_LEN]) -> Result<()> {
     let mut child = cmd.spawn()?;
     child.stdin.take().expect("stdin is piped").write_all(digest)?;
     // The helper keeps running on its own. A background thread reaps the
-    // process if it finishes before we do (e.g. inside `kluis shell`).
+    // process if it finishes before we do (e.g. inside `cakepass shell`).
     std::thread::spawn(move || child.wait());
     Ok(())
 }
 
-/// Main routine of the hidden helper process `kluis __clipboard-clear`.
+/// Main routine of the hidden helper process `cakepass __clipboard-clear`.
 pub fn run_clear_helper(tool: Tool, seconds: u64) -> Result<()> {
     // SAFETY: ignoring a signal is always safe.
     unsafe {
