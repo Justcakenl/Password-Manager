@@ -24,11 +24,19 @@ src/
 ├── import.rs       CSV import from other managers
 ├── clipboard.rs    wl-copy / xclip, automatic clearing
 ├── main.rs         starts the CLI (allocator + process hardening)
-└── cli/            arguments (clap), prompts, commands, interactive mode
+└── cli/            arguments (clap), prompts, commands, line mode (shell.rs)
     ├── setup.rs    first-time setup wizard and `cakepass config`
     ├── config.rs   settings file (animation, lock timeout)
     ├── logo.rs     the 3D login screen
-    └── update.rs   `cakepass --update` (git + makepkg)
+    ├── update.rs   `cakepass --update` (git + makepkg)
+    └── tui/        the screen mode (`cakepass`): arrow keys, no extra crates
+        ├── term.rs     raw mode, alternate screen, signals, read/write (libc)
+        ├── keys.rs     bytes → keys (escape sequences, UTF-8, bracketed paste)
+        ├── grid.rs     frame buffer + diff (only changed cells, one write)
+        ├── input.rs    text fields (UTF-8 safe, masked, multi-line)
+        ├── theme.rs    colors (NO_COLOR) and box characters (ASCII fallback)
+        ├── app.rs      state machine: keys + time in, frame out (unit-tested)
+        └── screens/    list + details, form, generator, settings, dialogs
 ```
 
 The CLI is a thin layer. All security logic lives in the library.
@@ -44,6 +52,10 @@ The CLI is a thin layer. All security logic lives in the library.
 | Second layer | All content of every item (username, e-mail address, URL, password/API key, notes) is encrypted per field (XChaCha20-Poly1305, own nonce, field name as associated data) | Even in an open vault the content is only encrypted in memory; decryption happens per field, at the moment it is needed |
 | Item types | login, api, note (content schema 4, with the encrypted e-mail field) | One vault for passwords, API keys and secure notes |
 | Login screen | 3D-rendered logo (own small renderer, no extra crates), only in a color terminal | Pretty, but never in scripts or pipes; clears the screen when locking |
+| Screen mode (TUI) | `cakepass` opens a full-screen view driven by arrow keys, Enter, Esc and visible letter shortcuts (list + details, form, generator, settings, dialogs, a key-hint line and `?` help). The line mode stays as `cakepass shell` / `--no-tui`, and is used automatically for pipes, `TERM=dumb` and windows under 60×16 | Usable without knowing any command; scripts and power users keep the old interface |
+| No TUI library | Written on `libc` (termios raw mode, `poll`, `ioctl(TIOCGWINSZ)`, `read`/`write`, `sigaction`) and plain ANSI/VT escape codes; no ratatui, crossterm or ncurses | No new dependency to audit or to keep secrets in buffers we do not control; small binary (+4 % on the release build); every byte that reaches the terminal goes through our own wiped buffer |
+| Screen-mode secrets | Decrypt per frame only what is drawn (visible list rows' usernames, the selected item's fields); password/key/notes only while revealed (10 s, hidden on selection change, dialogs, other screens, lock). The cell grid is wiped on every redraw and on drop, the output buffer after each `write(2)`; input buffers are wiped as bytes are consumed | Nothing decrypted lingers; a memory scan after reveal/hide/edit finds 0 readable copies of the secrets |
+| Screen-mode safety nets | Alternate screen (secrets never reach the scrollback), screen + scrollback cleared on exit, bracketed paste (pasted text is never a shortcut), terminal restored on exit, error, panic hook and SIGINT/SIGTERM/SIGHUP/SIGQUIT (handlers only set a flag), idle lock by monotonic and wall-clock time plus a watchdog | A crash or a signal never leaves a broken terminal or an open vault; a sleeping laptop still locks |
 | Settings | `~/.config/cakepass/config`, plain `key=value`, forgiving parser | Preferences only (animation, lock timeout); a damaged file can never stop the program |
 | Setup wizard | `cakepass setup` asks animation, lock timeout, master password; works from stdin too | An easy start for new users, scriptable and testable |
 | Migration | Format 1 and content schema 1/2 are converted automatically on opening to format 2 / schema 4 (schema 3 only gains an empty encrypted e-mail field) | Existing vaults keep working |
@@ -89,7 +101,10 @@ The CLI is a thin layer. All security logic lives in the library.
 - **Clipboard managers** (KDE Klipper, cliphist, etc.) may keep a history.
   `cakepass` clears the clipboard, but not their history.
 - **Terminal scrollback** when you use `--show` yourself. Locking the
-  interactive mode clears the screen and scrollback.
+  line mode clears the screen and scrollback. The screen mode draws on the
+  alternate screen (not in the scrollback) and clears the screen on exit, but a
+  revealed secret is visible while it is shown, and terminal recorders or the
+  terminal emulator's own memory are outside our control.
 - **A compromised GitHub account.** `cakepass --update` shows what changes and asks
   for confirmation, and the daily check never installs anything, but you
   install code from your own repository. Use two-factor authentication.

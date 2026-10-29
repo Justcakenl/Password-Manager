@@ -52,7 +52,8 @@ pub fn shell_command() -> clap::Command {
     next_help_heading = "Options",
     after_help = "Examples:\n  \
         cakepass setup                   first-time setup (animation, master password)\n  \
-        cakepass                         login screen + interactive mode\n  \
+        cakepass                         open CakePass: login, then a screen you use with the arrow keys\n  \
+        cakepass shell                   the line mode: unlock once, then type commands (list, get, ...)\n  \
         cakepass add GitHub              add a login (asks for every field)\n  \
         cakepass add OpenAI --type api   store an API key\n  \
         cakepass add Recovery --type note   secure note\n  \
@@ -76,6 +77,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub no_animation: bool,
 
+    /// Without a command: use the line mode (typed commands) instead of the arrow-key screen
+    #[arg(long, global = true)]
+    pub no_tui: bool,
+
     /// Show this help
     #[arg(short = 'h', long = "help", action = ArgAction::Help, global = true)]
     help: Option<bool>,
@@ -84,7 +89,7 @@ pub struct Cli {
     #[arg(short = 'V', long = "version", action = ArgAction::Version)]
     version: Option<bool>,
 
-    /// Without a command, the login screen opens with the interactive mode.
+    /// Without a command, the login screen opens, then the arrow-key screen.
     #[command(subcommand)]
     pub command: Option<Cmd>,
 }
@@ -215,7 +220,7 @@ pub enum Cmd {
     /// Update CakePass to the newest version on GitHub (your vault is left untouched)
     Update(UpdateArgs),
 
-    /// Interactive mode: unlock once, locks after inactivity
+    /// Line mode: unlock once, type commands; locks after inactivity
     Shell {
         /// Lock automatically after this many seconds without input
         /// [default: 300, or the value set with `cakepass config`]
@@ -250,7 +255,7 @@ pub enum ConfigAction {
 pub enum ConfigKey {
     /// Play the intro animation of the login screen (on/off)
     Animation,
-    /// Lock the interactive mode after this many minutes of inactivity
+    /// Lock CakePass (screen and line mode) after this many minutes of inactivity
     LockTimeout,
 }
 

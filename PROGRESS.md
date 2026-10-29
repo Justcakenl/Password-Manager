@@ -1,9 +1,19 @@
 # Progress: `cakepass` (CakePass)
 
-Last updated: step 9 (English command name `cakepass`, e-mail addresses, generate → edit → save).
+Last updated: step 10 (the screen with arrow keys, version 0.3.0).
 Repository: private, `Justcakenl/passcode-manager-cli-`, branch `main`.
 
 ## What I need to do tonight on my computer
+
+**Already installed CakePass?** Update and try the new screen:
+
+```bash
+cakepass --update        # or run the one-line installer below again
+cakepass                 # log in → the screen with arrow keys; press ? for help
+```
+
+Then go through the new "Screen mode (arrow keys)" checks in the
+"Testing on Arch" list below. **First time?** Follow these steps:
 
 1. **Log in to GitHub** (the repository is private):
    ```bash
@@ -24,9 +34,11 @@ Repository: private, `Justcakenl/passcode-manager-cli-`, branch `main`.
 4. **Try it** with a throw-away vault first, so the real one stays clean:
    ```bash
    export CAKEPASS_VAULT=/tmp/testvault.enc
-   cakepass setup
+   cakepass setup              # answer "Open CakePass now?" with Enter
+   #  a → fill in a login → Ctrl+S;  c copies the password (paste it, wait 20 s → empty)
+   #  g → generator;  s → settings;  q → quit
    cakepass add Test --generate
-   cakepass get Test           # paste (Ctrl+V) somewhere and wait 20 s → empty
+   cakepass get Test           # the commands still work as before
    cakepass info
    unset CAKEPASS_VAULT
    ```
@@ -100,6 +112,36 @@ Repository: private, `Justcakenl/passcode-manager-cli-`, branch `main`.
     e-mail, URL, password, API key and notes found 0 times (the item *name* is
     found, as expected).
 
+- [x] **Step 10 – The screen with arrow keys (TUI), version 0.3.0**:
+  - `cakepass` now opens, after the login screen, a full-screen view you use with
+    the arrow keys, Enter, Esc and a few letters shown at the bottom (`?` = help):
+    tabs All/Logins/API keys/Notes, a list, a details pane (passwords, keys and
+    notes as dots until you press Enter; they hide again after 10 s), live search,
+    copy (`c`/`u`/`m`, cleared after 20 s), add/edit form (Ctrl+S saves, Ctrl+R
+    shows the password, Ctrl+G opens the generator), delete with confirmation
+    (default "no"), the generator (`g`; Enter saves a new login, like
+    `generate --save`), settings (`s`: animation, auto-lock, change master
+    password with re-confirmation and strength check, vault/version info), lock (`l`)
+    and quit (`q`, Ctrl+C).
+  - **No new dependency**: written on `libc` and ANSI escape codes (raw mode,
+    alternate screen, bracketed paste, a cell grid that sends only what changed).
+    Release binary +4 %. ASCII fallback without UTF-8, monochrome with `NO_COLOR`.
+  - The line mode is now `cakepass shell` (or `cakepass --no-tui`); pipes,
+    `TERM=dumb` and windows under 60×16 use it automatically. After the setup
+    wizard CakePass offers to open the screen right away.
+  - Security: only what is on screen is decrypted (per frame), revealed secrets
+    are never kept, the frame and output buffers are wiped, the terminal is
+    always restored (exit, error, panic, signals), idle lock also after a laptop
+    slept, and when another window changed the vault you can reload it without
+    losing what you typed. Memory scan (release build) after reveal, hide and
+    edit: password, API key, notes, username, e-mail and URL found 0 times as
+    readable text.
+  - Tests: key parser, text fields, frame diff, layouts at several sizes, every
+    screen, and the whole state machine against a real temporary vault; plus
+    `tests/tui.rs`, which runs the real program in a pseudo-terminal (add an item
+    with the arrow keys and verify it with `cakepass get`, paste, auto-lock,
+    Ctrl+C/SIGTERM restore the terminal, resize, the line-mode fallbacks).
+
 ## Still to do
 
 - [ ] Check the "Testing on Arch" list below on your own computer.
@@ -136,14 +178,22 @@ See `docs/DESIGN.md` for the explanation. In short:
   the README for why).
 - EFF diceware word list in `assets/` (checked against two independent sources;
   sha256 `addd3553…996b903e`).
+- The screen mode uses no TUI library (no ratatui/crossterm/ncurses): `libc` +
+  ANSI escape codes, so there is no new dependency and every byte with a secret
+  goes through our own wiped buffers. The line mode stays as `cakepass shell`.
+- Lock in the screen mode = wipe the key and close (like `exit` in the line
+  mode), not "back to the login screen".
+- Tests shorten the idle lock with `CAKEPASS_TEST_LOCK_SECS`; only debug builds
+  read it (the release build ignores it), and it can only make the time shorter.
 
 ## Checks (latest step)
 
 | Check | Result |
 |---|---|
-| `cargo test` | 159 passed (74 library, 21 CLI unit, 39 integration, 12 update, 13 installer) |
-| Generator menu in a real pseudo-terminal | regenerate, edit (own password), view, save, quit; `generate --save`, `add --generate`, `edit --generate` all driven and checked |
-| Memory scan of an open vault (release build) | username, e-mail, URL, password, API key, notes: 0 readable copies |
+| `cargo test` | 213 passed (74 library, 70 CLI/screen unit, 39 CLI integration, 5 screen in a pseudo-terminal, 12 update, 13 installer) |
+| Screen mode in a real pseudo-terminal | every screen at 80×24, 100×30, 70×30 and 60×16, in UTF-8, ASCII and `NO_COLOR`; add/edit/delete/search/paste/reveal/generator/settings, resize, too small, Ctrl+C, SIGTERM, auto-lock, `--no-tui`, `TERM=dumb` |
+| Memory scan of the screen mode (release build) | after revealing, hiding, editing and leaving: username, e-mail, URL, password, API key, notes 0 times as readable text; password/key/notes also 0 times in the screen buffer; only the cells of the item on screen hold its username/e-mail/URL |
+| Generator menu in a real pseudo-terminal (step 9) | regenerate, edit (own password), view, save, quit; `generate --save`, `add --generate`, `edit --generate` all driven and checked |
 | `cargo clippy --all-targets -- -D warnings` | no warnings |
 | `cargo audit` | no vulnerabilities |
 | `cargo build --release --locked` | succeeded |
@@ -171,7 +221,7 @@ Could NOT be tested in the cloud environment. Do this yourself and tick:
       `cakepass config` shows what you chose
 - [ ] `cakepass` shows the spinning 3D logo (kitty, Alacritty, Konsole, GNOME
       Terminal); with `cakepass config set animation off` you get a still logo
-- [ ] After `exit` in the interactive mode the screen is empty and you cannot
+- [ ] After `exit` in the line mode (`cakepass shell`) the screen is empty and you cannot
       scroll back to displayed passwords
 - [ ] `cd packaging/arch && makepkg -si` by hand works too
 - [ ] After installing: `cakepass --version`, and tab completion in a new terminal
@@ -202,8 +252,48 @@ Could NOT be tested in the cloud environment. Do this yourself and tick:
 - [ ] Desktop notification (install `libnotify`) appears for a new version
 - [ ] Does `git -C ~/cakepass fetch` work without a password prompt? If not, the
       daily check cannot run (manual updating still works)
-- [ ] Core dumps: open the interactive mode, run
+- [ ] Core dumps: open CakePass (`cakepass`), run
       `kill -SEGV $(pgrep -x cakepass)` in a second terminal and then
       `coredumpctl list` → no dump of cakepass
 - [ ] mlock limit on your real system: `ulimit -l` and `cakepass info`
 - [ ] Export to a USB stick (FAT/exFAT) and import it again
+
+### Screen mode (arrow keys) – new in step 10
+
+- [ ] `cakepass` → log in → the screen appears; `?` shows the help; the bottom
+      line shows the keys
+- [ ] **Clipboard**: select an item, `c`, paste it somewhere (Ctrl+V): it is the
+      password; the status line counts down; after 20 s `wl-paste` (or
+      `xclip -o -selection clipboard`) is empty. Same for `u` (username) and `m` (e-mail)
+- [ ] Add a login with `a`: type in every field, Ctrl+R shows the password,
+      Ctrl+G opens the generator, Ctrl+S saves; `cakepass get <name> --show` in
+      another terminal shows exactly what you typed
+- [ ] **Paste an API key** (Ctrl+Shift+V) into the API key field: it arrives
+      complete and no letter in it triggers a shortcut
+- [ ] Edit (`e`): "(unchanged)" keeps the password; typing replaces it
+- [ ] Delete (`d`): Enter alone does NOT delete; ← then Enter (or `y`) does
+- [ ] Enter on an item shows the password; it hides after 10 s and when you
+      press ↓
+- [ ] **Resize** the window (drag the corner, tile it, zoom with Ctrl+=/−): the
+      screen redraws cleanly; make it tiny → "Terminal too small"; bigger → back
+- [ ] **Narrow** window (60–79 columns): details next to the list or below it
+      (when it is tall), nothing garbled
+- [ ] **Terminals**: kitty, Alacritty, GNOME Terminal/Console, Konsole: lines,
+      colors, the pink selection bar, the cursor only in text fields
+- [ ] **The Linux console** (Ctrl+Alt+F3, log in, run `cakepass`): readable
+      lines and colors (with `LANG=C cakepass` you get `+-|` instead)
+- [ ] **SSH** from another computer (`ssh laptop`, then `cakepass`)
+- [ ] **tmux** (and screen): open it inside tmux; detach/attach; after quitting
+      no password is in tmux's scrollback (`Ctrl+B [` and scroll up)
+- [ ] **Idle lock**: set the auto-lock to 1 minute in settings (`s`), wait: it
+      locks, the screen is cleared and the terminal works normally
+- [ ] Close the laptop lid for longer than the lock time, open it: CakePass has
+      locked itself (or locks at once)
+- [ ] **Ctrl+C** in the screen, and closing the terminal window while it is open,
+      and `kill <pid>` from another terminal: the terminal is normal afterwards
+      (cursor visible, typing echoes; otherwise type `reset`)
+- [ ] `NO_COLOR=1 cakepass` and `cakepass --no-color`: no colors, selection in
+      reverse video
+- [ ] `cakepass --no-tui` and `cakepass shell`: the old line mode
+- [ ] Settings (`s`): animation off → next start shows a still logo; change the
+      master password there (asks the current one first) and log in with the new one
