@@ -24,7 +24,7 @@ use cakepass::vault::{Entry, Kind, NewEntry, Vault};
 use cakepass::{Error, Result, import};
 
 use super::args::{self, AddArgs, Cmd, EditArgs, GenArgs, GetArgs, KdfArgs, KdfChangeArgs};
-use super::{config, logo, prompt, setup, shell, ui, update};
+use super::{config, logo, prompt, setup, shell, tui, ui, update};
 
 static HARDENING: OnceLock<Hardening> = OnceLock::new();
 const LABEL_WIDTH: usize = 16;
@@ -43,18 +43,25 @@ pub fn run(cli: args::Cli) -> Result<()> {
     };
     let cfg = config::load();
     let Some(command) = cli.command else {
-        // `cakepass` without a command: login screen + interactive mode, or the
-        // first-time setup when there is no vault yet.
+        // `cakepass` without a command: login screen + the screen mode (or the
+        // line mode), or the first-time setup when there is no vault yet.
         if fs::symlink_metadata(&paths.file).is_err() {
             if prompt::stdin_is_tty() {
-                return setup::run(&paths, &KdfArgs::default_values());
+                let created = setup::wizard(&paths, &KdfArgs::default_values())?;
+                return match created {
+                    Some(mut uv) if !cli.no_tui && tui::check().is_ok() && offer_screen_mode() => {
+                        let notices = unlock_notices(&mut uv);
+                        tui::run_unlocked(uv, notices, &config::load())
+                    }
+                    _ => Ok(()),
+                };
             }
             logo::show(true);
             logo::tagline(TAGLINE);
             ui::info("There is no vault yet. Set one up with:  cakepass setup");
             return Ok(());
         }
-        return shell::run(&paths, cfg.lock_timeout_secs());
+        return interactive(&paths, &cfg, cli.no_tui);
     };
     match command {
         Cmd::Setup { kdf } => setup::run(&paths, &kdf),
@@ -80,6 +87,24 @@ pub fn run(cli: args::Cli) -> Result<()> {
             execute(&mut uv, cmd, false)
         }
     }
+}
+
+/// `cakepass` on its own: the screen mode when the terminal can show it,
+/// otherwise (pipes, `TERM=dumb`, a tiny window, `--no-tui`) the line mode.
+fn interactive(paths: &VaultPaths, cfg: &config::Config, no_tui: bool) -> Result<()> {
+    if !no_tui {
+        match tui::check() {
+            Ok(()) => return tui::run(paths, cfg),
+            Err(tui::Unavailable::NotATerminal) => {}
+            Err(why) => ui::info(&ui::dim_err(&format!("({why}; using the line mode instead.)"))),
+        }
+    }
+    shell::run(paths, cfg.lock_timeout_secs())
+}
+
+/// After the first-time setup: open the vault right away?
+fn offer_screen_mode() -> bool {
+    prompt::ask_yes_no("\nOpen CakePass now?", true).unwrap_or(false)
 }
 
 /// Run a command on an unlocked vault (also from `cakepass shell`).
@@ -147,7 +172,8 @@ pub struct Notice {
     pub text: String,
 }
 
-/// Warnings from opening the vault, an update notice and the mlock state.
+/// Warnings from opening the vault, an update notice and the mlock state
+/// (shown by the line mode as messages and by the screen mode in a dialog).
 pub(super) fn unlock_notices(uv: &mut UnlockedVault) -> Vec<Notice> {
     let mut out: Vec<Notice> =
         uv.take_warnings().into_iter().map(|text| Notice { warning: true, text }).collect();

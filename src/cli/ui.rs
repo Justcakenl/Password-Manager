@@ -28,6 +28,11 @@ pub fn color_on_stderr() -> bool {
     COLOR_STDERR.load(Ordering::Relaxed)
 }
 
+/// Whether color is used on stdout (lists, the screen mode).
+pub fn color_on_stdout() -> bool {
+    COLOR_STDOUT.load(Ordering::Relaxed)
+}
+
 /// Gray (for stderr).
 pub fn dim_err(text: &str) -> String {
     paint(false, "2", text)

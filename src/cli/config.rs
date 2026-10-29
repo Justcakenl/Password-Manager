@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use cakepass::{Error, Result, storage};
 
-/// Default idle time before the interactive mode locks, in minutes.
+/// Default idle time before the screen mode and the line mode lock, in minutes.
 pub const DEFAULT_LOCK_MINUTES: u64 = 5;
 /// Allowed range for the lock timeout, in minutes.
 pub const LOCK_MINUTES_RANGE: std::ops::RangeInclusive<u64> = 1..=1440;
@@ -29,7 +29,7 @@ pub const LOCK_MINUTES_RANGE: std::ops::RangeInclusive<u64> = 1..=1440;
 pub struct Config {
     /// Play the 3D logo animation on the login screen.
     pub animation: bool,
-    /// Lock the interactive mode after this many minutes without input.
+    /// Lock the screen mode and the line mode after this many minutes without input.
     pub lock_timeout_minutes: u64,
 }
 
