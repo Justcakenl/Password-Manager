@@ -148,6 +148,12 @@ impl VaultKey {
     pub fn kdf(&self) -> KdfParams {
         self.kdf
     }
+
+    /// Controleer of `password` dezelfde sleutel oplevert (constante tijd).
+    pub fn verify(&self, password: &[u8]) -> Result<bool> {
+        let candidate = crypto::derive_key(password, &self.salt, &self.kdf)?;
+        Ok(candidate.ct_eq(&self.key))
+    }
 }
 
 /// Versleutel `plaintext` tot een compleet kluisbestand.
@@ -282,6 +288,13 @@ mod tests {
     fn te_groot_bestand() {
         let big = vec![0u8; MAX_FILE_SIZE + 1];
         assert!(matches!(Header::decode(&big), Err(Error::TooLarge)));
+    }
+
+    #[test]
+    fn wachtwoord_controleren() {
+        let vk = VaultKey::create(b"juist", P).unwrap();
+        assert!(vk.verify(b"juist").unwrap());
+        assert!(!vk.verify(b"fout").unwrap());
     }
 
     #[test]

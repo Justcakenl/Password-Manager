@@ -110,7 +110,7 @@ impl Entry {
         self.modified = now();
     }
 
-    fn set_name(&mut self, name: &str) -> Result<()> {
+    pub fn set_name(&mut self, name: &str) -> Result<()> {
         let name = validate_name(name)?;
         replace_secret(&mut self.name, name);
         self.touch();
@@ -216,6 +216,21 @@ fn validate_line<'a>(what: &str, v: &'a str) -> Result<&'a str> {
     Ok(v)
 }
 
+/// "GitHub (2)" → "GitHub"; andere namen blijven gelijk.
+fn base_name(name: &str) -> &str {
+    let name = name.trim();
+    if let Some(open) = name.rfind(" (") {
+        let inner = &name[open + 2..];
+        if let Some(num) = inner.strip_suffix(')')
+            && !num.is_empty()
+            && num.chars().all(|c| c.is_ascii_digit())
+        {
+            return &name[..open];
+        }
+    }
+    name
+}
+
 fn same_name(a: &str, b: &str) -> bool {
     a.trim().to_lowercase() == b.trim().to_lowercase()
 }
@@ -313,11 +328,24 @@ impl Vault {
     }
 
     pub fn rename(&mut self, old: &str, new: &str) -> Result<()> {
-        if !same_name(old, new) && self.contains(new) {
-            return Err(Error::EntryExists(new.trim().to_string()));
+        self.update(old, |e| e.set_name(new))
+    }
+
+    /// Wijzig een item "alles of niets": de wijzigingen worden op een kopie
+    /// uitgevoerd en pas overgenomen als alles gelukt is en de (eventueel
+    /// nieuwe) naam niet botst met een ander item.
+    pub fn update(&mut self, name: &str, f: impl FnOnce(&mut Entry) -> Result<()>) -> Result<()> {
+        let idx = self
+            .entries
+            .iter()
+            .position(|e| same_name(&e.name, name))
+            .ok_or_else(|| Error::EntryNotFound(name.to_string()))?;
+        let mut copy = self.entries[idx].clone();
+        f(&mut copy)?;
+        if self.entries.iter().enumerate().any(|(i, e)| i != idx && same_name(&e.name, &copy.name)) {
+            return Err(Error::EntryExists(copy.name.clone()));
         }
-        let entry = self.get_mut(old).ok_or_else(|| Error::EntryNotFound(old.to_string()))?;
-        entry.set_name(new)?;
+        self.entries[idx] = copy;
         self.sort();
         Ok(())
     }
@@ -346,8 +374,13 @@ impl Vault {
         let mut added = 0;
         let mut skipped = 0;
         for e in other.entries() {
-            let duplicate = self.get(&e.name).is_some_and(|existing| {
-                existing.username == e.username && existing.password == e.password && existing.url == e.url
+            // Duplicaat: zelfde gegevens en zelfde naam, eventueel met volgnummer
+            // ("GitHub (2)"), zodat herhaald importeren geen kopieën maakt.
+            let duplicate = self.entries.iter().any(|existing| {
+                same_name(base_name(&existing.name), base_name(&e.name))
+                    && existing.username == e.username
+                    && existing.password == e.password
+                    && existing.url == e.url
             });
             if duplicate {
                 skipped += 1;
@@ -432,6 +465,29 @@ mod tests {
     }
 
     #[test]
+    fn update_is_alles_of_niets() {
+        let mut v = Vault::new();
+        v.add(entry("a", "1")).unwrap();
+        v.add(entry("b", "2")).unwrap();
+        // Botsende naam: niets wordt gewijzigd.
+        let r = v.update("a", |e| {
+            e.set_username("nieuw")?;
+            e.set_name("B")
+        });
+        assert!(matches!(r, Err(Error::EntryExists(_))));
+        assert_eq!(v.get("a").unwrap().username(), "jan");
+        // Fout halverwege: ook niets gewijzigd.
+        let r = v.update("a", |e| {
+            e.set_username("nieuw")?;
+            e.set_url("met\nnieuwe regel")
+        });
+        assert!(r.is_err());
+        assert_eq!(v.get("a").unwrap().username(), "jan");
+        v.update("a", |e| e.set_username("nieuw")).unwrap();
+        assert_eq!(v.get("a").unwrap().username(), "nieuw");
+    }
+
+    #[test]
     fn json_heen_en_terug() {
         let mut v = Vault::new();
         v.add(entry("één \"quote\" \\ test", "p@ss\"wo\\rd")).unwrap();
@@ -473,5 +529,10 @@ mod tests {
         assert_eq!(a.merge(&c), (2, 0));
         assert!(a.get("x (2)").is_some());
         assert_eq!(a.unique_name("x"), "x (3)");
+        // Nogmaals importeren maakt geen nieuwe kopieën.
+        assert_eq!(a.merge(&c), (0, 2));
+        assert_eq!(base_name("GitHub (12)"), "GitHub");
+        assert_eq!(base_name("GitHub (x)"), "GitHub (x)");
+        assert_eq!(base_name("(2)"), "(2)");
     }
 }

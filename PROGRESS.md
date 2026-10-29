@@ -1,6 +1,6 @@
 # Voortgang `kluis`
 
-Laatst bijgewerkt: stap 2 (opslag en kluismodel).
+Laatst bijgewerkt: stap 3 (CLI).
 Branch: `claude/kluis-v1`
 
 ## Klaar
@@ -16,10 +16,15 @@ Branch: `claude/kluis-v1`
   met fsync, automatische `.bak`, `flock` plus detectie van gelijktijdige
   wijzigingen, symlinks geweigerd, wachtwoord wijzigen, versleutelde export).
   40 tests.
+- [x] **Stap 3 – CLI**: `init`, `add`, `get`, `edit`, `rm`, `list`, `search`,
+  `generate` (wachtwoord/passphrase), `passwd`, `export`, `import`,
+  `import-csv`, `info`, `shell` (auto-vergrendeling), `completions`.
+  Klembord via wl-copy/xclip met wissen na 20 s. Nederlandse hulpteksten.
+  82 tests, waarvan 18 integratietests die het echte programma aansturen
+  (verkeerd wachtwoord, gemanipuleerde bestanden, shell-timeout, enz.).
 
 ## Nog te doen
 
-- [ ] Stap 3 – CLI (alle opdrachten, klembord, shell-modus, completions)
 - [ ] Stap 4 – Packaging (PKGBUILD), README, security-review
 
 ## Gemaakte keuzes
@@ -38,6 +43,15 @@ Zie `docs/ONTWERP.md` voor de uitleg. Kort samengevat:
 - `rust-version` is 1.88, omdat oudere versies van de crate `time` een
   bekende kwetsbaarheid hebben (RUSTSEC-2026-0009). Arch heeft altijd de
   nieuwste Rust, dus dat is geen probleem.
+- Automatisch vergrendelen: elk los commando vraagt opnieuw het hoofdwachtwoord
+  (er draait geen achtergronddienst met de sleutel). `kluis shell` houdt de
+  kluis open en vergrendelt na 5 minuten zonder invoer (`--timeout`).
+  In de shell vragen `passwd` en `export` het hoofdwachtwoord opnieuw.
+- Zonder klembord geeft `get` een foutmelding in plaats van het wachtwoord
+  te tonen; tonen kan alleen met `--show`.
+- Itemwachtwoorden mag je zelf kiezen (geen sterktecontrole, want sites
+  stellen eigen eisen); leeg laten = sterk wachtwoord genereren.
+- Het hoofd- en exportwachtwoord moeten zxcvbn-score ≥ 3 halen.
 - EFF-diceware-woordenlijst opgenomen in `assets/` (gecontroleerd tegen twee
   onafhankelijke bronnen; sha256 `addd3553…996b903e`).
 
@@ -45,7 +59,8 @@ Zie `docs/ONTWERP.md` voor de uitleg. Kort samengevat:
 
 | Controle | Resultaat |
 |---|---|
-| `cargo test` | 40 geslaagd |
+| `cargo test` | 82 geslaagd (58 bibliotheek, 6 CLI-unit, 18 integratie) |
+| `cargo build --release --locked` | gelukt; ontgrendelen met standaardinstellingen ≈ 0,2 s |
 | `cargo clippy --all-targets -- -D warnings` | geen meldingen |
 | `cargo audit` | geen kwetsbaarheden |
 
@@ -57,4 +72,17 @@ Dit kon in de cloudomgeving NIET getest worden. Doe dit zelf op je Arch-pc:
 - [ ] XDG-pad: standaard `~/.local/share/kluis/vault.enc`; met
   `XDG_DATA_HOME=/ergens` moet het `/ergens/kluis/vault.enc` worden
   (de tests draaiden als root in een container, met een tijdelijke map)
-- [ ] mlock-limiet: `ulimit -l` (verwacht 8192 KiB op een standaard Arch met systemd)
+- [ ] mlock-limiet: `ulimit -l` (verwacht 8192 KiB op een standaard Arch met
+  systemd) en `kluis info` → "mlock werkt: ja"
+- [ ] Klembord Wayland: `kluis get <naam>` → plakken werkt, en na 20 s is het
+  klembord leeg (`wl-paste` geeft niets). Vereist `wl-clipboard`.
+- [ ] Klembord X11: hetzelfde met `xclip`. Kopieer binnen 20 s iets anders;
+  dat mag NIET gewist worden.
+- [ ] Klembord en terminal sluiten: start `kluis get`, sluit direct het
+  terminalvenster; na 20 s moet het klembord toch leeg zijn.
+- [ ] Verborgen prompt: tijdens het typen van het hoofdwachtwoord verschijnen
+  geen tekens, en Ctrl+C zet de terminal netjes terug.
+- [ ] Kleuren: groen ✔ en gele waarschuwingen in je terminal; geen kleurcodes
+  bij `kluis list | cat`.
+- [ ] `kluis shell`: na 5 min niets doen verschijnt "Automatisch vergrendeld".
+- [ ] Completions in bash, zsh en fish (na installatie met de PKGBUILD).

@@ -91,6 +91,12 @@ impl MasterKey {
         self.0.as_slice()
     }
 
+    /// Vergelijk twee sleutels in constante tijd.
+    pub fn ct_eq(&self, other: &MasterKey) -> bool {
+        use subtle::ConstantTimeEq;
+        bool::from(self.as_bytes().ct_eq(other.as_bytes()))
+    }
+
     /// Maak een sleutel van ruwe bytes (alleen voor tests).
     #[cfg(test)]
     pub(crate) fn from_bytes_for_test(bytes: &[u8; KEY_LEN]) -> Self {

@@ -249,6 +249,18 @@ pub fn mlock_failed() -> bool {
     MLOCK_FAILED.load(Ordering::Relaxed)
 }
 
+/// De huidige limiet voor vergrendeld geheugen (RLIMIT_MEMLOCK) in bytes.
+/// `None` = onbeperkt of onbekend.
+pub fn memlock_limit() -> Option<u64> {
+    let mut lim = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: geldige pointer naar een struct die getrlimit invult.
+    if unsafe { libc::getrlimit(libc::RLIMIT_MEMLOCK, &mut lim) } != 0 || lim.rlim_cur == libc::RLIM_INFINITY
+    {
+        return None;
+    }
+    Some(lim.rlim_cur)
+}
+
 /// Probeer één pagina te vergrendelen; gebruikt door `kluis info`.
 pub fn mlock_works() -> bool {
     SecureBuf::with_capacity(1).is_locked()

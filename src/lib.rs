@@ -10,12 +10,18 @@
 //! - [`format`]: het versioneerde, versleutelde bestandsformaat.
 //! - [`vault`]: het kluismodel (items), zonder I/O.
 //! - [`storage`]: paden (XDG), atomisch schrijven, back-ups, vergrendeling.
+//! - [`generator`]: wachtwoorden en diceware-passphrases.
+//! - [`import`]: CSV-import uit andere wachtwoordmanagers.
+//! - [`clipboard`]: klembord met automatisch wissen.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+pub mod clipboard;
 pub mod crypto;
 pub mod error;
 pub mod format;
+pub mod generator;
+pub mod import;
 pub mod secure_mem;
 pub mod storage;
 pub mod vault;

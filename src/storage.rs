@@ -247,6 +247,11 @@ impl UnlockedVault {
         self.key.kdf()
     }
 
+    /// Controleer het hoofdwachtwoord opnieuw (bijv. vóór `passwd` in de shell).
+    pub fn verify_password(&self, password: &[u8]) -> Result<bool> {
+        self.key.verify(password)
+    }
+
     /// Waarschuwingen die bij het openen zijn ontstaan.
     pub fn take_warnings(&mut self) -> Vec<String> {
         std::mem::take(&mut self.warnings)

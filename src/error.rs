@@ -59,6 +59,15 @@ pub enum Error {
     #[error("er bestaat al een item met de naam '{0}'")]
     EntryExists(String),
 
+    #[error(
+        "geen klembord gevonden. Installeer wl-clipboard (Wayland) of xclip (X11), \
+         of gebruik --show om het op het scherm te tonen"
+    )]
+    NoClipboard,
+
+    #[error("afgebroken")]
+    Cancelled,
+
     #[error("ongeldige invoer: {0}")]
     InvalidInput(String),
 
