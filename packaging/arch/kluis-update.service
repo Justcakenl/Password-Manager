@@ -1,0 +1,12 @@
+[Unit]
+Description=CakePass: controleren op een nieuwe versie
+Documentation=https://github.com/Justcakenl/passcode-manager-cli-
+# Alleen controleren en melden; er wordt niets geïnstalleerd en je kluis wordt niet geopend.
+ConditionPathExists=/usr/share/kluis/source-dir
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/kluis update --check --notify
+Nice=10
+NoNewPrivileges=yes
+PrivateTmp=yes

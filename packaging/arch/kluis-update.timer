@@ -1,0 +1,10 @@
+[Unit]
+Description=CakePass: dagelijks controleren op een nieuwe versie
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=2h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
