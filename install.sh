@@ -175,8 +175,10 @@ main() {
   printf '\n'
 }
 
-# Download the repository. Private repository: this uses YOUR GitHub access.
-# Order: explicit URL (forks/tests) → gh (logged in) → SSH key → HTTPS login prompt.
+# Download the repository. A public repository needs no login at all; for a
+# private one (or a private fork) this uses YOUR GitHub access.
+# Order: explicit URL (forks/tests) → anonymous HTTPS → gh (logged in) → SSH key
+# → HTTPS login prompt.
 clone_repo() {
   local repo="$1" branch="$2" dir="$3"
   if [ -n "${CAKEPASS_REPO_URL:-}" ]; then
@@ -185,6 +187,11 @@ clone_repo() {
       || die "could not clone $CAKEPASS_REPO_URL"
     return 0
   fi
+  if GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true git clone --quiet --branch "$branch" \
+       "https://github.com/$repo.git" "$dir" >/dev/null 2>&1; then
+    return 0
+  fi
+  rm -rf "$dir"
   if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
     say "Cloning with the GitHub CLI (gh)"
     if tty_run gh repo clone "$repo" "$dir" -- --quiet --branch "$branch"; then return 0; fi
@@ -200,8 +207,8 @@ clone_repo() {
   say "Cloning over HTTPS (git may ask for your GitHub username and a personal access token)"
   if tty_run git clone --quiet --branch "$branch" "https://github.com/$repo.git" "$dir"; then return 0; fi
   rm -rf "$dir"
-  die "could not download the code. The repository is private, so git needs your GitHub login.
-  Easiest fixes (pick one, then run this installer again):
+  die "could not download the code. Check your internet connection. If the repository is
+  private, git needs your GitHub login. Easiest fixes (pick one, then run this installer again):
     • sudo pacman -S github-cli && gh auth login
     • add an SSH key to your GitHub account (ssh-keygen, then github.com/settings/keys)
     • create a personal access token and use it as the password when git asks"

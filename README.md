@@ -8,22 +8,37 @@ Everything lives in one encrypted file on your own computer.
 No cloud, no account, no telemetry. The program itself never makes a network
 connection; only `cakepass --update` lets `git` fetch your newest version.
 
-> 🔒 This is a **private repository**. Only people you give access on GitHub
-> (Settings → Collaborators) can see and install the code. Your vault itself is
-> never in this repository: vault files are kept out of git by `.gitignore`.
+**Made by the [cake-cli](https://github.com/Justcakenl/passcode-manager-cli-) project.**
+Free and open source under the [MIT license](LICENSE).
+
+> ⚠️ **Status: beta.** The cryptography comes from well-known, audited
+> RustCrypto crates, but CakePass itself has **not been audited by an outside
+> expert**. Keep a [backup](#backups) of your vault, and read
+> [Security review and remaining risks](#security-review-and-remaining-risks)
+> before you trust it with everything. Found a security problem? See
+> [SECURITY.md](SECURITY.md).
 
 ## Install in one line
 
-You need an Arch Linux computer and a GitHub login that can see this
-repository. The installer uses **your** GitHub access, so log in once with the
-GitHub CLI (`sudo pacman -S github-cli && gh auth login`), then run:
+You need an **Arch Linux** computer (and a user that may use `sudo`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Justcakenl/passcode-manager-cli-/main/install.sh | bash
+```
+
+<details>
+<summary>The repository (or your fork) is private? Use your GitHub login</summary>
+
+A plain `curl` link gives "404 Not Found" for a private repository, because the
+download has no login. Log in once with the GitHub CLI
+(`sudo pacman -S github-cli && gh auth login`), then run:
 
 ```bash
 gh api repos/Justcakenl/passcode-manager-cli-/contents/install.sh \
   -H "Accept: application/vnd.github.raw" | bash
 ```
 
-Or the same thing with `curl`:
+or the same thing with `curl`:
 
 ```bash
 curl -fsSL -H "Authorization: Bearer $(gh auth token)" \
@@ -31,14 +46,7 @@ curl -fsSL -H "Authorization: Bearer $(gh auth token)" \
   https://api.github.com/repos/Justcakenl/passcode-manager-cli-/contents/install.sh | bash
 ```
 
-> **Why not a plain `curl https://raw.githubusercontent.com/…` link?** For a
-> private repository GitHub answers that with "404 Not Found", because the
-> download has no login. The commands above add your login. If you ever make the
-> repository (or just the installer) public, this simple link works too:
->
-> ```bash
-> curl -fsSL https://raw.githubusercontent.com/Justcakenl/passcode-manager-cli-/main/install.sh | bash
-> ```
+</details>
 
 Add options after `bash -s --`, for example `... | bash -s -- --yes --no-setup`.
 
@@ -48,8 +56,8 @@ Add options after `bash -s --`, for example `... | bash -s -- --yes --no-setup`.
 1. Checks that you are on Arch Linux, not as root.
 2. Installs the tools it needs with `pacman` (`base-devel`, `git`, `rust`, and a
    clipboard tool for your session). Asks for your sudo password.
-3. Downloads the source code with `git` into `~/cakepass` (via `gh`, an SSH key,
-   or a login prompt).
+3. Downloads the source code with `git` into `~/cakepass` (a public repository
+   needs no login; for a private one it uses `gh`, an SSH key, or a login prompt).
 4. Builds, **tests** and installs the package with `makepkg`.
 5. Starts the **first-time setup**: do you want the intro animation, after how
    many minutes should it auto-lock, and your **master password**.
@@ -60,9 +68,9 @@ Options: `--yes` (no confirmations), `--no-setup`, `--dir DIR`, `--branch B`,
 
 Prefer to do it by hand? See [Manual install](#manual-install).
 
-> **Coming from the first version?** The command used to be called `kluis`. It is
-> now `cakepass`. Run the installer again: the old package is replaced and your
-> old `kluis` folders are moved to `cakepass` automatically, so your vault is kept.
+> **Used an early version?** The command used to be called `kluis`. Run the
+> installer again: the old package is replaced and your old `kluis` folders are
+> moved to `cakepass` automatically, so your vault is kept.
 
 ## Contents
 
@@ -468,7 +476,7 @@ Good to know:
 
 ## Updating
 
-When you (or someone with write access) pushed changes to GitHub, update with:
+When new changes are on GitHub, update with:
 
 ```bash
 cakepass --update
@@ -477,11 +485,11 @@ cakepass --update
 ```text
 $ cakepass --update
 Checking GitHub via git (/home/john/cakepass).
-┌──────────────────────────────────────────────────────────────┐
-│ There is a new version of CakePass.                          │
-│ New:  3 change(s)  (branch main)                             │
-│ From: git@github.com:Justcakenl/passcode-manager-cli-.git    │
-└──────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────┐
+│ There is a new version of CakePass.                           │
+│ New:  3 change(s)  (branch main)                              │
+│ From: https://github.com/Justcakenl/passcode-manager-cli-.git │
+└───────────────────────────────────────────────────────────────┘
   • 4f2a9c1 New item type: bank card
   • 9be01d7 Faster logo
 Update now? [y/N] y
@@ -626,7 +634,7 @@ implements no cryptography itself. More details are in [`docs/DESIGN.md`](docs/D
 
 ## Security review and remaining risks
 
-I went through the code myself and found and fixed these problems:
+The project went through its own code and found and fixed these problems:
 
 | Found | Fixed |
 |---|---|
@@ -672,16 +680,17 @@ no known vulnerabilities.
 9. **Root and the operating system.** Root can do anything, including `ptrace`
    and reading memory. `PR_SET_DUMPABLE=0` only protects against other
    processes of the same user.
-10. **Updating from GitHub.** `cakepass --update` installs code from your
-    repository. Anyone with write access to it (or who takes over your GitHub
-    account) can prepare a malicious update. You see what changes and must
-    confirm, but you will probably not read the code itself. Limit who has write
-    access, turn on two-factor authentication, and only install updates you expect.
+10. **Updating from GitHub.** `cakepass --update` installs code from the
+    repository you cloned. Anyone with write access to it (or who takes over the
+    maintainer's GitHub account) can prepare a malicious update. You see what changes and must
+    confirm, but you will probably not read the code itself. Maintainers: limit who has write
+    access and turn on two-factor authentication. Users: only install updates you
+    expect, and consider reading the changes (`git -C ~/cakepass log -p`) first.
 11. **Piping a script into bash.** The one-line installer runs a script you
     downloaded. Read [`install.sh`](install.sh) first; it is short and does
     nothing hidden.
 12. **This code has not been externally audited.** The cryptography comes from
-    audited crates, but the glue around it was written by me and only reviewed by me.
+    audited crates, but the glue around it was written and reviewed only by the project itself.
 
 ---
 
@@ -699,7 +708,7 @@ no known vulnerabilities.
 | "Terminal too small" | Make the window at least 60 columns by 16 rows, or use `cakepass shell`. |
 | The arrow-key screen does not appear | `cakepass` falls back to the line mode when input or output is not a terminal, with `TERM=dumb`, or in a tiny window. |
 | The logo looks wrong or choppy | Try a wider/other terminal, or turn the animation off: `cakepass config set animation off`. |
-| Installer: `could not download the code` | The repository is private. Log in: `gh auth login`, or set up an SSH key, then run the installer again. |
+| Installer: `could not download the code` | Check your internet connection. For a private repository or fork: log in with `gh auth login` (or set up an SSH key), then run the installer again. |
 | `cakepass --update`: `I do not know where the source code is` | You did not install with `makepkg -si`/the installer, or the folder was moved. Give it: `cakepass --update --source ~/cakepass`. |
 | `cakepass --update`: `git fetch failed` | No internet, or GitHub does not know you. Test with `git -C ~/cakepass fetch` and log in (SSH key or `gh auth login`). |
 | `cakepass --update`: `local changes` or `differs from GitHub` | You changed something in `~/cakepass`. Look with `git -C ~/cakepass status`; nothing is overwritten. |
@@ -716,16 +725,12 @@ sudo pacman -S xclip          # X11 (i3, Xfce, older sessions)
 
 Wondering whether you use Wayland? Type `echo $XDG_SESSION_TYPE`.
 
-The repository is private, so `git` needs your GitHub access. Pick one:
-
 ```bash
-# a) with an SSH key that belongs to your GitHub account
-git clone git@github.com:Justcakenl/passcode-manager-cli-.git ~/cakepass
-
-# b) with the GitHub CLI (pacman -S github-cli)
-gh auth login
-gh repo clone Justcakenl/passcode-manager-cli- ~/cakepass
+git clone https://github.com/Justcakenl/passcode-manager-cli-.git ~/cakepass
 ```
+
+(For a private fork, clone with an SSH key or the GitHub CLI instead:
+`gh auth login && gh repo clone <you>/<fork> ~/cakepass`.)
 
 Then:
 
@@ -805,7 +810,14 @@ cargo clippy --all-targets -- -D warnings    # lint
 cargo audit                                  # known vulnerabilities (cargo install cargo-audit)
 ```
 
+## Contributing and security
+
+Bug reports and pull requests are welcome. Please run the three commands above
+before you open a pull request, and keep the style of the surrounding code. A
+security problem? Do **not** open a public issue; follow [SECURITY.md](SECURITY.md).
+
 ## License
 
-MIT, see [`LICENSE`](LICENSE). The EFF word list is under CC BY 3.0 US,
+CakePass is made by the **cake-cli** project and released under the MIT license,
+see [`LICENSE`](LICENSE). The EFF word list is under CC BY 3.0 US,
 see [`assets/README.md`](assets/README.md).

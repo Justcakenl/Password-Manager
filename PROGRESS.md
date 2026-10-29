@@ -1,9 +1,9 @@
 # Progress: `cakepass` (CakePass)
 
 Last updated: step 10 (the screen with arrow keys, version 0.3.0).
-Repository: private, `Justcakenl/passcode-manager-cli-`, branch `main`.
+Repository: `Justcakenl/passcode-manager-cli-`, branch `main` (private until it is made public).
 
-## What I need to do tonight on my computer
+## Maintainer checklist: manual testing on a real Arch machine
 
 **Already installed CakePass?** Update and try the new screen:
 
@@ -15,7 +15,7 @@ cakepass                 # log in → the screen with arrow keys; press ? for he
 Then go through the new "Screen mode (arrow keys)" checks in the
 "Testing on Arch" list below. **First time?** Follow these steps:
 
-1. **Log in to GitHub** (the repository is private):
+1. **Log in to GitHub** (only needed while the repository is private):
    ```bash
    sudo pacman -S --needed github-cli
    gh auth login
