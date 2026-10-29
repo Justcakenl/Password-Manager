@@ -1,16 +1,16 @@
-//! Klembord via `wl-copy` (Wayland) of `xclip` (X11), met automatisch wissen.
+//! Clipboard via `wl-copy` (Wayland) or `xclip` (X11), with automatic clearing.
 //!
-//! BEVEILIGINGSKRITIEK.
-//! - Het geheim gaat via stdin naar `wl-copy`/`xclip`, nooit als argument
-//!   (argumenten zijn voor iedereen zichtbaar in `ps`).
-//! - Na het kopiëren start een los hulpproces (`kluis __clipboard-clear <tool>`) dat
-//!   na 20 seconden het klembord wist. Het hulpproces krijgt alleen een
-//!   BLAKE2b-hash van het geheim (via stdin) en wist het klembord alleen als
-//!   het daar nog steeds in staat (vergelijking in constante tijd). Zo wissen
-//!   we niet iets wat je daarna zelf gekopieerd hebt.
+//! SECURITY-CRITICAL.
+//! - The secret goes to `wl-copy`/`xclip` via stdin, never as an argument
+//!   (arguments are visible to everyone in `ps`).
+//! - After copying, a detached helper process (`kluis __clipboard-clear <tool>`)
+//!   clears the clipboard after 20 seconds. The helper only receives a
+//!   BLAKE2b hash of the secret (via stdin) and only clears the clipboard if
+//!   it still holds that secret (compared in constant time). This way we never
+//!   wipe something you copied yourself afterwards.
 //!
-//! Beperking: klembordbeheerders (Klipper, cliphist, enz.) kunnen een eigen
-//! geschiedenis bijhouden; die kunnen wij niet wissen.
+//! Limitation: clipboard managers (Klipper, cliphist, etc.) may keep their own
+//! history; we cannot clear that.
 
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
@@ -23,13 +23,13 @@ use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 
-/// Na zoveel seconden wordt het klembord gewist.
+/// The clipboard is cleared after this many seconds.
 pub const CLEAR_AFTER_SECS: u64 = 20;
-/// Eerste argument waarmee `kluis` als wis-hulpproces start.
+/// First argument with which `kluis` starts as the clearing helper process.
 pub const HELPER_ARG: &str = "__clipboard-clear";
 const HASH_LEN: usize = 64;
 
-/// Welk klembordprogramma we gebruiken.
+/// Which clipboard program we use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
     WlCopy,
@@ -53,7 +53,7 @@ impl Tool {
     }
 }
 
-/// Kies een klembordprogramma op basis van de sessie en wat er geïnstalleerd is.
+/// Pick a clipboard program based on the session and what is installed.
 pub fn detect() -> Option<Tool> {
     let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty());
     let x11 = std::env::var_os("DISPLAY").is_some_and(|v| !v.is_empty());
@@ -64,7 +64,7 @@ fn choose(wayland: bool, x11: bool, installed: impl Fn(&str) -> bool) -> Option<
     if wayland && installed("wl-copy") && installed("wl-paste") {
         Some(Tool::WlCopy)
     } else if x11 && installed("xclip") {
-        // Ook onder Wayland met XWayland als wl-clipboard ontbreekt.
+        // Also under Wayland with XWayland when wl-clipboard is missing.
         Some(Tool::Xclip)
     } else {
         None
@@ -85,7 +85,7 @@ fn hash(data: &[u8]) -> [u8; HASH_LEN] {
     Blake2b512::digest(data).into()
 }
 
-/// Zet `secret` op het klembord.
+/// Put `secret` on the clipboard.
 pub fn copy(tool: Tool, secret: &[u8]) -> Result<()> {
     let mut cmd = match tool {
         Tool::WlCopy => Command::new("wl-copy"),
@@ -99,15 +99,15 @@ pub fn copy(tool: Tool, secret: &[u8]) -> Result<()> {
     {
         let mut stdin = child.stdin.take().expect("stdin is piped");
         stdin.write_all(secret)?;
-    } // stdin sluiten = einde invoer
+    } // closing stdin = end of input
     let status = child.wait()?;
     if !status.success() {
-        return Err(Error::InvalidInput(format!("{} gaf een fout", tool.name())));
+        return Err(Error::InvalidInput(format!("{} reported an error", tool.name())));
     }
     Ok(())
 }
 
-/// Lees de huidige klembordinhoud (alleen voor de wis-controle).
+/// Read the current clipboard contents (only for the clearing check).
 fn paste(tool: Tool) -> Result<Zeroizing<Vec<u8>>> {
     let mut cmd = match tool {
         Tool::WlCopy => {
@@ -128,7 +128,7 @@ fn paste(tool: Tool) -> Result<Zeroizing<Vec<u8>>> {
     Ok(out)
 }
 
-/// Maak het klembord leeg.
+/// Empty the clipboard.
 pub fn clear(tool: Tool) -> Result<()> {
     let mut cmd = match tool {
         Tool::WlCopy => {
@@ -146,11 +146,11 @@ pub fn clear(tool: Tool) -> Result<()> {
     Ok(())
 }
 
-/// Kopieer `secret` en start het hulpproces dat het na 20 s wist.
+/// Copy `secret` and start the helper process that clears it after 20 s.
 pub fn copy_with_auto_clear(tool: Tool, secret: &[u8]) -> Result<()> {
     copy(tool, secret)?;
-    // Lukt het starten van het wis-hulpproces niet, dan wissen we meteen:
-    // een wachtwoord mag nooit onbeperkt op het klembord blijven staan.
+    // If starting the clearing helper fails we clear immediately:
+    // a password must never stay on the clipboard indefinitely.
     if let Err(e) = spawn_clear_helper(tool, &hash(secret)) {
         let _ = clear(tool);
         return Err(e);
@@ -162,9 +162,9 @@ fn spawn_clear_helper(tool: Tool, digest: &[u8; HASH_LEN]) -> Result<()> {
     let exe = std::env::current_exe()?;
     let mut cmd = Command::new(exe);
     cmd.args([HELPER_ARG, tool.name()]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
-    // SAFETY: setsid() is async-signal-safe en raakt geen geheugen van de
-    // ouder aan. Een eigen sessie zorgt dat Ctrl+C of het sluiten van de
-    // terminal het hulpproces niet stopt.
+    // SAFETY: setsid() is async-signal-safe and touches no memory of the
+    // parent. A session of its own makes sure Ctrl+C or closing the
+    // terminal does not stop the helper process.
     unsafe {
         cmd.pre_exec(|| {
             libc::setsid();
@@ -173,15 +173,15 @@ fn spawn_clear_helper(tool: Tool, digest: &[u8; HASH_LEN]) -> Result<()> {
     }
     let mut child = cmd.spawn()?;
     child.stdin.take().expect("stdin is piped").write_all(digest)?;
-    // Het hulpproces draait zelfstandig verder. Een achtergrondthread ruimt
-    // het proces op als het eerder klaar is dan wij (bijv. in `kluis shell`).
+    // The helper keeps running on its own. A background thread reaps the
+    // process if it finishes before we do (e.g. inside `kluis shell`).
     std::thread::spawn(move || child.wait());
     Ok(())
 }
 
-/// Hoofdroutine van het verborgen hulpproces `kluis __clipboard-clear`.
+/// Main routine of the hidden helper process `kluis __clipboard-clear`.
 pub fn run_clear_helper(tool: Tool, seconds: u64) -> Result<()> {
-    // SAFETY: een signaal negeren is altijd veilig.
+    // SAFETY: ignoring a signal is always safe.
     unsafe {
         libc::signal(libc::SIGHUP, libc::SIG_IGN);
     }
@@ -190,7 +190,7 @@ pub fn run_clear_helper(tool: Tool, seconds: u64) -> Result<()> {
     std::thread::sleep(Duration::from_secs(seconds));
     let still_ours = match paste(tool) {
         Ok(current) => bool::from(hash(&current).ct_eq(&expected)),
-        // Kunnen we niet controleren? Dan wissen we voor de zekerheid.
+        // Cannot check? Then we clear to be safe.
         Err(_) => true,
     };
     if still_ours {
@@ -204,7 +204,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keuze_van_klembordprogramma() {
+    fn clipboard_program_choice() {
         let all = |_: &str| true;
         let none = |_: &str| false;
         let only_xclip = |p: &str| p == "xclip";
@@ -218,10 +218,10 @@ mod tests {
     }
 
     #[test]
-    fn hash_vergelijking() {
+    fn hash_comparison() {
         assert!(bool::from(hash(b"abc").ct_eq(&hash(b"abc"))));
         assert!(!bool::from(hash(b"abc").ct_eq(&hash(b"abd"))));
         assert_eq!(Tool::from_name("xclip"), Some(Tool::Xclip));
-        assert_eq!(Tool::from_name("iets"), None);
+        assert_eq!(Tool::from_name("something"), None);
     }
 }

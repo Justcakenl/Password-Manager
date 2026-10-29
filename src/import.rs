@@ -1,10 +1,10 @@
-//! Import uit CSV-exports van andere wachtwoordmanagers.
+//! Import from CSV exports of other password managers.
 //!
-//! Herkent de kolomnamen van onder andere Bitwarden, KeePassXC, 1Password,
-//! Firefox en Chrome/Chromium. De kolomvolgorde maakt niet uit.
+//! Recognizes the column names of Bitwarden, KeePassXC, 1Password, Firefox
+//! and Chrome/Chromium, among others. The column order does not matter.
 //!
-//! LET OP: een CSV-export is ONVERSLEUTELD. De CLI waarschuwt daarvoor en
-//! biedt aan het bestand daarna te overschrijven en te verwijderen.
+//! NOTE: a CSV export is UNENCRYPTED. The CLI warns about that and offers to
+//! overwrite and delete the file afterwards.
 
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -38,15 +38,15 @@ fn find(headers: &[String], names: &[&str]) -> Option<usize> {
     names.iter().find_map(|n| headers.iter().position(|h| h == n))
 }
 
-/// Resultaat van het inlezen van een CSV-bestand.
+/// Result of reading a CSV file.
 pub struct CsvImport {
-    /// De ingelezen items, als tijdelijke kluis (namen al uniek gemaakt).
+    /// The items that were read, as a temporary vault (names already made unique).
     pub vault: Vault,
-    /// Lege of onbruikbare regels.
+    /// Empty or unusable rows.
     pub skipped: usize,
 }
 
-/// Haal een leesbare naam uit een URL ("https://www.github.com/login" → "github.com").
+/// Get a readable name from a URL ("https://www.github.com/login" → "github.com").
 fn host_from_url(url: &str) -> Option<String> {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
     let host = rest.split(['/', '?', '#']).next()?;
@@ -56,13 +56,13 @@ fn host_from_url(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_string())
 }
 
-/// Lees een CSV-export in.
-/// Wachtwoorden en notities worden direct per veld versleuteld met `key`.
+/// Read a CSV export.
+/// All fields are encrypted per field with `key` right away.
 pub fn parse_csv(reader: impl Read, key: &ItemKey) -> Result<CsvImport> {
     let mut rdr = csv::ReaderBuilder::new().flexible(true).trim(csv::Trim::Headers).from_reader(reader);
     let headers: Vec<String> = rdr
         .headers()
-        .map_err(|_| Error::InvalidInput("kan de CSV-kop niet lezen".into()))?
+        .map_err(|_| Error::InvalidInput("cannot read the CSV header".into()))?
         .iter()
         .map(|h| h.trim_start_matches('\u{feff}').trim().to_lowercase())
         .collect();
@@ -77,7 +77,7 @@ pub fn parse_csv(reader: impl Read, key: &ItemKey) -> Result<CsvImport> {
     };
     if cols.password.is_none() && cols.name.is_none() {
         return Err(Error::InvalidInput(
-            "onbekende CSV-indeling: geen kolom 'password' of 'name'/'title' gevonden".into(),
+            "unknown CSV layout: no 'password' or 'name'/'title' column found".into(),
         ));
     }
 
@@ -94,9 +94,9 @@ pub fn parse_csv(reader: impl Read, key: &ItemKey) -> Result<CsvImport> {
             }
         }
         let get = |c: Option<usize>| c.and_then(|i| record.get(i)).unwrap_or("").trim().to_string();
-        // Bitwarden markeert beveiligde notities met type "note".
+        // Bitwarden marks secure notes with type "note".
         let kind = match get(cols.kind).to_lowercase().as_str() {
-            "note" | "securenote" | "secure note" | "notitie" => Kind::Note,
+            "note" | "securenote" | "secure note" => Kind::Note,
             _ => Kind::Login,
         };
         let mut fields = NewEntry {
@@ -123,9 +123,9 @@ pub fn parse_csv(reader: impl Read, key: &ItemKey) -> Result<CsvImport> {
         if fields.name.is_empty() {
             fields.name = host_from_url(&fields.url)
                 .or_else(|| (!fields.username.is_empty()).then(|| fields.username.clone()))
-                .unwrap_or_else(|| "Geïmporteerd".into());
+                .unwrap_or_else(|| "Imported".into());
         }
-        // Meerdere regels in een URL-veld (Bitwarden): neem de eerste.
+        // Multiple lines in a URL field (Bitwarden): take the first one.
         if let Some(first) = fields.url.lines().next() {
             fields.url = first.trim().to_string();
         }
@@ -143,11 +143,11 @@ pub fn parse_csv(reader: impl Read, key: &ItemKey) -> Result<CsvImport> {
     Ok(CsvImport { vault, skipped })
 }
 
-/// Overschrijf een bestand met nullen, fsync en verwijder het.
+/// Overwrite a file with zeros, fsync and delete it.
 ///
-/// LET OP: op SSD's (wear levelling) en copy-on-write-bestandssystemen zoals
-/// btrfs en ZFS garandeert overschrijven NIET dat de oude data echt weg is.
-/// Het is beter dan alleen verwijderen, maar geen garantie.
+/// NOTE: on SSDs (wear levelling) and copy-on-write file systems such as
+/// btrfs and ZFS, overwriting does NOT guarantee that the old data is really
+/// gone. It is better than just deleting, but no guarantee.
 pub fn overwrite_and_remove(path: &Path) -> Result<()> {
     let mut f = OpenOptions::new().write(true).custom_flags_nofollow().open(path)?;
     let len = f.metadata()?.len();
@@ -192,39 +192,39 @@ mod tests {
     #[test]
     fn bitwarden() {
         let csv = "folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp\n\
-                   Werk,,login,GitHub,mijn notitie,,0,https://github.com,jan,\"p,w\"\"1\",\n\
-                   ,,login,GitHub,,,0,https://github.com/2,piet,pw2,\n";
+                   Work,,login,GitHub,my note,,0,https://github.com,john,\"p,w\"\"1\",\n\
+                   ,,login,GitHub,,,0,https://github.com/2,pete,pw2,\n";
         let r = parse(csv).unwrap();
         assert_eq!(r.vault.len(), 2);
         let e = r.vault.get("GitHub").unwrap();
-        assert_eq!(e.username(&test_item_key(1)).unwrap().as_str(), "jan");
+        assert_eq!(e.username(&test_item_key(1)).unwrap().as_str(), "john");
         assert_eq!(pw(e), "p,w\"1");
         assert_eq!(e.url(&test_item_key(1)).unwrap().as_str(), "https://github.com");
-        assert_eq!(e.notes(&test_item_key(1)).unwrap().as_str(), "mijn notitie");
-        assert_eq!(e.tags(), &["Werk".to_string()]);
-        assert_eq!(r.vault.get("GitHub (2)").unwrap().username(&test_item_key(1)).unwrap().as_str(), "piet");
+        assert_eq!(e.notes(&test_item_key(1)).unwrap().as_str(), "my note");
+        assert_eq!(e.tags(), &["Work".to_string()]);
+        assert_eq!(r.vault.get("GitHub (2)").unwrap().username(&test_item_key(1)).unwrap().as_str(), "pete");
     }
 
     #[test]
-    fn bitwarden_notitie() {
+    fn bitwarden_note() {
         let csv = "folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp\n\
-                   ,,note,Herstelcodes,\"code 1\ncode 2\",,0,,,,\n";
+                   ,,note,Recovery codes,\"code 1\ncode 2\",,0,,,,\n";
         let r = parse(csv).unwrap();
-        let e = r.vault.get("Herstelcodes").unwrap();
+        let e = r.vault.get("Recovery codes").unwrap();
         assert_eq!(e.kind(), Kind::Note);
         assert_eq!(e.secret(&test_item_key(1)).unwrap().as_str(), "code 1\ncode 2");
     }
 
     #[test]
-    fn keepassxc_en_bom() {
+    fn keepassxc_and_bom() {
         let csv = "\u{feff}\"Group\",\"Title\",\"Username\",\"Password\",\"URL\",\"Notes\"\n\
-                   \"Root\",\"Mail\",\"jan@x.nl\",\"geheim\",\"https://mail.x.nl\",\"\"\n";
+                   \"Root\",\"Mail\",\"john@x.nl\",\"secret\",\"https://mail.x.nl\",\"\"\n";
         let r = parse(csv).unwrap();
-        assert_eq!(pw(r.vault.get("Mail").unwrap()), "geheim");
+        assert_eq!(pw(r.vault.get("Mail").unwrap()), "secret");
     }
 
     #[test]
-    fn firefox_zonder_naamkolom() {
+    fn firefox_without_name_column() {
         let csv = "\"url\",\"username\",\"password\",\"httpRealm\",\"formActionOrigin\",\"guid\"\n\
                    \"https://www.example.org:443\",\"jan\",\"pw\",,\"\",\"{x}\"\n\
                    \"\",\"\",\"\",,\"\",\"{y}\"\n";
@@ -235,14 +235,14 @@ mod tests {
     }
 
     #[test]
-    fn chrome_en_wachtwoord_met_spaties() {
-        let csv = "name,url,username,password,note\nsite,https://a.b,u, spatie pw ,n\n";
+    fn chrome_and_password_with_spaces() {
+        let csv = "name,url,username,password,note\nsite,https://a.b,u, spaced pw ,n\n";
         let r = parse(csv).unwrap();
-        assert_eq!(pw(r.vault.get("site").unwrap()), " spatie pw ", "wachtwoord niet trimmen");
+        assert_eq!(pw(r.vault.get("site").unwrap()), " spaced pw ", "do not trim the password");
     }
 
     #[test]
-    fn stuurtekens_worden_onschadelijk() {
+    fn control_characters_are_neutralized() {
         let csv =
             "name,username,password,url,notes\nx,\"u\u{1b}[31m\",pw,\"https://a\u{7}\",\"r1\nr2\u{1b}[2J\"\n";
         let r = parse(csv).unwrap();
@@ -253,13 +253,13 @@ mod tests {
     }
 
     #[test]
-    fn onbekende_indeling() {
+    fn unknown_layout() {
         assert!(parse("a,b,c\n1,2,3\n").is_err());
         assert!(parse("").is_err());
     }
 
     #[test]
-    fn host_uit_url() {
+    fn host_from_url_cases() {
         assert_eq!(host_from_url("https://www.github.com/login").as_deref(), Some("github.com"));
         assert_eq!(host_from_url("http://user@host.nl:8080/x").as_deref(), Some("host.nl"));
         assert_eq!(host_from_url("example.org").as_deref(), Some("example.org"));
@@ -267,10 +267,10 @@ mod tests {
     }
 
     #[test]
-    fn overschrijven_en_verwijderen() {
+    fn overwrite_and_remove_file() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("export.csv");
-        std::fs::write(&p, "geheim").unwrap();
+        std::fs::write(&p, "secret").unwrap();
         overwrite_and_remove(&p).unwrap();
         assert!(!p.exists());
     }

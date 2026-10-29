@@ -1,9 +1,10 @@
-//! Uitvoering van de opdrachten. Alle beveiligingslogica zit in de
-//! bibliotheek; hier zit alleen de interactie met de gebruiker.
+//! Execution of the commands. All security logic lives in the library; this
+//! file only contains the interaction with the user.
 //!
-//! BEVEILIGING: alles wat uit de kluis komt (ook gebruikersnamen en URL's,
-//! die nu ook versleuteld zijn) wordt via `ui::print_secret_line` getoond:
-//! rechtstreeks naar de terminal, zonder kopie in de uitvoerbuffer van Rust.
+//! SECURITY: everything that comes out of the vault (including usernames and
+//! URLs, which are encrypted too) is displayed through
+//! `ui::print_secret_line`: straight to the terminal, without a copy in
+//! Rust's output buffer.
 
 use std::fs::{self, File};
 use std::io;
@@ -11,7 +12,6 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 use std::sync::OnceLock;
 
-use clap::CommandFactory;
 use secrecy::{ExposeSecret, SecretString};
 use zeroize::Zeroizing;
 
@@ -23,38 +23,45 @@ use kluis::storage::{self, UnlockedVault, VaultPaths};
 use kluis::vault::{Entry, Kind, NewEntry, Vault};
 use kluis::{Error, Result, import};
 
-use super::args::{AddArgs, Cli, Cmd, EditArgs, GenArgs, GetArgs, KdfArgs, KdfChangeArgs};
-use super::{logo, prompt, shell, ui, update};
+use super::args::{self, AddArgs, Cmd, EditArgs, GenArgs, GetArgs, KdfArgs, KdfChangeArgs};
+use super::{config, logo, prompt, setup, shell, ui, update};
 
 static HARDENING: OnceLock<Hardening> = OnceLock::new();
-const DEFAULT_SHELL_TIMEOUT: u64 = 300;
 const LABEL_WIDTH: usize = 16;
+const TAGLINE: &str = "offline · encrypted · yours alone";
 
-/// Onthoud het resultaat van de procesbeveiliging (voor `kluis info`).
+/// Remember the result of the process hardening (for `kluis info`).
 pub fn set_hardening(h: Hardening) {
     let _ = HARDENING.set(h);
 }
 
-/// Hoofdingang: voer de opdracht uit.
-pub fn run(cli: Cli) -> Result<()> {
+/// Main entry point: run the command.
+pub fn run(cli: args::Cli) -> Result<()> {
     let paths = match cli.vault {
         Some(p) => VaultPaths::for_file(p),
         None => VaultPaths::default_location()?,
     };
+    let cfg = config::load();
     let Some(command) = cli.command else {
-        // `kluis` zonder opdracht: inlogscherm + interactieve modus.
+        // `kluis` without a command: login screen + interactive mode, or the
+        // first-time setup when there is no vault yet.
         if fs::symlink_metadata(&paths.file).is_err() {
+            if prompt::stdin_is_tty() {
+                return setup::run(&paths, &KdfArgs::default_values());
+            }
             logo::show(true);
-            logo::tagline("offline · versleuteld · alleen van jou");
-            ui::info("Er is nog geen kluis. Maak er een met:  kluis init");
+            logo::tagline(TAGLINE);
+            ui::info("There is no vault yet. Set one up with:  kluis setup");
             return Ok(());
         }
-        return shell::run(&paths, DEFAULT_SHELL_TIMEOUT);
+        return shell::run(&paths, cfg.lock_timeout_secs());
     };
     match command {
+        Cmd::Setup { kdf } => setup::run(&paths, &kdf),
         Cmd::Init { kdf } => init(&paths, &kdf),
         Cmd::Generate { opts, show } => generate(&opts, show),
         Cmd::Info => info(&paths),
+        Cmd::Config { action } => setup::config_command(action),
         Cmd::Logo => show_logo(),
         Cmd::Update(u) => update::run(
             &update::Options {
@@ -67,7 +74,7 @@ pub fn run(cli: Cli) -> Result<()> {
             &paths,
         ),
         Cmd::Completions { shell } => completions(shell),
-        Cmd::Shell { timeout } => shell::run(&paths, timeout),
+        Cmd::Shell { timeout } => shell::run(&paths, timeout.unwrap_or(cfg.lock_timeout_secs())),
         cmd => {
             let mut uv = unlock(&paths)?;
             execute(&mut uv, cmd, false)
@@ -75,7 +82,7 @@ pub fn run(cli: Cli) -> Result<()> {
     }
 }
 
-/// Voer een opdracht uit op een ontgrendelde kluis (ook vanuit `kluis shell`).
+/// Run a command on an unlocked vault (also from `kluis shell`).
 pub fn execute(uv: &mut UnlockedVault, cmd: Cmd, in_shell: bool) -> Result<()> {
     match cmd {
         Cmd::Add(a) => add(uv, a),
@@ -100,31 +107,33 @@ pub fn execute(uv: &mut UnlockedVault, cmd: Cmd, in_shell: bool) -> Result<()> {
         Cmd::ImportCsv { file } => import_csv(uv, &file),
         Cmd::Generate { opts, show } => generate(&opts, show),
         Cmd::Info => info(uv.paths()),
+        Cmd::Config { action } => setup::config_command(action),
         Cmd::Logo => show_logo(),
         Cmd::Completions { shell } => completions(shell),
         Cmd::Update(_) => Err(Error::InvalidInput(
-            "sluit eerst de kluis (exit) en typ daarna `kluis --update`; tijdens het updaten hoort je kluis dicht te zijn".into(),
+            "close the vault first (exit) and then type `kluis --update`; the vault should be closed while updating"
+                .into(),
         )),
-        Cmd::Init { .. } | Cmd::Shell { .. } => {
-            Err(Error::InvalidInput("deze opdracht werkt niet binnen de interactieve modus".into()))
+        Cmd::Init { .. } | Cmd::Setup { .. } | Cmd::Shell { .. } => {
+            Err(Error::InvalidInput("this command does not work inside the interactive mode".into()))
         }
     }
 }
 
-// ───────────────────────── hulpfuncties ─────────────────────────
+// ───────────────────────── helpers ─────────────────────────
 
-fn kdf_from_args(a: &KdfArgs) -> Result<KdfParams> {
-    let memory_kib = a.kdf_memory.checked_mul(1024).ok_or(Error::InvalidKdfParams("te veel geheugen"))?;
+pub(super) fn kdf_from_args(a: &KdfArgs) -> Result<KdfParams> {
+    let memory_kib = a.kdf_memory.checked_mul(1024).ok_or(Error::InvalidKdfParams("too much memory"))?;
     let p = KdfParams { memory_kib, iterations: a.kdf_iterations, parallelism: a.kdf_parallelism };
     p.validate()?;
     Ok(p)
 }
 
-fn warn_if_weak_kdf(p: &KdfParams) {
+pub(super) fn warn_if_weak_kdf(p: &KdfParams) {
     if p.weaker_than_default() {
         ui::warn(
-            "Je gebruikt lichtere Argon2-instellingen dan aanbevolen (64 MiB, 3 iteraties). \
-             Een gestolen kluisbestand is dan makkelijker te kraken.",
+            "You are using lighter Argon2 settings than recommended (64 MiB, 3 iterations). \
+             A stolen vault file is then easier to crack.",
         );
     }
 }
@@ -137,33 +146,30 @@ fn after_unlock(uv: &mut UnlockedVault) {
         ui::info(&n);
     }
     if secure_mem::mlock_failed() {
-        ui::warn(
-            "Het geheugen kon niet worden vergrendeld (mlock). Geheimen kunnen dan in swap \
-             terechtkomen. Zie `kluis info`.",
-        );
+        ui::warn("Memory could not be locked (mlock). Secrets may end up in swap. See `kluis info`.");
     }
 }
 
-/// Vraag het hoofdwachtwoord en open de kluis (voor losse opdrachten).
+/// Ask for the master password and open the vault (for single commands).
 pub fn unlock(paths: &VaultPaths) -> Result<UnlockedVault> {
-    // Eerst de header controleren, zodat een kapot of onbekend bestand
-    // meteen een duidelijke fout geeft, zonder eerst om een wachtwoord te vragen.
+    // Check the header first, so a broken or unknown file gives a clear error
+    // right away, without first asking for a password.
     storage::read_header(&paths.file)?;
-    let pw = prompt::secret("Hoofdwachtwoord: ")?;
+    let pw = prompt::secret("Master password: ")?;
     let mut uv = UnlockedVault::open(paths.clone(), pw.expose_secret().as_bytes())?;
     drop(pw);
     after_unlock(&mut uv);
     Ok(uv)
 }
 
-/// Het inlogscherm: geanimeerd logo en maximaal drie pogingen.
+/// The login screen: animated logo and at most three attempts.
 pub fn login_screen(paths: &VaultPaths) -> Result<UnlockedVault> {
     storage::read_header(&paths.file)?;
     logo::show(true);
-    logo::tagline("offline · versleuteld · alleen van jou");
+    logo::tagline(TAGLINE);
     const ATTEMPTS: usize = 3;
     for attempt in 1..=ATTEMPTS {
-        let pw = prompt::secret(&format!("  {} ", ui::pink_bold("🔑 Hoofdwachtwoord ❯")))?;
+        let pw = prompt::secret(&format!("  {} ", ui::pink_bold("🔑 Master password ❯")))?;
         match UnlockedVault::open(paths.clone(), pw.expose_secret().as_bytes()) {
             Ok(mut uv) => {
                 drop(pw);
@@ -172,7 +178,7 @@ pub fn login_screen(paths: &VaultPaths) -> Result<UnlockedVault> {
             }
             Err(Error::Decrypt) if attempt < ATTEMPTS && prompt::stdin_is_tty() => {
                 let left = ATTEMPTS - attempt;
-                ui::warn(&format!("Onjuist hoofdwachtwoord. Nog {left} poging(en)."));
+                ui::warn(&format!("Wrong master password. {left} attempt(s) left."));
             }
             Err(e) => return Err(e),
         }
@@ -180,9 +186,9 @@ pub fn login_screen(paths: &VaultPaths) -> Result<UnlockedVault> {
     Err(Error::Decrypt)
 }
 
-/// Vraag het hoofdwachtwoord opnieuw (in de shell, vóór gevoelige acties).
+/// Ask for the master password again (in the shell, before sensitive actions).
 fn reconfirm(uv: &UnlockedVault) -> Result<()> {
-    let pw = prompt::secret("Huidig hoofdwachtwoord (ter bevestiging): ")?;
+    let pw = prompt::secret("Current master password (to confirm): ")?;
     if uv.verify_password(pw.expose_secret().as_bytes())? { Ok(()) } else { Err(Error::Decrypt) }
 }
 
@@ -190,7 +196,7 @@ fn split_tags(s: &str) -> Vec<String> {
     s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect()
 }
 
-/// Genereer een wachtwoord of passphrase volgens de opties.
+/// Generate a password or passphrase according to the options.
 fn generate_secret(g: &GenArgs) -> Result<(Zeroizing<String>, f64)> {
     if g.passphrase {
         let opts = PassphraseOptions { words: g.words, separator: g.separator.clone() };
@@ -208,88 +214,97 @@ fn generate_secret(g: &GenArgs) -> Result<(Zeroizing<String>, f64)> {
     }
 }
 
-/// "Het wachtwoord" / "De API-sleutel" / "De notitie".
+/// "The password" / "The API key" / "The note".
 fn secret_noun(kind: Kind) -> &'static str {
     match kind {
-        Kind::Login => "Het wachtwoord",
-        Kind::Api => "De API-sleutel",
-        Kind::Note => "De notitie",
+        Kind::Login => "The password",
+        Kind::Api => "The API key",
+        Kind::Note => "The note",
     }
 }
 
-/// Kopieer naar het klembord en laat het na 20 s wissen.
+/// "Login" / "API key" / "Note" (for messages).
+fn kind_noun(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Login => "Login",
+        Kind::Api => "API key",
+        Kind::Note => "Note",
+    }
+}
+
+/// Copy to the clipboard and have it cleared after 20 s.
 fn copy_to_clipboard(secret: &str, what: &str) -> Result<()> {
     let tool = clipboard::detect().ok_or(Error::NoClipboard)?;
     clipboard::copy_with_auto_clear(tool, secret.as_bytes())?;
     ui::success(&format!(
-        "{what} is gekopieerd naar het klembord (via {}); het wordt over {CLEAR_AFTER_SECS} seconden gewist.",
+        "{what} was copied to the clipboard (via {}); it will be cleared in {CLEAR_AFTER_SECS} seconds.",
         tool.name()
     ));
     Ok(())
 }
 
-/// Zoek een item; geef suggesties als het niet bestaat.
+/// Find an item; give suggestions if it does not exist.
 fn find_entry<'a>(vault: &'a Vault, key: &ItemKey, name: &str) -> Result<&'a Entry> {
     if let Some(e) = vault.get(name) {
         return Ok(e);
     }
     let suggestions: Vec<&str> = vault.search(name, key).iter().take(5).map(|e| e.name()).collect();
     if !suggestions.is_empty() {
-        ui::info(&format!("Bedoelde je: {}?", suggestions.join(", ")));
+        ui::info(&format!("Did you mean: {}?", suggestions.join(", ")));
     }
     Err(Error::EntryNotFound(name.to_string()))
 }
 
-/// Vraag een nieuw wachtwoord voor een login (met herhaling in een terminal).
-/// Leeg = genereren. Geeft (wachtwoord, sterkte als het gegenereerd is) terug.
+/// Ask for a new password for a login (with repetition in a terminal).
+/// Empty = generate. Returns (password, strength if generated).
 fn ask_item_password(g: &GenArgs) -> Result<(Zeroizing<String>, Option<f64>)> {
-    let first = prompt::secret("Wachtwoord (leeg laten = laat kluis er een genereren): ")?;
+    let first = prompt::secret("Password (leave empty to let kluis generate one): ")?;
     if first.expose_secret().is_empty() {
         let (pw, bits) = generate_secret(g)?;
         return Ok((pw, Some(bits)));
     }
     if prompt::stdin_is_tty() {
-        let again = prompt::secret("Herhaal wachtwoord: ")?;
+        let again = prompt::secret("Repeat password: ")?;
         if !prompt::secrets_equal(&first, &again) {
-            return Err(Error::InvalidInput("de wachtwoorden komen niet overeen".into()));
+            return Err(Error::InvalidInput("the passwords do not match".into()));
         }
     }
     Ok((Zeroizing::new(first.expose_secret().to_string()), None))
 }
 
-/// Vraag een API-sleutel (verborgen invoer; plakken mag, geen herhaling nodig).
+/// Ask for an API key (hidden input; pasting is fine, no repetition needed).
 fn ask_api_key() -> Result<Zeroizing<String>> {
-    let k = prompt::secret("API-sleutel (verborgen invoer; plakken mag): ")?;
+    let k = prompt::secret("API key (hidden input; pasting is fine): ")?;
     let k = Zeroizing::new(k.expose_secret().trim().to_string());
     if k.is_empty() {
-        return Err(Error::InvalidInput("de API-sleutel mag niet leeg zijn".into()));
+        return Err(Error::InvalidInput("the API key must not be empty".into()));
     }
     Ok(k)
 }
 
 fn ask_note_content() -> Result<Zeroizing<String>> {
-    prompt::multiline("Typ of plak de tekst van je notitie (wordt versleuteld opgeslagen):")
+    prompt::multiline("Type or paste the text of your note (it is stored encrypted):")
 }
 
 fn report_generated(name: &str, pw: &str, bits: f64) {
-    ui::info(&format!("Wachtwoord gegenereerd ({} tekens, ongeveer {bits:.0} bits).", pw.chars().count()));
-    match copy_to_clipboard(pw, "Het wachtwoord") {
+    ui::info(&format!("Password generated ({} characters, about {bits:.0} bits).", pw.chars().count()));
+    match copy_to_clipboard(pw, "The password") {
         Ok(()) => {}
         Err(Error::NoClipboard) => {
-            ui::info(&format!("Geen klembord gevonden; bekijk het met `kluis get \"{name}\" --show`."));
+            ui::info(&format!("No clipboard tool found; view it with `kluis get \"{name}\" --show`."));
         }
-        Err(e) => ui::warn(&format!("Kopiëren mislukt: {e}")),
+        Err(e) => ui::warn(&format!("Copying failed: {e}")),
     }
 }
 
-/// Toon één veld (label + waarde), zonder kopie in de uitvoerbuffer.
+/// Show one field (label + value), without a copy in the output buffer.
 fn field(label: &str, value: &str) -> Result<()> {
     let label = ui::bold(&ui::pad(&format!("{label}:"), LABEL_WIDTH));
     ui::print_secret_line(&format!("{label} "), value)?;
     Ok(())
 }
 
-/// Toon een veld met meerdere regels, netjes ingesprongen.
+/// Show a multi-line field, neatly indented.
 fn field_block(label: &str, text: &str) -> Result<()> {
     let safe = Zeroizing::new(ui::safe(text, true));
     let mut lines = safe.lines();
@@ -301,16 +316,43 @@ fn field_block(label: &str, text: &str) -> Result<()> {
     Ok(())
 }
 
-// ───────────────────────── opdrachten ─────────────────────────
+// ───────────────────────── commands ─────────────────────────
 
 fn show_logo() -> Result<()> {
     if ui::color_on_stderr() {
         logo::show(true);
-        logo::tagline("offline · versleuteld · alleen van jou");
+        logo::tagline(TAGLINE);
     } else {
-        ui::info("CakePass – het logo verschijnt alleen in een kleurenterminal.");
+        ui::info("CakePass – the logo only appears in a color terminal.");
     }
     Ok(())
+}
+
+pub(super) fn print_new_vault_banner() {
+    ui::banner(&[
+        "You are about to create a new vault.",
+        "",
+        "The master password is the ONLY key to your vault.",
+        "If you forget it, your data is gone for good:",
+        "there is no recovery and no back door.",
+        "You may want to write it down on paper and keep that somewhere safe.",
+    ]);
+}
+
+/// Ask for a strong master password and create the vault.
+pub(super) fn create_vault(paths: &VaultPaths, kdf: KdfParams) -> Result<UnlockedVault> {
+    print_new_vault_banner();
+    warn_if_weak_kdf(&kdf);
+    let pw = prompt::new_strong_password("master password")?;
+    ui::info(&format!(
+        "Deriving the key with Argon2id ({} MiB, {} iterations, {} lanes)…",
+        kdf.memory_kib / 1024,
+        kdf.iterations,
+        kdf.parallelism
+    ));
+    let uv = UnlockedVault::create(paths.clone(), pw.expose_secret().as_bytes(), kdf)?;
+    ui::success(&format!("Vault created: {}", uv.paths().file.display()));
+    Ok(uv)
 }
 
 fn init(paths: &VaultPaths, kdf_args: &KdfArgs) -> Result<()> {
@@ -319,28 +361,11 @@ fn init(paths: &VaultPaths, kdf_args: &KdfArgs) -> Result<()> {
     }
     let kdf = kdf_from_args(kdf_args)?;
     logo::show(true);
-    logo::tagline("welkom! we maken je kluis");
-    ui::banner(&[
-        "Je gaat een nieuwe kluis maken.",
-        "",
-        "Het hoofdwachtwoord is de ENIGE sleutel tot je kluis.",
-        "Vergeet je het, dan zijn je gegevens voorgoed weg:",
-        "er bestaat geen herstel en geen achterdeur.",
-        "Schrijf het eventueel op papier en bewaar dat op een veilige plek.",
-    ]);
-    warn_if_weak_kdf(&kdf);
-    let pw = prompt::new_strong_password("hoofdwachtwoord")?;
-    ui::info(&format!(
-        "Sleutel afleiden met Argon2id ({} MiB, {} iteraties, {} lanes)…",
-        kdf.memory_kib / 1024,
-        kdf.iterations,
-        kdf.parallelism
-    ));
-    let uv = UnlockedVault::create(paths.clone(), pw.expose_secret().as_bytes(), kdf)?;
-    ui::success(&format!("Kluis gemaakt: {}", uv.paths().file.display()));
+    logo::tagline("welcome! let's create your vault");
+    create_vault(paths, kdf)?;
     ui::info(
-        "Volgende stap: `kluis add <naam>` (login), `--type api` (API-sleutel) of `--type notitie`. \
-         Maak regelmatig een kopie van het kluisbestand (zie README).",
+        "Next: `kluis add <name>` (login), `--type api` (API key) or `--type note`. \
+         Make regular copies of the vault file (see the README).",
     );
     Ok(())
 }
@@ -351,14 +376,12 @@ fn add(uv: &mut UnlockedVault, a: AddArgs) -> Result<()> {
     }
     let kind = a.kind;
     if kind == Kind::Note && (a.username.is_some() || a.url.is_some() || a.generate) {
-        return Err(Error::InvalidInput(
-            "een notitie heeft geen gebruikersnaam, URL of wachtwoord; gebruik alleen --tags".into(),
-        ));
+        return Err(Error::InvalidInput("a note has no username, URL or password; use only --tags".into()));
     }
     let interactive = a.username.is_none() && a.url.is_none() && a.tags.is_none();
     let (user_q, url_q) = match kind {
-        Kind::Api => ("Account of sleutel-ID (optioneel): ", "Service-URL (optioneel): "),
-        _ => ("Gebruikersnaam (optioneel): ", "URL (optioneel): "),
+        Kind::Api => ("Account or key ID (optional): ", "Service URL (optional): "),
+        _ => ("Username (optional): ", "URL (optional): "),
     };
     let username = match (kind, a.username) {
         (Kind::Note, _) => String::new(),
@@ -372,11 +395,11 @@ fn add(uv: &mut UnlockedVault, a: AddArgs) -> Result<()> {
     };
     let tags = match a.tags {
         Some(t) => t,
-        None => split_tags(&prompt::line("Tags, gescheiden door komma's (optioneel): ")?),
+        None => split_tags(&prompt::line("Tags, separated by commas (optional): ")?),
     };
     let notes: Zeroizing<String> = match kind {
         Kind::Note => ask_note_content()?,
-        _ if interactive => Zeroizing::new(prompt::line("Notities (optioneel, één regel): ")?),
+        _ if interactive => Zeroizing::new(prompt::line("Notes (optional, one line): ")?),
         _ => Zeroizing::new(String::new()),
     };
     let (secret, generated_bits) = match kind {
@@ -403,32 +426,27 @@ fn add(uv: &mut UnlockedVault, a: AddArgs) -> Result<()> {
     let name = entry.name().to_string();
     uv.vault.add(entry)?;
     uv.save()?;
-    ui::success(&format!("{} '{name}' versleuteld opgeslagen.", capitalize(kind.label())));
+    ui::success(&format!("{} '{name}' saved (encrypted).", kind_noun(kind)));
     if let Some(bits) = generated_bits {
         report_generated(&name, &secret, bits);
     }
     Ok(())
 }
 
-fn capitalize(s: &str) -> String {
-    let mut c = s.chars();
-    c.next().map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
-}
-
 fn get(uv: &UnlockedVault, g: &GetArgs) -> Result<()> {
     let key = uv.item_key();
     let e = find_entry(&uv.vault, key, &g.name)?;
     let kind = e.kind();
-    let hidden = ui::dim("(verborgen; gebruik --show)");
+    let hidden = ui::dim("(hidden; use --show)");
     let empty = ui::dim("-");
     let value = |v: &str| -> Zeroizing<String> {
         Zeroizing::new(if v.is_empty() { empty.clone() } else { ui::safe(v, false) })
     };
-    field("Naam", e.name())?;
-    field("Soort", &ui::kind_label(kind))?;
+    field("Name", e.name())?;
+    field("Type", &ui::kind_label(kind))?;
     match kind {
         Kind::Login => {
-            field("Gebruikersnaam", &value(&e.username(key)?))?;
+            field("Username", &value(&e.username(key)?))?;
             field("URL", &value(&e.url(key)?))?;
         }
         Kind::Api => {
@@ -438,29 +456,29 @@ fn get(uv: &UnlockedVault, g: &GetArgs) -> Result<()> {
         Kind::Note => {}
     }
     field("Tags", &value(&e.tags().join(", ")))?;
-    field("Gewijzigd", &ui::format_time(e.modified()))?;
+    field("Modified", &ui::format_time(e.modified()))?;
     let secret_label = capitalize(kind.secret_label());
 
     if g.show {
-        // Pas hier, op jouw uitdrukkelijke verzoek, worden de geheimen ontsleuteld.
+        // Only here, at your explicit request, are the secrets decrypted.
         if kind == Kind::Note {
             let text = e.notes(key)?;
-            if text.is_empty() { field("Inhoud", &empty)? } else { field_block("Inhoud", &text)? }
+            if text.is_empty() { field("Content", &empty)? } else { field_block("Content", &text)? }
         } else {
             let notes = e.notes(key)?;
             if notes.is_empty() {
-                field("Notities", &empty)?
+                field("Notes", &empty)?
             } else {
-                field_block("Notities", &notes)?
+                field_block("Notes", &notes)?
             }
             field(&secret_label, &value(&e.password(key)?))?;
         }
         return Ok(());
     }
     if kind == Kind::Note {
-        field("Inhoud", if e.has_notes() { &hidden } else { &empty })?;
+        field("Content", if e.has_notes() { &hidden } else { &empty })?;
     } else {
-        field("Notities", if e.has_notes() { &hidden } else { &empty })?;
+        field("Notes", if e.has_notes() { &hidden } else { &empty })?;
         field(&secret_label, if e.has_password() { &hidden } else { &empty })?;
     }
     if g.no_copy {
@@ -469,18 +487,23 @@ fn get(uv: &UnlockedVault, g: &GetArgs) -> Result<()> {
     if g.copy_username {
         let user = e.username(key)?;
         if user.is_empty() {
-            return Err(Error::InvalidInput("dit item heeft geen gebruikersnaam".into()));
+            return Err(Error::InvalidInput("this item has no username".into()));
         }
-        copy_to_clipboard(&user, "De gebruikersnaam")
+        copy_to_clipboard(&user, "The username")
     } else if !e.has_secret() {
-        ui::info(&format!("Dit item heeft geen {}.", kind.secret_label()));
+        ui::info(&format!("This item has no {}.", kind.secret_label()));
         Ok(())
     } else {
         copy_to_clipboard(&e.secret(key)?, secret_noun(kind))
     }
 }
 
-/// "" = ongewijzigd, "-" = leegmaken, anders de nieuwe waarde.
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
+}
+
+/// "" = unchanged, "-" = clear, anything else = the new value.
 fn keep_or(input: String) -> Option<String> {
     match input.as_str() {
         "" => None,
@@ -497,7 +520,7 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
     };
     if kind == Kind::Note && (a.username.is_some() || a.url.is_some() || a.password || a.generate) {
         return Err(Error::InvalidInput(
-            "een notitie heeft geen gebruikersnaam, URL of wachtwoord; gebruik --notes voor de inhoud".into(),
+            "a note has no username, URL or password; use --notes for the contents".into(),
         ));
     }
     let interactive = a.rename.is_none()
@@ -517,45 +540,43 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
     let mut generated_bits = None;
 
     if interactive {
-        ui::info("Druk op Enter om een veld ongewijzigd te laten, of typ '-' om het leeg te maken.");
-        rename = keep_or(prompt::line(&format!("Naam [{old_name}]: "))?).filter(|s| !s.is_empty());
+        ui::info("Press Enter to leave a field unchanged, or type '-' to clear it.");
+        rename = keep_or(prompt::line(&format!("Name [{old_name}]: "))?).filter(|s| !s.is_empty());
         if kind != Kind::Note {
             let (uq, lq) =
-                if kind == Kind::Api { ("Account / ID", "Service-URL") } else { ("Gebruikersnaam", "URL") };
+                if kind == Kind::Api { ("Account / ID", "Service URL") } else { ("Username", "URL") };
             username = keep_or(prompt::line(&format!("{uq} [{}]: ", cur_user.as_str()))?);
             url = keep_or(prompt::line(&format!("{lq} [{}]: ", cur_url.as_str()))?);
         }
         tags = keep_or(prompt::line(&format!("Tags [{cur_tags}]: "))?).map(|t| split_tags(&t));
         match kind {
             Kind::Note => {
-                if prompt::confirm("Inhoud van de notitie wijzigen?")? {
+                if prompt::confirm("Change the contents of the note?")? {
                     notes = Some(ask_note_content()?);
                 }
             }
             _ => {
-                if prompt::confirm("Notities wijzigen?")? {
-                    notes =
-                        Some(Zeroizing::new(prompt::line("Nieuwe notities (één regel, leeg = wissen): ")?));
+                if prompt::confirm("Change the notes?")? {
+                    notes = Some(Zeroizing::new(prompt::line("New notes (one line, empty = clear): ")?));
                 }
             }
         }
         match kind {
             Kind::Login => {
-                let choice = prompt::line("Wachtwoord: (n)iet wijzigen, (i)ntypen of (g)enereren? [n] ")?
-                    .to_lowercase();
+                let choice = prompt::line("Password: (k)eep, (t)ype or (g)enerate? [k] ")?.to_lowercase();
                 match choice.as_str() {
-                    "" | "n" | "niet" => {}
-                    "i" | "intypen" => new_secret = Some(ask_item_password(&a.gen_opts)?.0),
-                    "g" | "genereren" => {
+                    "" | "k" | "keep" => {}
+                    "t" | "type" => new_secret = Some(ask_item_password(&a.gen_opts)?.0),
+                    "g" | "generate" => {
                         let (pw, bits) = generate_secret(&a.gen_opts)?;
                         new_secret = Some(pw);
                         generated_bits = Some(bits);
                     }
-                    _ => return Err(Error::InvalidInput("kies n, i of g".into())),
+                    _ => return Err(Error::InvalidInput("choose k, t or g".into())),
                 }
             }
             Kind::Api => {
-                if prompt::confirm("API-sleutel vervangen?")? {
+                if prompt::confirm("Replace the API key?")? {
                     new_secret = Some(ask_api_key()?);
                 }
             }
@@ -565,7 +586,7 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
         if a.notes {
             notes = Some(match kind {
                 Kind::Note => ask_note_content()?,
-                _ => Zeroizing::new(prompt::line("Nieuwe notities (één regel, leeg = wissen): ")?),
+                _ => Zeroizing::new(prompt::line("New notes (one line, empty = clear): ")?),
             });
         }
         if a.generate {
@@ -576,11 +597,11 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
             new_secret = Some(match kind {
                 Kind::Api => ask_api_key()?,
                 _ => {
-                    let first = prompt::secret("Nieuw wachtwoord: ")?;
+                    let first = prompt::secret("New password: ")?;
                     if prompt::stdin_is_tty() {
-                        let again = prompt::secret("Herhaal wachtwoord: ")?;
+                        let again = prompt::secret("Repeat password: ")?;
                         if !prompt::secrets_equal(&first, &again) {
-                            return Err(Error::InvalidInput("de wachtwoorden komen niet overeen".into()));
+                            return Err(Error::InvalidInput("the passwords do not match".into()));
                         }
                     }
                     Zeroizing::new(first.expose_secret().to_string())
@@ -589,7 +610,7 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
         }
     }
 
-    // Alles-of-niets: bij een fout (bijv. bestaande naam) blijft het item ongewijzigd.
+    // All or nothing: on an error (e.g. an existing name) the item stays unchanged.
     let (vault, key) = uv.parts_mut();
     vault.update(&old_name, |entry| {
         if let Some(u) = &username {
@@ -614,7 +635,7 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
     })?;
     let final_name = rename.as_deref().map_or(old_name, |n| n.trim().to_string());
     uv.save()?;
-    ui::success(&format!("Item '{final_name}' bijgewerkt."));
+    ui::success(&format!("Item '{final_name}' updated."));
     if let (Some(p), Some(bits)) = (&new_secret, generated_bits) {
         report_generated(&final_name, p, bits);
     }
@@ -623,18 +644,18 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
 
 fn rm(uv: &mut UnlockedVault, name: &str, yes: bool) -> Result<()> {
     let real = find_entry(&uv.vault, uv.item_key(), name)?.name().to_string();
-    if !yes && !prompt::confirm(&format!("Weet je zeker dat je '{real}' wilt verwijderen?"))? {
-        ui::info("Niets verwijderd.");
+    if !yes && !prompt::confirm(&format!("Are you sure you want to remove '{real}'?"))? {
+        ui::info("Nothing removed.");
         return Ok(());
     }
     uv.vault.remove(&real)?;
     uv.save()?;
-    ui::success(&format!("Item '{real}' verwijderd. (De vorige versie staat nog in de back-up.)"));
+    ui::success(&format!("Item '{real}' removed. (The previous version is still in the backup.)"));
     Ok(())
 }
 
-/// Tabel met items. Gebruikersnaam en URL worden per regel even ontsleuteld
-/// en direct (zonder buffer) getoond.
+/// Table of items. Username and URL are briefly decrypted per row and shown
+/// straight away (without a buffer).
 fn print_table(entries: &[&Entry], key: &ItemKey) -> Result<()> {
     struct Row {
         user: Zeroizing<String>,
@@ -645,14 +666,14 @@ fn print_table(entries: &[&Entry], key: &ItemKey) -> Result<()> {
         .map(|e| Ok(Row { user: e.username(key)?, url: e.url(key)? }))
         .collect::<Result<_>>()?;
     let w_name = entries.iter().map(|e| e.name().chars().count()).max().unwrap_or(0).clamp(4, 32);
-    let w_user = rows.iter().map(|r| r.user.chars().count()).max().unwrap_or(0).clamp(14, 28);
+    let w_user = rows.iter().map(|r| r.user.chars().count()).max().unwrap_or(0).clamp(11, 28);
     let w_url = rows.iter().map(|r| r.url.chars().count()).max().unwrap_or(0).clamp(3, 36);
-    const W_KIND: usize = 11;
+    const W_KIND: usize = 8;
     let header = format!(
         "{}  {}  {}  {}  TAGS",
-        ui::pad("SOORT", W_KIND),
-        ui::pad("NAAM", w_name),
-        ui::pad("GEBRUIKER/ID", w_user),
+        ui::pad("TYPE", W_KIND),
+        ui::pad("NAME", w_name),
+        ui::pad("USER/ID", w_user),
         ui::pad("URL", w_url)
     );
     println!("{}", ui::bold(&header));
@@ -671,15 +692,19 @@ fn print_table(entries: &[&Entry], key: &ItemKey) -> Result<()> {
     Ok(())
 }
 
+fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
 fn summary(entries: &[&Entry]) -> String {
     let count = |k: Kind| entries.iter().filter(|e| e.kind() == k).count();
     let parts: Vec<String> =
-        [(Kind::Login, "login(s)"), (Kind::Api, "API-sleutel(s)"), (Kind::Note, "notitie(s)")]
+        [(Kind::Login, "login", "logins"), (Kind::Api, "API key", "API keys"), (Kind::Note, "note", "notes")]
             .iter()
-            .filter(|&&(k, _)| count(k) > 0)
-            .map(|&(k, label)| format!("{} {label}", count(k)))
+            .filter(|&&(k, _, _)| count(k) > 0)
+            .map(|&(k, one, many)| plural(count(k), one, many))
             .collect();
-    format!("{} item(s): {}", entries.len(), parts.join(" · "))
+    format!("{}: {}", plural(entries.len(), "item", "items"), parts.join(" · "))
 }
 
 fn list(vault: &Vault, key: &ItemKey, tag: Option<&str>, kind: Option<Kind>) -> Result<()> {
@@ -690,9 +715,9 @@ fn list(vault: &Vault, key: &ItemKey, tag: Option<&str>, kind: Option<Kind>) -> 
         .collect();
     if entries.is_empty() {
         if vault.is_empty() {
-            ui::info("De kluis is nog leeg. Voeg een item toe met `kluis add <naam>`.");
+            ui::info("The vault is still empty. Add an item with `kluis add <name>`.");
         } else {
-            ui::info("Geen items die hierbij passen.");
+            ui::info("No items match.");
         }
         return Ok(());
     }
@@ -704,18 +729,18 @@ fn list(vault: &Vault, key: &ItemKey, tag: Option<&str>, kind: Option<Kind>) -> 
 fn search(vault: &Vault, key: &ItemKey, query: &str) -> Result<()> {
     let found = vault.search(query, key);
     if found.is_empty() {
-        ui::info(&format!("Niets gevonden voor '{query}'."));
+        ui::info(&format!("Nothing found for '{query}'."));
     } else {
         print_table(&found, key)?;
-        ui::info(&format!("{} gevonden", summary(&found)));
+        ui::info(&format!("found {}", summary(&found)));
     }
     Ok(())
 }
 
-/// Korte samenvatting na het ontgrendelen (voor de interactieve modus).
+/// Short summary after unlocking (for the interactive mode).
 pub fn vault_summary(vault: &Vault) -> String {
     let all: Vec<&Entry> = vault.entries().iter().collect();
-    if all.is_empty() { "de kluis is nog leeg".into() } else { summary(&all) }
+    if all.is_empty() { "the vault is still empty".into() } else { summary(&all) }
 }
 
 fn generate(g: &GenArgs, show: bool) -> Result<()> {
@@ -723,9 +748,9 @@ fn generate(g: &GenArgs, show: bool) -> Result<()> {
     if show {
         ui::print_secret_line("", &secret)?;
     } else {
-        copy_to_clipboard(&secret, "Het gegenereerde wachtwoord")?;
+        copy_to_clipboard(&secret, "The generated password")?;
     }
-    ui::info(&format!("Sterkte: ongeveer {bits:.0} bits."));
+    ui::info(&format!("Strength: about {bits:.0} bits."));
     Ok(())
 }
 
@@ -733,7 +758,7 @@ fn passwd(uv: &mut UnlockedVault, a: &KdfChangeArgs) -> Result<()> {
     let cur = uv.kdf();
     let kdf = KdfParams {
         memory_kib: match a.kdf_memory {
-            Some(m) => m.checked_mul(1024).ok_or(Error::InvalidKdfParams("te veel geheugen"))?,
+            Some(m) => m.checked_mul(1024).ok_or(Error::InvalidKdfParams("too much memory"))?,
             None => cur.memory_kib,
         },
         iterations: a.kdf_iterations.unwrap_or(cur.iterations),
@@ -741,13 +766,13 @@ fn passwd(uv: &mut UnlockedVault, a: &KdfChangeArgs) -> Result<()> {
     };
     kdf.validate()?;
     warn_if_weak_kdf(&kdf);
-    ui::info("Kies een nieuw hoofdwachtwoord. Ook nu geldt: vergeten = alles kwijt.");
-    let new_pw: SecretString = prompt::new_strong_password("hoofdwachtwoord")?;
+    ui::info("Choose a new master password. The same warning applies: forgotten = everything lost.");
+    let new_pw: SecretString = prompt::new_strong_password("master password")?;
     uv.change_password(new_pw.expose_secret().as_bytes(), kdf)?;
-    ui::success("Hoofdwachtwoord gewijzigd. Alle items en de back-up gebruiken nu de nieuwe sleutel.");
+    ui::success("Master password changed. All items and the backup now use the new key.");
     ui::warn(
-        "Kopieën en exports die je eerder zelf hebt gemaakt, openen nog steeds met het OUDE \
-         wachtwoord. Verwijder die als je denkt dat het oude wachtwoord is uitgelekt.",
+        "Copies and exports you made yourself earlier still open with the OLD password. \
+         Delete them if you think the old password has leaked.",
     );
     Ok(())
 }
@@ -756,16 +781,20 @@ fn export(uv: &UnlockedVault, file: &Path) -> Result<()> {
     if fs::symlink_metadata(file).is_ok() {
         return Err(Error::AlreadyExists(file.to_path_buf()));
     }
-    ui::info("Kies een wachtwoord voor het exportbestand (mag anders zijn dan je hoofdwachtwoord).");
-    let pw = prompt::new_strong_password("exportwachtwoord")?;
+    ui::info("Choose a password for the export file (it may differ from your master password).");
+    let pw = prompt::new_strong_password("export password")?;
     uv.export_to(file, pw.expose_secret().as_bytes(), KdfParams::DEFAULT)?;
-    ui::success(&format!("{} item(s) versleuteld geëxporteerd naar {}", uv.vault.len(), file.display()));
-    ui::info("Zonder het exportwachtwoord is dit bestand onbruikbaar. Importeren: `kluis import <bestand>`.");
+    ui::success(&format!(
+        "{} exported (encrypted) to {}",
+        plural(uv.vault.len(), "item", "items"),
+        file.display()
+    ));
+    ui::info("Without the export password this file is useless. Import it with `kluis import <file>`.");
     Ok(())
 }
 
 fn import_vault(uv: &mut UnlockedVault, file: &Path) -> Result<()> {
-    let pw = prompt::secret("Wachtwoord van het importbestand: ")?;
+    let pw = prompt::secret("Password of the import file: ")?;
     let (other, other_key) = storage::read_vault_file(file, pw.expose_secret().as_bytes())?;
     drop(pw);
     let (vault, key) = uv.parts_mut();
@@ -773,25 +802,23 @@ fn import_vault(uv: &mut UnlockedVault, file: &Path) -> Result<()> {
     if added > 0 {
         uv.save()?;
     }
-    ui::success(&format!("{added} item(s) toegevoegd, {skipped} al aanwezig (overgeslagen)."));
+    ui::success(&format!("{added} item(s) added, {skipped} already present (skipped)."));
     if added > 0 {
-        ui::info("Items met een bestaande naam hebben een volgnummer gekregen, bijv. \"GitHub (2)\".");
+        ui::info("Items with an existing name got a sequence number, e.g. \"GitHub (2)\".");
     }
     Ok(())
 }
 
 fn import_csv(uv: &mut UnlockedVault, file: &Path) -> Result<()> {
     ui::banner(&[
-        "LET OP: een CSV-export is NIET versleuteld.",
-        "Iedereen die dit bestand kan lezen, ziet al je wachtwoorden.",
-        "Verwijder het direct na het importeren (kluis biedt dat zo aan)",
-        "en kijk ook in je map Downloads, de prullenbak en je back-ups.",
+        "NOTE: a CSV export is NOT encrypted.",
+        "Anyone who can read this file can see all your passwords.",
+        "Delete it right after importing (kluis offers to do that)",
+        "and also check your Downloads folder, the trash and your backups.",
     ]);
     let f =
         File::options().read(true).custom_flags(libc::O_NOFOLLOW).open(file).map_err(|e| match e.kind() {
-            io::ErrorKind::NotFound => {
-                Error::InvalidInput(format!("bestand {} niet gevonden", file.display()))
-            }
+            io::ErrorKind::NotFound => Error::InvalidInput(format!("file {} not found", file.display())),
             _ => Error::Io(e),
         })?;
     let parsed = import::parse_csv(f, uv.item_key())?;
@@ -801,22 +828,21 @@ fn import_csv(uv: &mut UnlockedVault, file: &Path) -> Result<()> {
         uv.save()?;
     }
     ui::success(&format!(
-        "{added} item(s) geïmporteerd; {duplicates} al aanwezig; {} lege of ongeldige regel(s) overgeslagen.",
+        "{added} item(s) imported; {duplicates} already present; {} empty or invalid row(s) skipped.",
         parsed.skipped
     ));
     drop(parsed);
 
-    if prompt::confirm(&format!("Wil je {} nu overschrijven en verwijderen?", file.display()))? {
+    if prompt::confirm(&format!("Do you want to overwrite and delete {} now?", file.display()))? {
         import::overwrite_and_remove(file)?;
-        ui::success("CSV-bestand overschreven en verwijderd.");
+        ui::success("CSV file overwritten and deleted.");
         ui::warn(
-            "Op SSD's en op btrfs/ZFS (copy-on-write) kan de oude inhoud ondanks het \
-             overschrijven nog op de schijf staan. Volledige schijfversleuteling (LUKS) is \
-             de echte bescherming.",
+            "On SSDs and on btrfs/ZFS (copy-on-write) the old contents may still be on the disk \
+             despite the overwriting. Full-disk encryption (LUKS) is the real protection.",
         );
     } else {
         ui::warn(&format!(
-            "Verwijder het CSV-bestand zelf zo snel mogelijk, bijv. met: shred -u \"{}\"",
+            "Delete the CSV file yourself as soon as possible, e.g. with: shred -u \"{}\"",
             file.display()
         ));
     }
@@ -824,82 +850,86 @@ fn import_csv(uv: &mut UnlockedVault, file: &Path) -> Result<()> {
 }
 
 fn info(paths: &VaultPaths) -> Result<()> {
-    let yes_no = |b: bool| if b { "ja" } else { "nee" };
-    println!("{}", ui::bold("CakePass-kluis"));
-    println!("  Bestand:          {}", paths.file.display());
+    let yes_no = |b: bool| if b { "yes" } else { "no" };
+    println!("{}", ui::bold("CakePass vault"));
+    println!("  File:             {}", paths.file.display());
     match fs::symlink_metadata(&paths.file) {
-        Err(_) => println!("  Status:           bestaat nog niet (maak er een met `kluis init`)"),
+        Err(_) => println!("  Status:           does not exist yet (create one with `kluis setup`)"),
         Ok(meta) => {
             let mode = meta.mode() & 0o777;
             let mode_ok = mode & 0o077 == 0;
-            println!("  Grootte:          {} bytes", meta.len());
+            println!("  Size:             {} bytes", meta.len());
             println!(
-                "  Rechten:          {mode:o} {}",
-                if mode_ok { "(goed: alleen jij)" } else { "(TE RUIM: wordt bij openen hersteld)" }
+                "  Permissions:      {mode:o} {}",
+                if mode_ok { "(good: only you)" } else { "(TOO BROAD: repaired when opened)" }
             );
-            println!("  Gewijzigd:        {}", ui::format_time(meta.mtime().max(0) as u64));
+            println!("  Modified:         {}", ui::format_time(meta.mtime().max(0) as u64));
             match storage::read_header(&paths.file) {
                 Ok(h) => {
-                    println!("  Formaatversie:    {}", h.version);
+                    println!("  Format version:   {}", h.version);
                     println!(
-                        "  Sleutelafleiding: Argon2id, {} MiB, {} iteraties, {} lanes{}",
+                        "  Key derivation:   Argon2id, {} MiB, {} iterations, {} lanes{}",
                         h.kdf.memory_kib / 1024,
                         h.kdf.iterations,
                         h.kdf.parallelism,
-                        if h.kdf.weaker_than_default() { " (lichter dan aanbevolen)" } else { "" }
+                        if h.kdf.weaker_than_default() { " (lighter than recommended)" } else { "" }
                     );
-                    println!("  Versleuteling:    XChaCha20-Poly1305");
+                    println!("  Encryption:       XChaCha20-Poly1305");
                     if h.version >= 2 {
                         println!(
-                            "  Tweede laag:      alle inhoud per item apart versleuteld \
-                             (XChaCha20-Poly1305, eigen HKDF-subsleutel)"
+                            "  Second layer:     all item content encrypted separately per field \
+                             (XChaCha20-Poly1305, own HKDF subkey)"
                         );
                     } else {
-                        println!("  Tweede laag:      nog niet (oud formaat; wordt bij openen bijgewerkt)");
+                        println!("  Second layer:     not yet (old format; upgraded when opened)");
                     }
                 }
-                Err(e) => println!("  Header:           onleesbaar ({e})"),
+                Err(e) => println!("  Header:           unreadable ({e})"),
             }
         }
     }
     match fs::metadata(&paths.backup) {
         Ok(m) => println!(
-            "  Back-up:          {} ({})",
+            "  Backup:           {} ({})",
             paths.backup.display(),
             ui::format_time(m.mtime().max(0) as u64)
         ),
-        Err(_) => println!("  Back-up:          nog geen"),
+        Err(_) => println!("  Backup:           none yet"),
     }
 
-    println!("{}", ui::bold("Versie"));
-    println!("  Dit programma:    {} (commit {})", env!("CARGO_PKG_VERSION"), update::INSTALLED_COMMIT);
+    println!("{}", ui::bold("Version"));
+    println!("  This program:     {} (commit {})", env!("CARGO_PKG_VERSION"), update::INSTALLED_COMMIT);
     match update::pending_notice() {
         Some(n) => println!("  Update:           {n}"),
-        None => println!(
-            "  Update:           geen bekende nieuwe versie (controleer met `kluis --update --check`)"
-        ),
+        None => println!("  Update:           no new version known (check with `kluis --update --check`)"),
     }
 
-    println!("{}", ui::bold("Systeem"));
+    let cfg = config::load();
+    println!("{}", ui::bold("Settings"));
+    println!("  Animation:        {}", if cfg.animation { "on" } else { "off" });
+    println!("  Auto-lock:        after {} minute(s) of inactivity", cfg.lock_timeout_minutes);
+    println!("  Settings file:    {}", config::path().map_or("-".to_string(), |p| p.display().to_string()));
+
+    println!("{}", ui::bold("System"));
     let tool = clipboard::detect();
     println!(
-        "  Klembord:         {}",
-        tool.map_or("niet gevonden (installeer wl-clipboard of xclip)", |t| t.name())
+        "  Clipboard:        {}",
+        tool.map_or("not found (install wl-clipboard or xclip)", |t| t.name())
     );
     let mlock = secure_mem::mlock_works();
     let limit = match secure_mem::memlock_limit() {
         Some(l) => format!("{} KiB", l / 1024),
-        None => "onbeperkt".into(),
+        None => "unlimited".into(),
     };
-    println!("  mlock werkt:      {} (limiet {limit})", yes_no(mlock));
+    println!("  mlock works:      {} (limit {limit})", yes_no(mlock));
     if let Some(h) = HARDENING.get() {
-        println!("  Core dumps uit:   {}", yes_no(h.core_dumps_disabled));
-        println!("  Niet-dumpbaar:    {}", yes_no(h.non_dumpable));
+        println!("  Core dumps off:   {}", yes_no(h.core_dumps_disabled));
+        println!("  Non-dumpable:     {}", yes_no(h.non_dumpable));
     }
     Ok(())
 }
 
 fn completions(shell: clap_complete::Shell) -> Result<()> {
-    clap_complete::generate(shell, &mut super::args::localize(Cli::command()), "kluis", &mut io::stdout());
+    clap_complete::generate(shell, &mut args::command(), "kluis", &mut io::stdout());
     Ok(())
 }

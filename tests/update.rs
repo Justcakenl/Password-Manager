@@ -1,10 +1,10 @@
-//! Integratietests voor `kluis --update`.
+//! Integration tests for `kluis --update`.
 //!
-//! "GitHub" is hier een lokale bare git-repo; `makepkg` is een nepscript dat
-//! alleen opschrijft dat het is aangeroepen. Zo wordt de echte logica
-//! (git fetch, fast-forward, back-up, terugzetten bij een fout) getest, zonder
-//! netwerk, root of pacman. De tests werken alleen in debug-builds, waar de
-//! geïnstalleerde commit via KLUIS_TEST_INSTALLED_COMMIT te simuleren is.
+//! "GitHub" here is a local bare git repo; `makepkg` is a fake script that
+//! only records that it was called. This tests the real logic (git fetch,
+//! fast-forward, backup, restoring after a failure) without network, root or
+//! pacman. The tests only work in debug builds, where the installed commit
+//! can be simulated through KLUIS_TEST_INSTALLED_COMMIT.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -41,7 +41,7 @@ struct World {
 }
 
 impl World {
-    /// Nep-GitHub + bronmap (`src`) + ontwikkelaarskopie (`dev`) + nep-makepkg.
+    /// Fake GitHub + source folder (`src`) + developer copy (`dev`) + fake makepkg.
     fn new() -> World {
         let w = World { t: tempfile::tempdir().unwrap() };
         let origin = w.path("origin.git");
@@ -51,10 +51,10 @@ impl World {
         let src = w.src();
         git(&src, &["checkout", "--quiet", "-b", "main"]);
         fs::create_dir_all(src.join("packaging/arch")).unwrap();
-        fs::write(src.join("packaging/arch/PKGBUILD"), "# nep\n").unwrap();
-        fs::write(src.join("README.md"), "versie 1\n").unwrap();
+        fs::write(src.join("packaging/arch/PKGBUILD"), "# fake\n").unwrap();
+        fs::write(src.join("README.md"), "version 1\n").unwrap();
         git(&src, &["add", "-A"]);
-        git(&src, &["commit", "--quiet", "-m", "Eerste versie"]);
+        git(&src, &["commit", "--quiet", "-m", "First version"]);
         git(&src, &["push", "--quiet", "-u", "origin", "main"]);
         git(w.t.path(), &["clone", "--quiet", "-b", "main", origin.to_str().unwrap(), "dev"]);
 
@@ -80,17 +80,17 @@ impl World {
         self.path("data/vault.enc")
     }
 
-    /// De commit die "geïnstalleerd" is (nu de kop van de bronmap).
+    /// The commit that is "installed" (now the head of the source folder).
     fn installed(&self) -> String {
         git(&self.src(), &["rev-parse", "--short=12", "HEAD"])
     }
 
-    /// Een nieuwe versie "op GitHub" zetten.
+    /// Put a new version "on GitHub".
     fn publish(&self, subject: &str) -> String {
         let dev = self.path("dev");
         git(&dev, &["pull", "--quiet", "--ff-only"]);
         let n = fs::read_to_string(dev.join("README.md")).unwrap().lines().count() + 1;
-        fs::write(dev.join("README.md"), format!("versie {n}\n")).unwrap();
+        fs::write(dev.join("README.md"), format!("version {n}\n")).unwrap();
         git(&dev, &["add", "-A"]);
         git(&dev, &["commit", "--quiet", "-m", subject]);
         git(&dev, &["push", "--quiet", "origin", "main"]);
@@ -104,6 +104,7 @@ impl World {
             .env("NO_COLOR", "1")
             .env("KLUIS_VAULT", self.vault())
             .env("XDG_CACHE_HOME", self.path("cache"))
+            .env("XDG_CONFIG_HOME", self.path("config-home"))
             .env("KLUIS_TEST_ALLOW_ROOT", "1")
             .env("KLUIS_TEST_INSTALLED_COMMIT", installed)
             .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -128,8 +129,8 @@ impl World {
             .assert()
             .success();
         self.kluis(installed)
-            .args(["add", "Bank", "-u", "jan", "--url", "https://bank.nl", "-t", "geld"])
-            .write_stdin(format!("{PW}\nGeheim-Bank-PW-1!\n"))
+            .args(["add", "Bank", "-u", "john", "--url", "https://bank.nl", "-t", "money"])
+            .write_stdin(format!("{PW}\nSecret-Bank-PW-1!\n"))
             .assert()
             .success();
     }
@@ -148,7 +149,7 @@ impl World {
             .map(|rd| {
                 rd.flatten()
                     .map(|e| e.file_name().to_string_lossy().into_owned())
-                    .filter(|n| n.starts_with("vault.enc.voor-update-"))
+                    .filter(|n| n.starts_with("vault.enc.pre-update-"))
                     .collect()
             })
             .unwrap_or_default()
@@ -160,60 +161,56 @@ impl World {
             .write_stdin(format!("{PW}\n"))
             .assert()
             .success()
-            .stdout(contains("Geheim-Bank-PW-1!"));
+            .stdout(contains("Secret-Bank-PW-1!"));
     }
 }
 
 #[test]
-fn nieuwste_versie_geeft_geen_update() {
+fn newest_version_gives_no_update() {
     let w = World::new();
     let installed = w.installed();
-    w.update(&installed, &["--check"]).assert().success().stderr(contains("al de nieuwste versie"));
+    w.update(&installed, &["--check"]).assert().success().stderr(contains("already have the newest version"));
     assert!(w.makepkg_calls().is_empty());
 }
 
 #[test]
-fn controleren_vindt_een_update_en_onthoudt_dat() {
+fn checking_finds_an_update_and_remembers_it() {
     let w = World::new();
     let installed = w.installed();
-    let new = w.publish("Mooie nieuwe functie");
+    let new = w.publish("Nice new feature");
     w.update(&installed, &["--check"])
         .assert()
         .success()
-        .stderr(contains("Update beschikbaar (1 nieuwe wijziging(en))"));
-    // Er is niets geïnstalleerd of binnengehaald in de werkmap.
+        .stderr(contains("Update available (1 new change(s))"));
+    // Nothing was installed or pulled into the working folder.
     assert!(w.makepkg_calls().is_empty());
     assert_eq!(git(&w.src(), &["rev-parse", "HEAD"]), git(&w.src(), &["rev-parse", "origin/main~1"]));
-    // Het resultaat staat in de cache, en `kluis info` laat het zien (zonder netwerk).
+    // The result is in the cache, and `kluis info` shows it (without network).
     let cache = fs::read_to_string(w.path("cache/kluis/update-status")).unwrap();
     assert!(cache.contains(&format!("remote={new}")));
     w.kluis(&installed).arg("info").assert().success().stdout(contains("kluis --update"));
-    // Na een nieuwe controle zonder nieuws verdwijnt de melding weer.
+    // After a new check with no news the notice disappears again.
     w.update(&new[..12], &["--check"]).assert().success();
-    w.kluis(&new[..12]).arg("info").assert().success().stdout(contains("geen bekende nieuwe versie"));
-    // --notify zonder notify-send in PATH is geen fout.
+    w.kluis(&new[..12]).arg("info").assert().success().stdout(contains("no new version known"));
+    // --notify without notify-send in PATH is not an error.
     w.update(&installed, &["--check", "--notify"]).assert().success();
 }
 
 #[test]
-fn volledige_update_laat_de_kluis_ongemoeid() {
+fn full_update_leaves_the_vault_alone() {
     let w = World::new();
     let installed = w.installed();
     w.init_vault(&installed);
     let before = fs::read(w.vault()).unwrap();
-    let new = w.publish("Nieuwe functie");
+    let new = w.publish("New feature");
 
     w.update(&installed, &["--yes"])
         .assert()
         .success()
-        .stderr(
-            contains("Er is een nieuwe versie")
-                .and(contains("Nieuwe functie"))
-                .and(contains("Extra back-up")),
-        )
-        .stderr(contains("CakePass is bijgewerkt"));
+        .stderr(contains("There is a new version").and(contains("New feature")).and(contains("Extra backup")))
+        .stderr(contains("CakePass has been updated"));
 
-    // Nieuwe code is binnengehaald (alleen vooruit), en makepkg draaide in packaging/arch.
+    // New code was pulled in (forward only), and makepkg ran in packaging/arch.
     assert_eq!(git(&w.src(), &["rev-parse", "HEAD"]), new);
     let calls = w.makepkg_calls();
     assert_eq!(calls.len(), 1, "{calls:?}");
@@ -221,7 +218,7 @@ fn volledige_update_laat_de_kluis_ongemoeid() {
         calls[0].starts_with("-s -i -f --noconfirm | ") && calls[0].ends_with("packaging/arch"),
         "{calls:?}"
     );
-    // De kluis is byte voor byte gelijk, er is een identieke extra back-up (rechten 600), en alles opent nog.
+    // The vault is byte for byte the same, there is an identical extra backup (permissions 600), and everything still opens.
     assert_eq!(fs::read(w.vault()).unwrap(), before);
     let backups = w.backups();
     assert_eq!(backups.len(), 1);
@@ -229,110 +226,110 @@ fn volledige_update_laat_de_kluis_ongemoeid() {
     assert_eq!(fs::read(&backup).unwrap(), before);
     assert_eq!(fs::metadata(&backup).unwrap().permissions().mode() & 0o777, 0o600);
     w.assert_vault_works(&new[..12]);
-    // De back-up opent ook los.
+    // The backup opens on its own as well.
     Command::new(env!("CARGO_BIN_EXE_kluis"))
         .args(["--vault", backup.to_str().unwrap(), "list"])
         .write_stdin(format!("{PW}\n"))
         .assert()
         .success()
         .stdout(contains("Bank"));
-    // Daarna is er niets meer te doen.
-    w.update(&new[..12], &[]).assert().success().stderr(contains("al de nieuwste versie"));
+    // After that there is nothing left to do.
+    w.update(&new[..12], &[]).assert().success().stderr(contains("already have the newest version"));
 }
 
 #[test]
-fn zonder_ja_gebeurt_er_niets() {
+fn without_yes_nothing_happens() {
     let w = World::new();
     let installed = w.installed();
     w.init_vault(&installed);
-    w.publish("Nieuwe functie");
+    w.publish("New feature");
     let head = git(&w.src(), &["rev-parse", "HEAD"]);
-    w.update(&installed, &[]).write_stdin("n\n").assert().success().stderr(contains("Niets gewijzigd"));
+    w.update(&installed, &[]).write_stdin("n\n").assert().success().stderr(contains("Nothing changed"));
     assert_eq!(git(&w.src(), &["rev-parse", "HEAD"]), head);
     assert!(w.makepkg_calls().is_empty() && w.backups().is_empty());
-    // Met "j" gaat het door (zonder --noconfirm: pacman vraagt zelf nog).
-    w.update(&installed, &[]).write_stdin("j\n").assert().success().stderr(contains("bijgewerkt"));
+    // With "y" it goes ahead (without --noconfirm: pacman still asks itself).
+    w.update(&installed, &[]).write_stdin("y\n").assert().success().stderr(contains("updated"));
     assert_eq!(w.makepkg_calls().len(), 1);
     assert!(!w.makepkg_calls()[0].contains("--noconfirm"));
 }
 
 #[test]
-fn mislukte_bouw_zet_alles_terug() {
+fn failed_build_restores_everything() {
     let w = World::new();
     let installed = w.installed();
     w.init_vault(&installed);
     let before = fs::read(w.vault()).unwrap();
     let head = git(&w.src(), &["rev-parse", "HEAD"]);
-    w.publish("Kapotte versie");
+    w.publish("Broken version");
     fs::write(w.path("makepkg-fail"), "").unwrap();
 
     w.update(&installed, &["--yes"])
         .assert()
         .failure()
-        .stderr(contains("het bijwerken is mislukt").and(contains("je kluis is veilig")));
-    assert_eq!(git(&w.src(), &["rev-parse", "HEAD"]), head, "bronmap is teruggezet");
+        .stderr(contains("the update failed").and(contains("your vault is safe")));
+    assert_eq!(git(&w.src(), &["rev-parse", "HEAD"]), head, "source folder was restored");
     assert_eq!(fs::read(w.vault()).unwrap(), before);
-    assert_eq!(w.backups().len(), 1, "back-up is gemaakt vóór het proberen");
+    assert_eq!(w.backups().len(), 1, "backup was made before trying");
     w.assert_vault_works(&installed);
-    // Als het later wel lukt, werkt een nieuwe poging.
+    // If it works later, a new attempt works.
     fs::remove_file(w.path("makepkg-fail")).unwrap();
     w.update(&installed, &["--yes"]).assert().success();
 }
 
 #[test]
-fn lokale_wijzigingen_worden_nooit_overschreven() {
+fn local_changes_are_never_overwritten() {
     let w = World::new();
     let installed = w.installed();
-    w.publish("Nieuwe functie");
-    fs::write(w.src().join("README.md"), "mijn eigen wijziging\n").unwrap();
-    w.update(&installed, &["--yes"]).assert().failure().stderr(contains("lokale wijzigingen"));
-    assert_eq!(fs::read_to_string(w.src().join("README.md")).unwrap(), "mijn eigen wijziging\n");
+    w.publish("New feature");
+    fs::write(w.src().join("README.md"), "my own change\n").unwrap();
+    w.update(&installed, &["--yes"]).assert().failure().stderr(contains("local changes"));
+    assert_eq!(fs::read_to_string(w.src().join("README.md")).unwrap(), "my own change\n");
     assert!(w.makepkg_calls().is_empty() && w.backups().is_empty());
 }
 
 #[test]
-fn afwijkende_geschiedenis_wordt_nooit_herschreven() {
+fn diverging_history_is_never_rewritten() {
     let w = World::new();
     let installed = w.installed();
-    fs::write(w.src().join("eigen.txt"), "lokaal\n").unwrap();
+    fs::write(w.src().join("own.txt"), "local\n").unwrap();
     git(&w.src(), &["add", "-A"]);
-    git(&w.src(), &["commit", "--quiet", "-m", "Mijn eigen commit"]);
+    git(&w.src(), &["commit", "--quiet", "-m", "My own commit"]);
     let mine = git(&w.src(), &["rev-parse", "HEAD"]);
-    w.publish("Iets anders op GitHub");
-    w.update(&installed, &["--yes"]).assert().failure().stderr(contains("wijkt af van GitHub"));
+    w.publish("Something else on GitHub");
+    w.update(&installed, &["--yes"]).assert().failure().stderr(contains("differs from GitHub"));
     assert_eq!(git(&w.src(), &["rev-parse", "HEAD"]), mine);
     assert!(w.makepkg_calls().is_empty());
 }
 
 #[test]
-fn onveilige_tekens_in_commits_worden_onschadelijk() {
+fn unsafe_characters_in_commits_are_neutralized() {
     let w = World::new();
     let installed = w.installed();
-    w.publish("Gemene \u{1b}[2J\u{1b}[31m titel \u{7}");
+    w.publish("Nasty \u{1b}[2J\u{1b}[31m title \u{7}");
     let out = w.update(&installed, &["--yes"]).assert().success();
     let o = out.get_output();
-    assert!(!o.stderr.contains(&0x1b) && !o.stderr.contains(&0x07), "geen stuurtekens in de uitvoer");
-    assert!(String::from_utf8_lossy(&o.stderr).contains("Gemene"));
+    assert!(!o.stderr.contains(&0x1b) && !o.stderr.contains(&0x07), "no control characters in the output");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("Nasty"));
 }
 
 #[test]
-fn bereikbaarheid_en_bronmap_fouten() {
+fn reachability_and_source_folder_errors() {
     let w = World::new();
     let installed = w.installed();
-    // Ongeldige bronmap.
+    // Invalid source folder.
     w.kluis(&installed)
         .args(["--update", "--source", "/tmp"])
         .assert()
         .failure()
-        .stderr(contains("geen CakePass-bronmap"));
-    // GitHub onbereikbaar: nette fout, niets verandert.
-    git(&w.src(), &["remote", "set-url", "origin", w.path("bestaat-niet.git").to_str().unwrap()]);
-    w.update(&installed, &["--check"]).assert().failure().stderr(contains("git fetch mislukte"));
+        .stderr(contains("not a CakePass source folder"));
+    // GitHub unreachable: a clean error, nothing changes.
+    git(&w.src(), &["remote", "set-url", "origin", w.path("does-not-exist.git").to_str().unwrap()]);
+    w.update(&installed, &["--check"]).assert().failure().stderr(contains("git fetch failed"));
     assert!(w.makepkg_calls().is_empty());
 }
 
 #[test]
-fn niet_binnen_de_kluis_shell() {
+fn not_inside_the_vault_shell() {
     let w = World::new();
     let installed = w.installed();
     w.init_vault(&installed);
@@ -341,23 +338,23 @@ fn niet_binnen_de_kluis_shell() {
         .write_stdin(format!("{PW}\nupdate\nexit\n"))
         .assert()
         .success()
-        .stderr(contains("sluit eerst de kluis"));
+        .stderr(contains("close the vault first"));
 }
 
 #[test]
-fn update_opent_de_kluis_nooit() {
-    // Zonder kluis en zonder wachtwoordvraag: update werkt, en vraagt nergens om een wachtwoord.
+fn update_never_opens_the_vault() {
+    // Without a vault and without a password prompt: update works, and never asks for a password.
     let w = World::new();
     let installed = w.installed();
-    w.publish("Nieuwe functie");
+    w.publish("New feature");
     w.update(&installed, &["--yes"])
         .assert()
         .success()
-        .stderr(contains("Hoofdwachtwoord").not().and(contains("geen back-up nodig")));
+        .stderr(contains("Master password").not().and(contains("no backup needed")));
 }
 
 #[test]
-fn versie_bevat_de_commit() {
+fn version_contains_the_commit() {
     Command::new(env!("CARGO_BIN_EXE_kluis"))
         .arg("--version")
         .assert()

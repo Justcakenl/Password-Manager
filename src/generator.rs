@@ -1,11 +1,11 @@
-//! Wachtwoord- en passphrase-generator.
+//! Password and passphrase generator.
 //!
-//! BEVEILIGINGSKRITIEK. Alle willekeur komt van de OS-CSPRNG (`SysRng`, via
-//! `getrandom`). Tekens en woorden worden uniform gekozen met `rand`'s
-//! `random_range` (zonder "modulo bias"). Als elk gekozen tekentype minstens
-//! één keer moet voorkomen, gebruiken we "rejection sampling": we gooien een
-//! wachtwoord weg dat daar niet aan voldoet en trekken opnieuw. Zo blijft de
-//! uitkomst uniform over alle geldige wachtwoorden.
+//! SECURITY-CRITICAL. All randomness comes from the OS CSPRNG (`SysRng`, via
+//! `getrandom`). Characters and words are chosen uniformly with `rand`'s
+//! `random_range` (no "modulo bias"). When every selected character class
+//! must appear at least once we use "rejection sampling": a password that
+//! does not satisfy that is thrown away and drawn again. This keeps the
+//! result uniform over all valid passwords.
 
 use std::sync::OnceLock;
 
@@ -19,10 +19,10 @@ use crate::error::{Error, Result};
 const UPPER: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const LOWER: &str = "abcdefghijklmnopqrstuvwxyz";
 const DIGITS: &str = "0123456789";
-/// Leestekens zonder spatie, aanhalingstekens, backslash en backtick
-/// (die geven vaak problemen in formulieren en shells).
+/// Symbols without space, quotes, backslash and backtick
+/// (those often cause trouble in forms and shells).
 const SYMBOLS: &str = "!#$%&()*+,-./:;<=>?@[]^_{|}~";
-/// Tekens die op elkaar lijken.
+/// Characters that look alike.
 const LOOKALIKES: &str = "0O1lI|";
 
 pub const MIN_LENGTH: usize = 8;
@@ -32,7 +32,7 @@ pub const MAX_WORDS: usize = 20;
 
 static EFF_WORDLIST_RAW: &str = include_str!("../assets/eff_large_wordlist.txt");
 
-/// De EFF "large" diceware-woordenlijst (7776 woorden, 12,9 bits per woord).
+/// The EFF "large" diceware word list (7776 words, 12.9 bits per word).
 pub fn wordlist() -> &'static [&'static str] {
     static WORDS: OnceLock<Vec<&'static str>> = OnceLock::new();
     WORDS.get_or_init(|| EFF_WORDLIST_RAW.lines().filter_map(|l| l.split_whitespace().nth(1)).collect())
@@ -42,7 +42,7 @@ fn rng() -> UnwrapErr<SysRng> {
     UnwrapErr(SysRng)
 }
 
-/// Instellingen voor een willekeurig wachtwoord.
+/// Settings for a random password.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PasswordOptions {
     pub length: usize,
@@ -84,24 +84,24 @@ impl PasswordOptions {
     fn validate(&self) -> Result<Vec<Vec<char>>> {
         if !(MIN_LENGTH..=MAX_LENGTH).contains(&self.length) {
             return Err(Error::InvalidInput(format!(
-                "de lengte moet tussen {MIN_LENGTH} en {MAX_LENGTH} liggen"
+                "the length must be between {MIN_LENGTH} and {MAX_LENGTH}"
             )));
         }
         let classes = self.classes();
         if classes.is_empty() {
-            return Err(Error::InvalidInput("kies minstens één soort tekens".into()));
+            return Err(Error::InvalidInput("choose at least one kind of characters".into()));
         }
         Ok(classes)
     }
 
-    /// Geschatte sterkte in bits: lengte × log2(aantal mogelijke tekens).
+    /// Estimated strength in bits: length × log2(number of possible characters).
     pub fn entropy_bits(&self) -> f64 {
         let pool: usize = self.classes().iter().map(Vec::len).sum();
         self.length as f64 * (pool as f64).log2()
     }
 }
 
-/// Genereer een willekeurig wachtwoord.
+/// Generate a random password.
 pub fn generate_password(opts: &PasswordOptions) -> Result<Zeroizing<String>> {
     let classes = opts.validate()?;
     let pool: Vec<char> = classes.iter().flatten().copied().collect();
@@ -111,14 +111,14 @@ pub fn generate_password(opts: &PasswordOptions) -> Result<Zeroizing<String>> {
         for _ in 0..opts.length {
             out.push(pool[rng.random_range(0..pool.len())]);
         }
-        // Rejection sampling: elk gekozen tekentype moet erin zitten.
+        // Rejection sampling: every selected character class must be present.
         if classes.iter().all(|class| out.chars().any(|c| class.contains(&c))) {
             return Ok(out);
         }
     }
 }
 
-/// Instellingen voor een diceware-passphrase.
+/// Settings for a diceware passphrase.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PassphraseOptions {
     pub words: usize,
@@ -137,15 +137,15 @@ impl PassphraseOptions {
     }
 }
 
-/// Genereer een passphrase uit de EFF-woordenlijst.
+/// Generate a passphrase from the EFF word list.
 pub fn generate_passphrase(opts: &PassphraseOptions) -> Result<Zeroizing<String>> {
     if !(MIN_WORDS..=MAX_WORDS).contains(&opts.words) {
         return Err(Error::InvalidInput(format!(
-            "het aantal woorden moet tussen {MIN_WORDS} en {MAX_WORDS} liggen"
+            "the number of words must be between {MIN_WORDS} and {MAX_WORDS}"
         )));
     }
     if opts.separator.chars().count() > 3 || opts.separator.chars().any(char::is_control) {
-        return Err(Error::InvalidInput("het scheidingsteken mag hoogstens 3 gewone tekens zijn".into()));
+        return Err(Error::InvalidInput("the separator may be at most 3 plain characters".into()));
     }
     let words = wordlist();
     let mut rng = rng();
@@ -165,17 +165,17 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn woordenlijst_is_compleet() {
+    fn word_list_is_complete() {
         let w = wordlist();
         assert_eq!(w.len(), 7776);
-        assert_eq!(w.iter().collect::<HashSet<_>>().len(), 7776, "alle woorden uniek");
+        assert_eq!(w.iter().collect::<HashSet<_>>().len(), 7776, "all words unique");
         assert_eq!(w[0], "abacus");
         assert_eq!(w[7775], "zoom");
         assert!(w.iter().all(|s| s.chars().all(|c| c.is_ascii_lowercase() || c == '-')));
     }
 
     #[test]
-    fn wachtwoord_lengte_en_tekensets() {
+    fn password_length_and_character_sets() {
         let opts = PasswordOptions { length: 40, ..Default::default() };
         for _ in 0..50 {
             let pw = generate_password(&opts).unwrap();
@@ -188,7 +188,7 @@ mod tests {
     }
 
     #[test]
-    fn alleen_cijfers_en_zonder_lookalikes() {
+    fn digits_only_and_without_lookalikes() {
         let opts = PasswordOptions {
             length: 64,
             uppercase: false,
@@ -205,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn ongeldige_opties() {
+    fn invalid_options() {
         let none = PasswordOptions {
             uppercase: false,
             lowercase: false,
@@ -221,11 +221,11 @@ mod tests {
     }
 
     #[test]
-    fn wachtwoorden_zijn_verschillend_en_gespreid() {
+    fn passwords_differ_and_are_spread_out() {
         let opts = PasswordOptions { length: 16, ..Default::default() };
         let set: HashSet<String> = (0..200).map(|_| generate_password(&opts).unwrap().to_string()).collect();
         assert_eq!(set.len(), 200);
-        // Ruwe spreidingstest: alle 10 cijfers komen voor in 2000 cijfertekens.
+        // Rough distribution test: all 10 digits occur in 2000 digit characters.
         let digits = PasswordOptions {
             length: 200,
             uppercase: false,
@@ -247,11 +247,11 @@ mod tests {
         assert_eq!(parts.len(), 7);
         assert!(parts.iter().all(|w| wordlist().contains(w)));
         let e = PassphraseOptions::default().entropy_bits();
-        assert!((e - 77.5).abs() < 0.1, "6 woorden ≈ 77,5 bits, kreeg {e}");
+        assert!((e - 77.5).abs() < 0.1, "6 words ≈ 77.5 bits, got {e}");
     }
 
     #[test]
-    fn entropie_schatting() {
+    fn entropy_estimate() {
         let o = PasswordOptions::default();
         let pool = 26 + 26 + 10 + SYMBOLS.len();
         assert!((o.entropy_bits() - 24.0 * (pool as f64).log2()).abs() < 1e-9);

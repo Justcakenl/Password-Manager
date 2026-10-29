@@ -1,214 +1,187 @@
-# Voortgang `kluis`
+# Progress: `kluis` (CakePass)
 
-Laatst bijgewerkt: stap 7 (update-systeem, privé GitHub, README).
-Branch: `main` op de privé-repo `Justcakenl/passcode-manager-cli-`.
+Last updated: step 8 (one-line installer, setup wizard, everything in English).
+Repository: private, `Justcakenl/passcode-manager-cli-`, branch `main`.
 
-## Wat ik vanavond op mijn computer moet doen
+## What I need to do tonight on my computer
 
-1. **Pakketten installeren**
+1. **Log in to GitHub** (the repository is private):
    ```bash
-   sudo pacman -S --needed base-devel git rust wl-clipboard xclip
+   sudo pacman -S --needed github-cli
+   gh auth login
    ```
-2. **Code ophalen** (de repo is privé; log eerst in bij GitHub)
+2. **Run the one-line installer**:
    ```bash
-   git clone git@github.com:Justcakenl/passcode-manager-cli-.git ~/cakepass
-   # of: gh auth login && gh repo clone Justcakenl/passcode-manager-cli- ~/cakepass
-   cd ~/cakepass
+   gh api repos/Justcakenl/passcode-manager-cli-/contents/install.sh \
+     -H "Accept: application/vnd.github.raw" | bash
    ```
-   Bewaar de map `~/cakepass`; `kluis --update` gebruikt hem later.
-3. **Bouwen, testen en installeren**
+   It installs the build tools, downloads the code into `~/cakepass`, builds,
+   tests and installs CakePass, and then starts the setup wizard. If something
+   fails, copy the error message and ask Claude. **Keep `~/cakepass`**:
+   `kluis --update` uses it.
+3. **In the wizard** choose: animation on or off, the auto-lock minutes, and a
+   strong master password (write it on paper too).
+4. **Try it** with a throw-away vault first, so the real one stays clean:
    ```bash
-   cd packaging/arch
-   makepkg -si
-   ```
-   Dit duurt een paar minuten (bouwen + alle tests). Faalt het? Kopieer de
-   foutmelding en vraag Claude om hulp.
-4. **Uitproberen** met een testkluis, zodat je echte kluis schoon blijft:
-   ```bash
-   export KLUIS_VAULT=/tmp/testkluis.enc
-   kluis init
+   export KLUIS_VAULT=/tmp/testvault.enc
+   kluis setup
    kluis add Test --generate
-   kluis get Test           # plak (Ctrl+V) ergens en wacht 20 s → leeg
+   kluis get Test           # paste (Ctrl+V) somewhere and wait 20 s → empty
    kluis info
    unset KLUIS_VAULT
    ```
-5. **Loop de lijst "Testen op Arch" hieronder af** en vink af wat werkt.
-6. **Echte kluis maken**: `kluis init`, en maak meteen een eerste back-up
-   (zie de README, kopje "Back-ups").
-7. Tevreden? Dan hoef je niets meer te doen: `kluis --update` houdt je
-   installatie bij.
+5. **Go through the "Testing on Arch" list below** and tick what works.
+6. Make a first backup of the real vault (README, "Backups").
+7. When happy there is nothing left to do: `kluis --update` keeps the
+   installation current.
 
-## Klaar
+## Done
 
-- [x] **Stap 1 – Crypto-kern**: `secure_mem` (wissende allocator,
-  mlock-buffer, core dumps uit), `crypto` (Argon2id + XChaCha20-Poly1305),
-  `format` (versioneerde header als associated data). Tests met de officiële
-  Argon2id-testvector uit RFC 9106 en tests waarin elke bitflip en elke
-  afgekapte lengte moet falen.
-- [x] **Stap 2 – Opslag en kluismodel**: `vault` (items met naam,
-  gebruikersnaam, wachtwoord, URL, notities, tags) en `storage` (XDG-pad,
-  map 700/bestand 600, atomisch schrijven met fsync, automatische `.bak`,
-  `flock` plus detectie van gelijktijdige wijzigingen, symlinks geweigerd).
-- [x] **Stap 3 – CLI**: `init`, `add`, `get`, `edit`, `rm`, `list`, `search`,
-  `generate`, `passwd`, `export`, `import`, `import-csv`, `info`, `shell`,
-  `completions`. Klembord via wl-copy/xclip, wissen na 20 s.
-- [x] **Stap 4 – Packaging en oplevering**: `packaging/arch/PKGBUILD`
-  (installeert binary, completions voor bash/zsh/fish, docs en licentie),
-  Nederlandse `README.md`, `LICENSE` (MIT), security-review met drie
-  gevonden en opgeloste problemen (zie README).
+- [x] **Step 1 – Crypto core**: `secure_mem` (wiping allocator, mlock buffer,
+  core dumps off), `crypto` (Argon2id + XChaCha20-Poly1305), `format` (versioned
+  header as associated data). Tests with the official Argon2id test vector from
+  RFC 9106 and tests where every bit flip and every truncated length must fail.
+- [x] **Step 2 – Storage and vault model**: `vault` and `storage` (XDG path,
+  directory 700/file 600, atomic writes with fsync, automatic `.bak`, `flock`
+  plus detection of concurrent changes, symlinks refused).
+- [x] **Step 3 – CLI**: `add`, `get`, `edit`, `rm`, `list`, `search`, `generate`,
+  `passwd`, `export`, `import`, `import-csv`, `info`, `shell`, `completions`.
+  Clipboard via wl-copy/xclip, cleared after 20 s.
+- [x] **Step 4 – Packaging and delivery**: PKGBUILD, README, MIT license, a
+  security review with three problems found and fixed.
+- [x] **Step 5 – Second encryption layer**: HKDF-derived item key; content of
+  every item encrypted per field. Memory scan of an open vault: 0 readable copies.
+- [x] **Step 6 – More item types + login screen**: API keys and secure notes;
+  username and URL encrypted as well (schema 3); 3D login screen; cleared
+  screen and scrollback on locking.
+- [x] **Step 7 – Update system**: `kluis --update` (git + makepkg, extra
+  backup, restore on failure, never opens the vault), daily check with a
+  systemd timer, `kluis --version` shows the commit. Repository is private
+  (checked).
+- [x] **Step 8 – Installer, setup wizard, English**:
+  - `install.sh`: the one-line installer (works with the script on stdin, as
+    `curl | bash` does). It checks the system, installs tools with pacman,
+    clones the private repository with *your* GitHub access (gh, SSH or login
+    prompt), runs `makepkg -si`, and starts `kluis setup`. Options `--yes`,
+    `--no-setup`, `--dir`, `--branch`, `--uninstall`. Wrapped in `main()` so a
+    truncated download never runs half a script.
+  - `kluis setup`: first-time wizard – animation on/off, auto-lock minutes,
+    master password (with strength check). Works from stdin too. If a vault
+    exists it only asks the first two questions.
+  - `kluis config` / `kluis config set animation on|off` /
+    `kluis config set lock-timeout <minutes>`; settings in
+    `~/.config/kluis/config`. Animation off = a still logo. `kluis` with no
+    vault starts the wizard in a terminal.
+  - **Everything is in English now**: all code, comments, messages, tests,
+    README, design doc and packaging files. Fixed cryptographic labels
+    (HKDF info strings, file magic `KLUISVLT`) are deliberately unchanged so
+    existing vaults keep opening. The backup copies made by `--update` are now
+    called `vault.enc.pre-update-<time>`.
 
-- [x] **Stap 5 – Tweede versleutelingslaag**: elk wachtwoord en elke notitie
-  wordt nu apart versleuteld met een eigen itemsleutel (HKDF-SHA256 uit de
-  hoofdsleutel). Ook in een geopende kluis staan ze alleen versleuteld in het
-  geheugen; ontsleutelen gebeurt per item, alleen bij `get`. Formaatversie 2;
-  oude kluizen (versie 1) worden automatisch bijgewerkt. Gecontroleerd door
-  het geheugen van een draaiende `kluis shell` te doorzoeken: 0 leesbare
-  kopieën van wachtwoord en notitie, ook direct na `get --show`.
+## Still to do
 
-- [x] **Stap 6 – Meer soorten items + CakePass-inlogscherm**:
-  - Naast logins nu ook **API-sleutels** (`--type api`) en **beveiligde
-    notities** van meerdere regels (`--type notitie`).
-  - **Alle inhoud** van elk item is nu per veld versleuteld: ook gebruikersnaam
-    en URL (schema 3). Alleen naam, soort en tags zijn leesbaar in een
-    geopende kluis. Oude kluizen worden automatisch omgezet.
-  - **Inlogscherm**: `kluis` (zonder opdracht) toont een 3D-gerenderd,
-    draaiend CakePass-logo (roze glazuur, cakelagen, hagelslag, glans) en
-    vraagt het hoofdwachtwoord (3 pogingen). Bij vergrendelen worden scherm
-    en scrollback gewist. Voorbeeld: `docs/cakepass-login.gif`.
-  - Geheugenscan van een geopende kluis: wachtwoord, API-sleutel, notitie,
-    gebruikersnaam en URL staan er 0 keer leesbaar in, ook na `list` en
-    `get --show`.
+- [ ] Check the "Testing on Arch" list below on your own computer.
+- [ ] Decide whether the command should be renamed from `kluis` to `cakepass`
+  (easiest now, before a real vault exists; the vault file magic would stay).
+- [ ] GitHub repository description still says "Beta-test"; change it in the
+  repository settings.
+- [ ] Ideas for later: see the README, "For later".
 
-- [x] **Stap 7 – Update-systeem en GitHub**:
-  - `kluis --update` (of `kluis update`): haalt de nieuwste versie uit je
-    privé-GitHub via `git`, laat zien wat er nieuw is, vraagt bevestiging,
-    maakt een extra kluisback-up (`vault.enc.voor-update-<tijd>`, laatste 3),
-    bouwt en test met `makepkg -si` en zet bij een fout alles terug. De kluis
-    wordt niet geopend en niet aangeraakt; oude formaten worden bij het
-    ontgrendelen automatisch omgezet.
-  - Het programma zelf heeft nog steeds geen netwerkcode; alleen `update`
-    start `git` (jouw eigen SSH-sleutel of inlog; er worden geen tokens bewaard).
-  - `kluis --update --auto on`: dagelijkse controle via een systemd-user-timer
-    met bureaubladmelding. Installeren doe je bewust zelf (zie README voor de reden).
-  - `kluis --version` toont nu ook de git-commit; `kluis info` toont of er een
-    update is (uit de cache, zonder netwerk).
-  - 15 + 12 nieuwe tests (nep-GitHub en nep-makepkg): update, back-up,
-    terugzetten bij een fout, lokale wijzigingen, afwijkende geschiedenis,
-    stuurtekens in commit-titels, niet binnen de shell.
-  - De repo is **privé** (gecontroleerd via GitHub).
+## Decisions made
 
-## Nog te doen
+See `docs/DESIGN.md` for the explanation. In short:
 
-- [ ] De punten onder "Testen op Arch" op je eigen computer controleren.
-- [ ] Eventueel de licentie aanpassen (nu MIT, op naam van "Justcakenl").
-- [ ] Ideeën voor later: zie README, kopje "Voor later".
+- Program name `kluis`, brand CakePass; vault in `~/.local/share/kluis/vault.enc` (XDG).
+- Argon2id m=64 MiB, t=3, p=4 (configurable, minimum 8 MiB), 32-byte salt;
+  unlocking takes about 0.2 s with these settings.
+- XChaCha20-Poly1305 with a new nonce on every save; a second layer per field.
+- Auto-lock: every single command asks for the master password again (no
+  background service holds the key). `kluis shell` locks after the configured
+  idle time (default 5 minutes), also in the middle of a question.
+- Without a clipboard tool `get` gives an error instead of printing the
+  password; showing it is only possible with `--show`.
+- Master and export passwords must reach zxcvbn score ≥ 3. Item passwords may be
+  chosen freely (sites have their own rules); empty = generate.
+- Item names are unique (case-insensitive). On import, a clash gets a
+  sequence number ("GitHub (2)"); identical items are skipped.
+- Vault files that are symlinks are refused.
+- `rust-version` is 1.88 because older versions of the `time` crate have a known
+  vulnerability (RUSTSEC-2026-0009).
+- The PKGBUILD lives in `packaging/arch/` because makepkg makes its own `src/`
+  folder, which would clash with the Rust source.
+- The one-line installer for a **private** repository needs a GitHub login
+  (`gh api …` or `curl` with `gh auth token`); a plain raw.githubusercontent.com
+  link only works if the repository or the script is public.
+- Updates are never installed unattended: the daily check only notifies (see
+  the README for why).
+- EFF diceware word list in `assets/` (checked against two independent sources;
+  sha256 `addd3553…996b903e`).
 
-## Gemaakte keuzes
+## Checks (latest step)
 
-Zie `docs/ONTWERP.md` voor de uitleg. Kort samengevat:
-
-- Programmanaam `kluis`, kluis in `~/.local/share/kluis/vault.enc` (XDG).
-- Argon2id m=64 MiB, t=3, p=4 (instelbaar, minimaal 8 MiB), salt van 32 bytes.
-  Ontgrendelen kost met deze instellingen ongeveer 0,2 s.
-- XChaCha20-Poly1305 met een nieuwe nonce bij elke keer opslaan.
-- Automatisch vergrendelen: elk los commando vraagt opnieuw het
-  hoofdwachtwoord (er draait geen achtergronddienst met de sleutel).
-  `kluis shell` vergrendelt na 5 minuten zonder invoer, ook midden in een
-  vraag. In de shell vragen `passwd` en `export` het hoofdwachtwoord opnieuw.
-- Zonder klembord geeft `get` een foutmelding in plaats van het wachtwoord
-  te tonen; tonen kan alleen met `--show`.
-- Hoofd- en exportwachtwoord moeten zxcvbn-score ≥ 3 halen. Itemwachtwoorden
-  mag je vrij kiezen (sites hebben eigen eisen); leeg = genereren.
-- Na `kluis passwd` wordt ook de `.bak` met het NIEUWE wachtwoord versleuteld.
-- Itemnamen zijn uniek (hoofdletterongevoelig). Bij een conflict tijdens
-  import krijgt een item een volgnummer ("GitHub (2)"); gelijke items worden
-  overgeslagen.
-- Kluisbestanden die een symlink zijn, worden geweigerd.
-- `rust-version` is 1.88, omdat oudere versies van de crate `time` een bekende
-  kwetsbaarheid hebben (RUSTSEC-2026-0009).
-- De PKGBUILD staat in `packaging/arch/`, omdat makepkg zelf een map `src/`
-  aanmaakt die anders botst met de Rust-broncode.
-- Merknaam **CakePass**, maar het commando blijft `kluis` (kort en Nederlands).
-  Omdopen naar `cakepass` kan later nog, zolang er geen echte kluis is.
-- Het logo wordt alleen getoond bij `kluis`, `kluis shell`, `kluis init` en
-  `kluis logo`, niet bij losse opdrachten zoals `kluis get` (dat zou snel
-  irritant worden).
-- Twee lagen: bestandssleutel en itemsleutel worden met HKDF-SHA256 uit de
-  Argon2-sleutel afgeleid. Naam, gebruikersnaam, URL en tags zijn niet apart
-  versleuteld (wel op schijf), zodat `list` en `search` werken zonder één
-  wachtwoord te ontsleutelen.
-- Een getoond wachtwoord (`--show`) gaat rechtstreeks naar de terminal, niet
-  via de uitvoerbuffer van Rust, zodat er geen kopie in het geheugen achterblijft.
-- EFF-diceware-woordenlijst in `assets/` (gecontroleerd tegen twee
-  onafhankelijke bronnen; sha256 `addd3553…996b903e`).
-
-## Controles (laatste stap)
-
-| Controle | Resultaat |
+| Check | Result |
 |---|---|
-| `cargo test` | 124 geslaagd (72 bibliotheek, 15 CLI-unit, 25 integratie, 12 update) |
-| `cargo clippy --all-targets -- -D warnings` | geen meldingen |
-| `cargo audit` | geen kwetsbaarheden (140 crates gescand) |
-| `cargo build --release --locked` | gelukt (Ubuntu-container) |
+| `cargo test` | 150 passed (72 library, 21 CLI unit, 33 integration, 12 update, 12 installer) |
+| `cargo clippy --all-targets -- -D warnings` | no warnings |
+| `cargo audit` | no vulnerabilities |
+| `cargo build --release --locked` | succeeded |
+| Setup wizard in a real pseudo-terminal | answers visible, passwords hidden, settings and vault created |
+| Installer | tested end to end with a fake GitHub and fake `pacman`/`sudo`/`makepkg`/`kluis` (piped like `curl \| bash`, truncated download, re-run, local changes, failed build, uninstall) |
 
-### Wél getest in een schone Arch Linux-container (als gewone gebruiker)
+### Tested in a clean Arch Linux container (earlier step, as a normal user)
 
-Pacman kon in de cloudomgeving geen pakketten downloaden (de mirrors waren
-geblokkeerd). Daarom heb ik de op Ubuntu gebouwde binary in een officiële
-`archlinux:latest`-container (glibc 2.44, pacman 7.1) getest:
+- [x] `makepkg --printsrcinfo` reads the PKGBUILD without errors
+- [x] Default path `~/.local/share/kluis/vault.enc`; directory 700, file 600
+- [x] `XDG_DATA_HOME=/tmp/xdg` → `/tmp/xdg/kluis/vault.enc`; relative path ignored
+- [x] `ulimit -l` = 8192 KiB, `kluis info` → "mlock works: yes"
+- [x] Core dump limit 0; `/proc/<pid>/mem` unreadable for the same user
 
-- [x] `makepkg --printsrcinfo` leest de PKGBUILD zonder fouten
-- [x] Standaardpad `~/.local/share/kluis/vault.enc`; map 700, bestand 600
-- [x] `XDG_DATA_HOME=/tmp/xdg` → `/tmp/xdg/kluis/vault.enc`; relatief pad genegeerd
-- [x] `ulimit -l` = 8192 KiB, `kluis info` → "mlock werkt: ja"
-- [x] Core-dumplimiet 0; `/proc/<pid>/mem` onleesbaar voor dezelfde gebruiker
-- [x] `init`, `add --generate` en `list` met de standaard Argon2-instellingen
+## Testing on Arch
 
-## Testen op Arch
+Could NOT be tested in the cloud environment. Do this yourself and tick:
 
-Dit kon NIET getest worden in de cloud. Doe het zelf en vink af:
-
-- [ ] `sudo pacman -S --needed base-devel git rust` en dan
-      `cargo build --release --locked` op je eigen Arch-installatie
-- [ ] `cd packaging/arch && makepkg -si` (bouwt, draait alle tests, installeert)
-- [ ] Na installatie: `kluis --version`, en tab-aanvulling in een nieuwe
-      terminal (`kluis <Tab><Tab>`) in bash, zsh of fish
-- [ ] **Klembord Wayland** (`wl-clipboard`): `kluis get <naam>` → plakken
-      werkt, en na 20 s geeft `wl-paste` niets meer
-- [ ] **Klembord X11** (`xclip`): hetzelfde. Kopieer binnen 20 s iets anders;
-      dat mag NIET gewist worden
-- [ ] Klembord en terminal sluiten: start `kluis get`, sluit meteen het
-      terminalvenster; na 20 s moet het klembord toch leeg zijn
-- [ ] Klembordgeschiedenis (Klipper/cliphist/CopyQ): kijk of het wachtwoord
-      daarin blijft staan. Zo ja: geschiedenis uitzetten of kluis uitsluiten
-- [ ] Verborgen prompt: tijdens het typen van het hoofdwachtwoord verschijnen
-      geen tekens, en Ctrl+C zet de terminal netjes terug
-- [ ] Kleuren: groen ✔ en gele waarschuwingen in je terminal; geen kleurcodes
-      bij `kluis list | cat` of met `NO_COLOR=1`
-- [ ] `kluis shell`: na 5 min niets doen verschijnt "Automatisch vergrendeld"
-- [ ] **Update-systeem, echt**: kies in `~/cakepass` een kleine wijziging
-      (bijv. een tekst in `README.md` wijzigen, committen en pushen vanaf een
-      tweede kopie), en typ dan `kluis --update`. Controleer: de melding laat
-      de wijziging zien, `makepkg` bouwt en installeert, `kluis --version`
-      toont de nieuwe commit, en `kluis list` werkt nog met je kluis.
-- [ ] `kluis --update --check` toont "al de nieuwste versie" als je up-to-date bent
-- [ ] `kluis --update --auto on`, daarna `systemctl --user list-timers` toont
-      `kluis-update.timer`. Test direct: `systemctl --user start kluis-update.service`
-      en `journalctl --user -u kluis-update.service`.
-- [ ] Bureaubladmelding (installeer `libnotify`): verschijnt bij een nieuwe versie
-- [ ] Werkt `git -C ~/cakepass fetch` zonder wachtwoordvraag? Zo niet, dan
-      kan de dagelijkse controle niet draaien (handmatig updaten werkt wel)
-- [ ] **Inlogscherm**: typ `kluis`. Draait het 3D-logo soepel in je terminal
-      (kitty, Alacritty, Konsole, GNOME Terminal)? Zie je roze letters met
-      cakelagen? Lelijk of schokkerig? Probeer `kluis logo` in een breder
-      venster, of zet het uit met `--no-animation`.
-- [ ] Ziet het logo er goed uit als je terminal geen truecolor meldt?
-      (`echo $COLORTERM`; leeg = 256 kleuren)
-- [ ] Na `exit` in de shell: is het scherm leeg en kun je niet terugscrollen
-      naar getoonde wachtwoorden?
-- [ ] API-sleutel plakken in de verborgen prompt (Ctrl+Shift+V) werkt
-- [ ] Core dumps: open `kluis shell`, doe in een tweede terminal
-      `kill -SEGV $(pgrep -x kluis)` en daarna `coredumpctl list` → geen
-      dump van kluis
-- [ ] mlock-limiet op je echte systeem: `ulimit -l` en `kluis info`
-- [ ] Export naar een USB-stick (FAT/exFAT) en weer importeren
+- [ ] **The one-line installer on a clean Arch install**, both commands from the
+      README (`gh api … | bash` and the `curl … $(gh auth token)` variant).
+      These were not run against the real private repository here (no GitHub
+      login in the sandbox). Check: tools installed, `~/cakepass` cloned,
+      `makepkg` builds and runs the tests, `kluis --version` works, the wizard starts.
+- [ ] The wizard in your own terminal: answer the animation question both ways;
+      `kluis config` shows what you chose
+- [ ] `kluis` shows the spinning 3D logo (kitty, Alacritty, Konsole, GNOME
+      Terminal); with `kluis config set animation off` you get a still logo
+- [ ] After `exit` in the interactive mode the screen is empty and you cannot
+      scroll back to displayed passwords
+- [ ] `cd packaging/arch && makepkg -si` by hand works too
+- [ ] After installing: `kluis --version`, and tab completion in a new terminal
+      (`kluis <Tab><Tab>`) in bash, zsh or fish
+- [ ] **Clipboard on Wayland** (`wl-clipboard`): `kluis get <name>` → pasting
+      works, and after 20 s `wl-paste` returns nothing
+- [ ] **Clipboard on X11** (`xclip`): the same. Copy something else within 20 s;
+      that must NOT be cleared
+- [ ] Clipboard and closing the terminal: start `kluis get`, close the window
+      at once; after 20 s the clipboard must still be empty
+- [ ] Clipboard history (Klipper/cliphist/CopyQ): check whether the password
+      stays in there. If so: turn the history off or exclude kluis
+- [ ] Hidden prompt: no characters appear while typing the master password,
+      and Ctrl+C restores the terminal
+- [ ] Colors: green ✔ and yellow warnings; no color codes with `kluis list | cat`
+      or with `NO_COLOR=1`
+- [ ] Interactive mode: after the idle time "Locked automatically" appears
+- [ ] **The real update**: in `~/cakepass` make a small change (e.g. a text in
+      `README.md`), commit and push it from a second copy, then type
+      `kluis --update`. Check: the message shows the change, `makepkg` builds and
+      installs, `kluis --version` shows the new commit, and `kluis list` still
+      works with your vault
+- [ ] `kluis --update --check` says "already have the newest version" when up to date
+- [ ] `kluis --update --auto on`, then `systemctl --user list-timers` shows
+      `kluis-update.timer`. Test it directly:
+      `systemctl --user start kluis-update.service` and
+      `journalctl --user -u kluis-update.service`
+- [ ] Desktop notification (install `libnotify`) appears for a new version
+- [ ] Does `git -C ~/cakepass fetch` work without a password prompt? If not, the
+      daily check cannot run (manual updating still works)
+- [ ] Core dumps: open the interactive mode, run
+      `kill -SEGV $(pgrep -x kluis)` in a second terminal and then
+      `coredumpctl list` → no dump of kluis
+- [ ] mlock limit on your real system: `ulimit -l` and `kluis info`
+- [ ] Export to a USB stick (FAT/exFAT) and import it again

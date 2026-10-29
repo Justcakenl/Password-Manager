@@ -1,8 +1,8 @@
-//! Uitvoer naar de terminal, met kleur alleen als dat kan en mag.
+//! Terminal output, with color only when it is possible and allowed.
 //!
-//! Meldingen gaan naar stderr; gegevens (lijsten, `--show`) naar stdout.
-//! Kleur staat uit bij `--no-color`, de omgevingsvariabele `NO_COLOR`,
-//! `TERM=dumb`, of als de uitvoer geen terminal is (pipe of bestand).
+//! Messages go to stderr; data (lists, `--show`) goes to stdout.
+//! Color is off with `--no-color`, the `NO_COLOR` environment variable,
+//! `TERM=dumb`, or when the output is not a terminal (pipe or file).
 
 use std::io::IsTerminal;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,27 +23,27 @@ fn paint(stdout: bool, code: &str, text: &str) -> String {
     if on.load(Ordering::Relaxed) { format!("\x1b[{code}m{text}\x1b[0m") } else { text.to_string() }
 }
 
-/// Of er kleur gebruikt wordt op stderr (meldingen, logo).
+/// Whether color is used on stderr (messages, logo).
 pub fn color_on_stderr() -> bool {
     COLOR_STDERR.load(Ordering::Relaxed)
 }
 
-/// Grijs (voor stderr).
+/// Gray (for stderr).
 pub fn dim_err(text: &str) -> String {
     paint(false, "2", text)
 }
 
-/// CakePass-roze (voor stderr).
+/// CakePass pink (for stderr).
 pub fn pink(text: &str) -> String {
     paint(false, "38;5;211", text)
 }
 
-/// CakePass-roze en vet (voor stderr), bijv. voor de prompt.
+/// CakePass pink and bold (for stderr), e.g. for the prompt.
 pub fn pink_bold(text: &str) -> String {
     paint(false, "1;38;5;205", text)
 }
 
-/// Een gekleurd label per soort item (voor stdout).
+/// A colored label per item type (for stdout).
 pub fn kind_label(kind: kluis::vault::Kind) -> String {
     use kluis::vault::Kind;
     let code = match kind {
@@ -54,8 +54,8 @@ pub fn kind_label(kind: kluis::vault::Kind) -> String {
     paint(true, code, kind.label())
 }
 
-/// Wis het scherm én de scrollback (bijv. na vergrendelen), zodat getoonde
-/// geheimen niet meer zichtbaar zijn. Alleen in een terminal.
+/// Clear the screen and the scrollback (e.g. after locking), so secrets
+/// that were shown are no longer visible. Terminal only.
 pub fn clear_screen() {
     use std::io::Write;
     if std::io::stderr().is_terminal() {
@@ -65,12 +65,12 @@ pub fn clear_screen() {
     }
 }
 
-/// Vetgedrukt (voor stdout).
+/// Bold (for stdout).
 pub fn bold(text: &str) -> String {
     paint(true, "1", text)
 }
 
-/// Grijs (voor stdout).
+/// Gray (for stdout).
 pub fn dim(text: &str) -> String {
     paint(true, "2", text)
 }
@@ -84,14 +84,14 @@ pub fn info(msg: &str) {
 }
 
 pub fn warn(msg: &str) {
-    eprintln!("{} {msg}", paint(false, "33;1", "waarschuwing:"));
+    eprintln!("{} {msg}", paint(false, "33;1", "warning:"));
 }
 
 pub fn error(msg: &str) {
-    eprintln!("{} {msg}", paint(false, "31;1", "fout:"));
+    eprintln!("{} {msg}", paint(false, "31;1", "error:"));
 }
 
-/// Een opvallend kader voor belangrijke waarschuwingen.
+/// A conspicuous box for important warnings.
 pub fn banner(lines: &[&str]) {
     let width = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
     let bar = "─".repeat(width + 2);
@@ -103,9 +103,9 @@ pub fn banner(lines: &[&str]) {
     eprintln!("{}", paint(false, "33;1", &format!("└{bar}┘")));
 }
 
-/// Maak tekst veilig om te tonen: stuurtekens (zoals ANSI-escapes die je
-/// terminal kunnen manipuleren) worden zichtbaar gemaakt als `\u{1b}`.
-/// Regeleinden en tabs blijven staan als `keep_newlines` waar is.
+/// Make text safe to display: control characters (such as ANSI escapes that
+/// can manipulate your terminal) are made visible as `\u{1b}`.
+/// Newlines and tabs are kept when `keep_newlines` is true.
 pub fn safe(s: &str, keep_newlines: bool) -> String {
     s.chars()
         .map(|c| {
@@ -118,12 +118,12 @@ pub fn safe(s: &str, keep_newlines: bool) -> String {
         .collect()
 }
 
-/// Schrijf een regel met een geheim rechtstreeks naar stdout (fd 1).
+/// Write a line containing a secret straight to stdout (fd 1).
 ///
-/// BEVEILIGING: `println!` gaat via een interne buffer van Rust die nooit
-/// wordt vrijgegeven en dus ook niet gewist; het laatst getoonde wachtwoord
-/// zou daar blijven staan. Hier bouwen we de regel in een `Zeroizing`-buffer
-/// en schrijven die zonder tussenbuffer weg, waarna hij gewist wordt.
+/// SECURITY: `println!` goes through an internal Rust buffer that is never
+/// released and therefore never wiped; the last password shown would stay
+/// there. Here we build the line in a `Zeroizing` buffer and write it out
+/// without an intermediate buffer, after which it is wiped.
 pub fn print_secret_line(label: &str, value: &str) -> std::io::Result<()> {
     use std::io::Write;
     std::io::stdout().flush()?;
@@ -133,7 +133,7 @@ pub fn print_secret_line(label: &str, value: &str) -> std::io::Result<()> {
     line.push('\n');
     let mut bytes = line.as_bytes();
     while !bytes.is_empty() {
-        // SAFETY: geldige buffer met de opgegeven lengte.
+        // SAFETY: a valid buffer with the given length.
         let n = unsafe { libc::write(1, bytes.as_ptr().cast(), bytes.len()) };
         if n < 0 {
             let err = std::io::Error::last_os_error();
@@ -147,7 +147,7 @@ pub fn print_secret_line(label: &str, value: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Unix-tijd → "2026-10-29 14:03 UTC".
+/// Unix time → "2026-10-29 14:03 UTC".
 pub fn format_time(secs: u64) -> String {
     if secs == 0 {
         return "-".into();
@@ -158,7 +158,7 @@ pub fn format_time(secs: u64) -> String {
     format!("{y:04}-{m:02}-{d:02} {:02}:{:02} UTC", rem / 3600, (rem % 3600) / 60)
 }
 
-/// Dagen sinds 1970-01-01 → (jaar, maand, dag). Algoritme van Howard Hinnant.
+/// Days since 1970-01-01 → (year, month, day). Algorithm by Howard Hinnant.
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = z.div_euclid(146_097);
@@ -172,7 +172,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-/// Kap tekst af op `max` tekens (voor tabellen).
+/// Truncate text to `max` characters (for tables).
 pub fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -183,7 +183,7 @@ pub fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-/// Vul tekst aan met spaties tot `width` tekens.
+/// Pad text with spaces up to `width` characters.
 pub fn pad(s: &str, width: usize) -> String {
     let n = s.chars().count();
     if n >= width { s.to_string() } else { format!("{s}{}", " ".repeat(width - n)) }
@@ -194,7 +194,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn datums() {
+    fn dates() {
         assert_eq!(format_time(0), "-");
         assert_eq!(format_time(86_400), "1970-01-02 00:00 UTC");
         assert_eq!(format_time(951_782_400), "2000-02-29 00:00 UTC");
@@ -202,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn stuurtekens_onschadelijk() {
+    fn control_characters_are_made_harmless() {
         assert_eq!(safe("a\u{1b}[2Jb", false), "a\\u{1b}[2Jb");
         assert_eq!(safe("r1\nr2", true), "r1\nr2");
         assert_eq!(safe("r1\nr2", false), "r1\\u{a}r2");
@@ -210,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn tekst_hulpjes() {
+    fn text_helpers() {
         assert_eq!(truncate("abcdef", 4), "abc…");
         assert_eq!(truncate("abc", 4), "abc");
         assert_eq!(pad("é", 3), "é  ");

@@ -1,96 +1,94 @@
-//! Command-line argumenten (clap).
+//! Command-line arguments (clap).
 //!
-//! BEVEILIGING: er is bewust GEEN enkele optie die een wachtwoord als waarde
-//! accepteert. Wachtwoorden worden altijd via een verborgen prompt of stdin
-//! gelezen, zodat ze niet zichtbaar zijn in `ps` of de shellgeschiedenis.
+//! SECURITY: there is deliberately NO option that accepts a password as a
+//! value. Passwords are always read through a hidden prompt or stdin, so they
+//! are not visible in `ps` or in your shell history.
 
 use std::path::PathBuf;
 
-use clap::{ArgAction, Args, Parser, Subcommand};
+use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use kluis::vault::Kind;
 
 use super::update::AutoMode;
 
-/// Versie voor `kluis --version`: nummer + de git-commit waaruit het gebouwd is.
+/// Version for `kluis --version`: number + the git commit it was built from.
 const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (commit ", env!("KLUIS_GIT_COMMIT"), ")");
 
-/// Lees een soort item ("login", "api" of "notitie") voor clap.
+/// Parse an item type ("login", "api" or "note") for clap.
 fn parse_kind(s: &str) -> Result<Kind, String> {
-    Kind::parse(s).ok_or_else(|| format!("onbekende soort '{s}'; kies login, api of notitie"))
+    Kind::parse(s).ok_or_else(|| format!("unknown type '{s}'; choose login, api or note"))
 }
 
-const HELP_TEMPLATE: &str = "{about-with-newline}\nGebruik: {usage}\n\n{all-args}{after-help}";
+const HELP_TEMPLATE: &str = "{about-with-newline}\nUsage: {usage}\n\n{all-args}{after-help}";
 
-/// Maak de hulpteksten van alle (sub)opdrachten Nederlands: kopjes
-/// "Argumenten"/"Opties" en "[standaard: …]" in plaats van "[default: …]".
-pub fn localize(cmd: clap::Command) -> clap::Command {
-    cmd.help_template(HELP_TEMPLATE)
-        .mut_args(|mut a| {
-            if a.get_help_heading().is_none() {
-                let heading = if a.is_positional() { "Argumenten" } else { "Opties" };
-                a = a.help_heading(heading);
-            }
-            let defaults = a.get_default_values();
-            if !defaults.is_empty() && !a.is_hide_default_value_set() {
-                let d: Vec<String> = defaults.iter().map(|v| v.to_string_lossy().into_owned()).collect();
-                let help = a.get_help().map(ToString::to_string).unwrap_or_default();
-                a = a.help(format!("{help} [standaard: {}]", d.join(","))).hide_default_value(true);
-            }
-            a
-        })
-        .mut_subcommands(localize)
+/// Apply the shared help template to a command and all its subcommands.
+fn with_template(cmd: clap::Command) -> clap::Command {
+    cmd.help_template(HELP_TEMPLATE).mut_subcommands(with_template)
+}
+
+/// The full command-line definition of `kluis`.
+pub fn command() -> clap::Command {
+    use clap::CommandFactory;
+    with_template(Cli::command())
+}
+
+/// The definition used to parse lines typed inside `kluis shell`.
+pub fn shell_command() -> clap::Command {
+    use clap::CommandFactory;
+    with_template(ShellLine::command())
 }
 
 #[derive(Parser, Debug)]
 #[command(
     name = "kluis",
     version = VERSION,
-    about = "CakePass – offline, versleutelde kluis voor wachtwoorden, API-sleutels en notities\n(commando: kluis)",
+    about = "CakePass – offline, encrypted vault for passwords, API keys and notes\n(command: kluis)",
     help_template = HELP_TEMPLATE,
     disable_help_flag = true,
     disable_version_flag = true,
     disable_help_subcommand = true,
-    subcommand_help_heading = "Opdrachten",
-    subcommand_value_name = "OPDRACHT",
-    next_help_heading = "Opties",
-    after_help = "Voorbeelden:\n  \
-        kluis                         inlogscherm + interactieve modus\n  \
-        kluis init                    nieuwe kluis maken\n  \
-        kluis add GitHub              login toevoegen (vraagt alles één voor één)\n  \
-        kluis add OpenAI --type api   API-sleutel opslaan\n  \
-        kluis add Herstelcodes --type notitie   beveiligde notitie\n  \
-        kluis get GitHub              wachtwoord naar klembord (20 s)\n  \
-        kluis generate --passphrase   passphrase maken\n  \
-        kluis --update                CakePass bijwerken naar de nieuwste versie (kluis blijft heel)\n\n\
-        Wachtwoorden worden nooit als argument meegegeven; je typt ze in een verborgen prompt."
+    subcommand_help_heading = "Commands",
+    subcommand_value_name = "COMMAND",
+    next_help_heading = "Options",
+    after_help = "Examples:\n  \
+        kluis setup                   first-time setup (animation, master password)\n  \
+        kluis                         login screen + interactive mode\n  \
+        kluis add GitHub              add a login (asks for every field)\n  \
+        kluis add OpenAI --type api   store an API key\n  \
+        kluis add Recovery --type note   secure note\n  \
+        kluis get GitHub              copy the password to the clipboard (20 s)\n  \
+        kluis generate --passphrase   make a passphrase\n  \
+        kluis config set animation off   turn the intro animation off\n  \
+        kluis --update                update CakePass to the newest version (your vault is kept)\n\n\
+        Passwords are never passed as arguments; you type them in a hidden prompt."
 )]
 pub struct Cli {
-    /// Pad naar het kluisbestand [standaard: ~/.local/share/kluis/vault.enc]
-    #[arg(long, global = true, env = "KLUIS_VAULT", hide_env_values = true, value_name = "PAD")]
+    /// Path to the vault file [default: ~/.local/share/kluis/vault.enc]
+    #[arg(long, global = true, env = "KLUIS_VAULT", hide_env_values = true, value_name = "PATH")]
     pub vault: Option<PathBuf>,
 
-    /// Gebruik geen kleuren
+    /// Do not use colors
     #[arg(long, global = true)]
     pub no_color: bool,
 
-    /// Geen animatie op het inlogscherm
+    /// No animation on the login screen (show the logo still)
     #[arg(long, global = true)]
     pub no_animation: bool,
 
-    /// Toon deze hulp
+    /// Show this help
     #[arg(short = 'h', long = "help", action = ArgAction::Help, global = true)]
     help: Option<bool>,
 
-    /// Toon de versie
+    /// Show the version
     #[arg(short = 'V', long = "version", action = ArgAction::Version)]
     version: Option<bool>,
 
-    /// Zonder opdracht opent het inlogscherm met de interactieve modus.
+    /// Without a command, the login screen opens with the interactive mode.
     #[command(subcommand)]
     pub command: Option<Cmd>,
 }
 
-/// Wordt gebruikt om regels in `kluis shell` te ontleden.
+/// Used to parse lines inside `kluis shell`.
 #[derive(Parser, Debug)]
 #[command(
     name = "kluis",
@@ -98,11 +96,11 @@ pub struct Cli {
     disable_help_flag = true,
     disable_version_flag = true,
     disable_help_subcommand = true,
-    subcommand_help_heading = "Opdrachten",
-    subcommand_value_name = "OPDRACHT"
+    subcommand_help_heading = "Commands",
+    subcommand_value_name = "COMMAND"
 )]
 pub struct ShellLine {
-    /// Toon hulp
+    /// Show help
     #[arg(short = 'h', long = "help", action = ArgAction::Help, global = true)]
     help: Option<bool>,
 
@@ -112,151 +110,195 @@ pub struct ShellLine {
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
-    /// Maak een nieuwe, lege kluis
+    /// First-time setup: choose animation and lock timeout, set the master password
+    Setup {
+        #[command(flatten)]
+        kdf: KdfArgs,
+    },
+
+    /// Create a new, empty vault (without the setup questions)
     Init {
         #[command(flatten)]
         kdf: KdfArgs,
     },
 
-    /// Voeg een login, API-sleutel of notitie toe (zonder opties vraagt kluis alles)
+    /// Add a login, API key or note (without options, kluis asks for everything)
     Add(AddArgs),
 
-    /// Toon een item en kopieer het geheim (wachtwoord, sleutel, notitie) naar het klembord
+    /// Show an item and copy its secret (password, key, note) to the clipboard
     #[command(alias = "show")]
     Get(GetArgs),
 
-    /// Wijzig een item (zonder opties vraagt kluis elk veld)
+    /// Change an item (without options, kluis asks for each field)
     Edit(EditArgs),
 
-    /// Verwijder een item
+    /// Remove an item
     #[command(alias = "remove", alias = "delete")]
     Rm {
-        /// Naam van het item
+        /// Name of the item
         name: String,
-        /// Niet om bevestiging vragen
+        /// Do not ask for confirmation
         #[arg(short = 'y', long)]
         yes: bool,
     },
 
-    /// Toon alle items (zonder geheimen)
+    /// List all items (without secrets)
     #[command(alias = "ls")]
     List {
-        /// Alleen items met deze tag
+        /// Only items with this tag
         #[arg(short, long)]
         tag: Option<String>,
-        /// Alleen deze soort: login, api of notitie
-        #[arg(long = "type", value_name = "SOORT", value_parser = parse_kind)]
+        /// Only this type: login, api or note
+        #[arg(long = "type", value_name = "TYPE", value_parser = parse_kind)]
         kind: Option<Kind>,
     },
 
-    /// Zoek in naam, soort, tags, gebruikersnaam en URL
+    /// Search name, type, tags, username and URL
     #[command(alias = "find")]
     Search {
-        /// Zoekterm (hoofdletters maken niet uit)
+        /// Search term (case-insensitive)
         query: String,
     },
 
-    /// Genereer een wachtwoord of passphrase (naar het klembord)
+    /// Generate a password or passphrase (to the clipboard)
     #[command(alias = "gen")]
     Generate {
-        /// Toon het resultaat op het scherm in plaats van te kopiëren
+        /// Show the result on screen instead of copying it
         #[arg(long)]
         show: bool,
         #[command(flatten)]
         opts: GenArgs,
     },
 
-    /// Wijzig het hoofdwachtwoord (en eventueel de Argon2-instellingen)
+    /// Change the master password (and optionally the Argon2 settings)
     #[command(alias = "change-password")]
     Passwd {
         #[command(flatten)]
         kdf: KdfChangeArgs,
     },
 
-    /// Exporteer de kluis naar een nieuw, versleuteld bestand
+    /// Export the vault to a new, encrypted file
     Export {
-        /// Doelbestand (mag nog niet bestaan)
+        /// Destination file (must not exist yet)
         file: PathBuf,
     },
 
-    /// Voeg items toe uit een versleuteld exportbestand
+    /// Add items from an encrypted export file
     Import {
-        /// Exportbestand gemaakt met `kluis export`
+        /// Export file made with `kluis export`
         file: PathBuf,
     },
 
-    /// Voeg items toe uit een CSV-export van een andere manager (ONVERSLEUTELD!)
+    /// Add items from a CSV export of another manager (UNENCRYPTED!)
     ImportCsv {
-        /// CSV-bestand (Bitwarden, KeePassXC, 1Password, Firefox, Chrome, ...)
+        /// CSV file (Bitwarden, KeePassXC, 1Password, Firefox, Chrome, ...)
         file: PathBuf,
     },
 
-    /// Toon informatie over de kluis en de beveiliging (geen wachtwoord nodig)
+    /// Show information about the vault and security (no password needed)
     Info,
 
-    /// Toon het CakePass-logo (met animatie)
-    Logo,
-
-    /// Werk CakePass bij naar de nieuwste versie op GitHub (je kluis blijft onaangeroerd)
-    Update(UpdateArgs),
-
-    /// Interactieve modus: één keer ontgrendelen, vergrendelt bij inactiviteit
-    Shell {
-        /// Automatisch vergrendelen na zoveel seconden zonder invoer
-        #[arg(long, default_value_t = 300, value_name = "SECONDEN")]
-        timeout: u64,
+    /// Show or change settings (animation, lock timeout)
+    Config {
+        #[command(subcommand)]
+        action: Option<ConfigAction>,
     },
 
-    /// Print een shell-completionscript (bash, zsh of fish)
+    /// Show the CakePass logo (with animation)
+    Logo,
+
+    /// Update CakePass to the newest version on GitHub (your vault is left untouched)
+    Update(UpdateArgs),
+
+    /// Interactive mode: unlock once, locks after inactivity
+    Shell {
+        /// Lock automatically after this many seconds without input
+        /// [default: 300, or the value set with `kluis config`]
+        #[arg(long, value_name = "SECONDS")]
+        timeout: Option<u64>,
+    },
+
+    /// Print a shell completion script (bash, zsh or fish)
     Completions {
-        /// bash, zsh of fish
+        /// bash, zsh or fish
         shell: clap_complete::Shell,
     },
 }
 
+/// What `kluis config` can do.
+#[derive(Subcommand, Debug, Clone)]
+pub enum ConfigAction {
+    /// Show the current settings
+    Show,
+    /// Change a setting
+    Set {
+        /// Which setting
+        #[arg(value_enum)]
+        key: ConfigKey,
+        /// The new value (animation: on/off; lock-timeout: minutes)
+        value: String,
+    },
+}
+
+/// Settings you can change.
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigKey {
+    /// Play the intro animation of the login screen (on/off)
+    Animation,
+    /// Lock the interactive mode after this many minutes of inactivity
+    LockTimeout,
+}
+
 #[derive(Args, Debug, Clone)]
 pub struct UpdateArgs {
-    /// Alleen controleren of er een nieuwe versie is; niets installeren
+    /// Only check whether there is a new version; install nothing
     #[arg(long)]
     pub check: bool,
-    /// Niet om bevestiging vragen (voor wie het zeker weet)
+    /// Do not ask for confirmation (for people who are sure)
     #[arg(short = 'y', long)]
     pub yes: bool,
-    /// Bij --check: stuur een bureaubladmelding als er een update is
+    /// With --check: send a desktop notification when there is an update
     #[arg(long, requires = "check")]
     pub notify: bool,
-    /// Map met de broncode [standaard: de map waaruit je CakePass installeerde]
-    #[arg(long, value_name = "MAP")]
+    /// Folder with the source code [default: the folder CakePass was installed from]
+    #[arg(long, value_name = "DIR")]
     pub source: Option<PathBuf>,
-    /// Elke dag automatisch controleren aan- of uitzetten (on, off of status)
-    #[arg(long, value_enum, value_name = "AAN/UIT", conflicts_with_all = ["check", "yes", "notify", "source"])]
+    /// Turn the daily automatic check on or off (on, off or status)
+    #[arg(long, value_enum, value_name = "ON/OFF", conflicts_with_all = ["check", "yes", "notify", "source"])]
     pub auto: Option<AutoMode>,
 }
 
 #[derive(Args, Debug, Clone)]
-#[command(next_help_heading = "Argon2id-instellingen")]
+#[command(next_help_heading = "Argon2id settings")]
 pub struct KdfArgs {
-    /// Geheugengebruik in MiB
+    /// Memory use in MiB
     #[arg(long, default_value_t = 64, value_name = "MiB")]
     pub kdf_memory: u32,
-    /// Aantal iteraties
+    /// Number of iterations
     #[arg(long, default_value_t = 3, value_name = "N")]
     pub kdf_iterations: u32,
-    /// Aantal parallelle lanes
+    /// Number of parallel lanes
     #[arg(long, default_value_t = 4, value_name = "N")]
     pub kdf_parallelism: u32,
 }
 
+impl KdfArgs {
+    /// The recommended default settings.
+    pub fn default_values() -> KdfArgs {
+        KdfArgs { kdf_memory: 64, kdf_iterations: 3, kdf_parallelism: 4 }
+    }
+}
+
 #[derive(Args, Debug, Clone)]
-#[command(next_help_heading = "Argon2id-instellingen (standaard: ongewijzigd)")]
+#[command(next_help_heading = "Argon2id settings (default: unchanged)")]
 pub struct KdfChangeArgs {
-    /// Geheugengebruik in MiB
+    /// Memory use in MiB
     #[arg(long, value_name = "MiB")]
     pub kdf_memory: Option<u32>,
-    /// Aantal iteraties
+    /// Number of iterations
     #[arg(long, value_name = "N")]
     pub kdf_iterations: Option<u32>,
-    /// Aantal parallelle lanes
+    /// Number of parallel lanes
     #[arg(long, value_name = "N")]
     pub kdf_parallelism: Option<u32>,
 }
@@ -264,52 +306,52 @@ pub struct KdfChangeArgs {
 #[derive(Args, Debug, Clone)]
 #[command(next_help_heading = "Generator")]
 pub struct GenArgs {
-    /// Lengte van het wachtwoord
+    /// Length of the password
     #[arg(short = 'l', long, default_value_t = 24, value_name = "N")]
     pub length: usize,
-    /// Geen hoofdletters
+    /// No uppercase letters
     #[arg(long)]
     pub no_uppercase: bool,
-    /// Geen kleine letters
+    /// No lowercase letters
     #[arg(long)]
     pub no_lowercase: bool,
-    /// Geen cijfers
+    /// No digits
     #[arg(long)]
     pub no_digits: bool,
-    /// Geen leestekens
+    /// No symbols
     #[arg(long)]
     pub no_symbols: bool,
-    /// Sluit tekens uit die op elkaar lijken (0 O 1 l I |)
+    /// Exclude characters that look alike (0 O 1 l I |)
     #[arg(long)]
     pub no_lookalikes: bool,
-    /// Maak een passphrase van woorden (diceware, EFF-woordenlijst)
+    /// Make a passphrase of words (diceware, EFF word list)
     #[arg(short = 'p', long)]
     pub passphrase: bool,
-    /// Aantal woorden in de passphrase
+    /// Number of words in the passphrase
     #[arg(short = 'w', long, default_value_t = 6, value_name = "N")]
     pub words: usize,
-    /// Scheidingsteken tussen de woorden
-    #[arg(long, default_value = "-", value_name = "TEKEN")]
+    /// Separator between the words
+    #[arg(long, default_value = "-", value_name = "CHAR")]
     pub separator: String,
 }
 
 #[derive(Args, Debug)]
 pub struct AddArgs {
-    /// Naam van het item, bijv. "GitHub"
+    /// Name of the item, e.g. "GitHub"
     pub name: String,
-    /// Soort item: login, api (API-sleutel/token) of notitie
-    #[arg(long = "type", short = 'k', value_name = "SOORT", value_parser = parse_kind, default_value = "login")]
+    /// Type of item: login, api (API key/token) or note
+    #[arg(long = "type", short = 'k', value_name = "TYPE", value_parser = parse_kind, default_value = "login")]
     pub kind: Kind,
-    /// Gebruikersnaam of e-mailadres (bij een API-sleutel: account of sleutel-ID)
+    /// Username or e-mail address (for an API key: account or key ID)
     #[arg(short, long)]
     pub username: Option<String>,
-    /// Webadres (bij een API-sleutel: de service)
+    /// Web address (for an API key: the service)
     #[arg(long)]
     pub url: Option<String>,
-    /// Tags, gescheiden door komma's
+    /// Tags, separated by commas
     #[arg(short, long, value_delimiter = ',')]
     pub tags: Option<Vec<String>>,
-    /// Genereer het wachtwoord (in plaats van het zelf in te typen)
+    /// Generate the password (instead of typing it yourself)
     #[arg(short, long)]
     pub generate: bool,
     #[command(flatten)]
@@ -318,42 +360,42 @@ pub struct AddArgs {
 
 #[derive(Args, Debug)]
 pub struct GetArgs {
-    /// Naam van het item
+    /// Name of the item
     pub name: String,
-    /// Toon het geheim en de notities op het scherm (let op meekijkers!)
+    /// Show the secret and notes on screen (beware of onlookers!)
     #[arg(long)]
     pub show: bool,
-    /// Kopieer de gebruikersnaam in plaats van het geheim
+    /// Copy the username instead of the secret
     #[arg(long, conflicts_with = "show")]
     pub copy_username: bool,
-    /// Kopieer niets
+    /// Copy nothing
     #[arg(long, conflicts_with = "copy_username")]
     pub no_copy: bool,
 }
 
 #[derive(Args, Debug)]
 pub struct EditArgs {
-    /// Naam van het item
+    /// Name of the item
     pub name: String,
-    /// Nieuwe naam
-    #[arg(long, value_name = "NAAM")]
+    /// New name
+    #[arg(long, value_name = "NAME")]
     pub rename: Option<String>,
-    /// Nieuwe gebruikersnaam
+    /// New username
     #[arg(short, long)]
     pub username: Option<String>,
-    /// Nieuw webadres
+    /// New web address
     #[arg(long)]
     pub url: Option<String>,
-    /// Nieuwe tags (vervangt de oude), gescheiden door komma's
+    /// New tags (replaces the old ones), separated by commas
     #[arg(short, long, value_delimiter = ',')]
     pub tags: Option<Vec<String>>,
-    /// Typ een nieuw wachtwoord of nieuwe API-sleutel in (verborgen prompt)
+    /// Type a new password or API key (hidden prompt)
     #[arg(long, conflicts_with = "generate")]
     pub password: bool,
-    /// Genereer een nieuw wachtwoord
+    /// Generate a new password
     #[arg(short, long)]
     pub generate: bool,
-    /// Typ nieuwe notities in (bij een notitie: de nieuwe inhoud)
+    /// Type new notes (for a note: the new contents)
     #[arg(long)]
     pub notes: bool,
     #[command(flatten)]
@@ -363,28 +405,25 @@ pub struct EditArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
 
     #[test]
-    fn cli_definitie_is_geldig() {
-        Cli::command().debug_assert();
-        ShellLine::command().debug_assert();
-        localize(Cli::command()).debug_assert();
-        let help =
-            localize(Cli::command()).find_subcommand_mut("generate").unwrap().render_help().to_string();
-        assert!(help.contains("[standaard: 24]") && help.contains("Gebruik:") && !help.contains("[default"));
+    fn cli_definition_is_valid() {
+        command().debug_assert();
+        shell_command().debug_assert();
+        let help = command().find_subcommand_mut("generate").unwrap().render_help().to_string();
+        assert!(help.contains("[default: 24]") && help.contains("Usage:"));
     }
 
     #[test]
-    fn geen_enkele_optie_neemt_een_wachtwoord_als_waarde() {
-        // Beveiligingseis: wachtwoorden nooit via argumenten.
+    fn no_option_takes_a_password_as_a_value() {
+        // Security requirement: passwords never via arguments.
         fn check(cmd: &clap::Command) {
             for arg in cmd.get_arguments() {
                 let id = arg.get_id().as_str().to_lowercase();
-                if id.contains("password") || id.contains("wachtwoord") || id.contains("secret") {
+                if id.contains("password") || id.contains("secret") {
                     assert!(
                         !arg.get_action().takes_values(),
-                        "optie {id} van {} accepteert een waarde",
+                        "option {id} of {} accepts a value",
                         cmd.get_name()
                     );
                 }
@@ -393,6 +432,6 @@ mod tests {
                 check(sub);
             }
         }
-        check(&Cli::command());
+        check(&command());
     }
 }

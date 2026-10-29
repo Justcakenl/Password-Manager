@@ -1,76 +1,76 @@
-//! Eén fouttype voor de hele bibliotheek.
+//! A single error type for the whole library.
 //!
-//! BEVEILIGING: foutmeldingen bevatten nooit wachtwoorden, sleutels of
-//! ontsleutelde inhoud. Een verkeerd wachtwoord en een gemanipuleerd bestand
-//! geven bewust exact dezelfde melding, zodat een aanvaller er niets uit leert.
+//! SECURITY: error messages never contain passwords, keys or decrypted
+//! content. A wrong password and a tampered file deliberately produce exactly
+//! the same message, so an attacker learns nothing from it.
 
 use std::path::PathBuf;
 
-/// Resultaat-type voor de hele bibliotheek.
+/// Result type used throughout the library.
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("dit is geen kluisbestand (onbekende bestandskop)")]
+    #[error("this is not a vault file (unknown file header)")]
     NotAVault,
 
-    #[error("het kluisbestand is te kort of afgekapt")]
+    #[error("the vault file is too short or truncated")]
     Truncated,
 
-    #[error("bestandsversie {0} wordt niet ondersteund; gebruik een nieuwere versie van kluis")]
+    #[error("file version {0} is not supported; use a newer version of kluis")]
     UnsupportedVersion(u16),
 
-    #[error("het kluisbestand gebruikt een onbekend algoritme")]
+    #[error("the vault file uses an unknown algorithm")]
     UnsupportedAlgorithm,
 
-    #[error("ongeldige parameters voor sleutelafleiding: {0}")]
+    #[error("invalid key derivation parameters: {0}")]
     InvalidKdfParams(&'static str),
 
-    #[error("ontsleutelen mislukt: verkeerd hoofdwachtwoord, of het bestand is beschadigd of gemanipuleerd")]
+    #[error("decryption failed: wrong master password, or the file is damaged or has been tampered with")]
     Decrypt,
 
-    #[error("het bestand is te groot om een kluis te zijn")]
+    #[error("the file is too large to be a vault")]
     TooLarge,
 
-    #[error("de inhoud van de kluis is ongeldig")]
+    #[error("the contents of the vault are invalid")]
     CorruptPayload,
 
-    #[error("sleutelafleiding (Argon2id) mislukt")]
+    #[error("key derivation (Argon2id) failed")]
     Kdf,
 
-    #[error("versleutelen mislukt")]
+    #[error("encryption failed")]
     Encrypt,
 
-    #[error("het besturingssysteem kon geen willekeurige getallen leveren")]
+    #[error("the operating system could not provide random numbers")]
     Rng,
 
-    #[error("er bestaat nog geen kluis op {0}. Maak er een met `kluis init`.")]
+    #[error("there is no vault at {0} yet. Create one with `kluis setup`.")]
     VaultNotFound(PathBuf),
 
-    #[error("er bestaat al een bestand op {0}; ik overschrijf het niet")]
+    #[error("a file already exists at {0}; I will not overwrite it")]
     AlreadyExists(PathBuf),
 
-    #[error("de kluis is intussen door een ander kluis-proces gewijzigd; probeer het opnieuw")]
+    #[error("the vault was changed by another kluis process in the meantime; try again")]
     ConcurrentModification,
 
-    #[error("geen item gevonden met de naam '{0}'")]
+    #[error("no item found with the name '{0}'")]
     EntryNotFound(String),
 
-    #[error("er bestaat al een item met de naam '{0}'")]
+    #[error("an item named '{0}' already exists")]
     EntryExists(String),
 
     #[error(
-        "geen klembord gevonden. Installeer wl-clipboard (Wayland) of xclip (X11), \
-         of gebruik --show om het op het scherm te tonen"
+        "no clipboard tool found. Install wl-clipboard (Wayland) or xclip (X11), \
+         or use --show to print it on screen"
     )]
     NoClipboard,
 
-    #[error("afgebroken")]
+    #[error("cancelled")]
     Cancelled,
 
-    #[error("ongeldige invoer: {0}")]
+    #[error("invalid input: {0}")]
     InvalidInput(String),
 
-    #[error("bestandsfout: {0}")]
+    #[error("file error: {0}")]
     Io(#[from] std::io::Error),
 }

@@ -28,10 +28,11 @@ rustc-ice-*.txt
 
 /target
 
-# ── kluis: NOOIT kluisbestanden, back-ups, exports of CSV-exports committen ──
+# ── kluis: NEVER commit vault files, backups, exports or CSV exports ──
 *.enc
 *.enc.bak
 *.enc.tmp*
+*.pre-update-*
 *.kluis
 *.csv
 *.tsv
@@ -40,7 +41,7 @@ vault*
 .env
 secrets*
 
-# makepkg-uitvoer (PKGBUILD staat in packaging/arch/)
+# makepkg output (the PKGBUILD lives in packaging/arch/)
 /packaging/arch/src/
 /packaging/arch/pkg/
 /packaging/arch/*.pkg.tar*

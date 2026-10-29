@@ -1,5 +1,5 @@
 [Unit]
-Description=CakePass: dagelijks controleren op een nieuwe versie
+Description=CakePass: check for a new version every day
 
 [Timer]
 OnCalendar=daily

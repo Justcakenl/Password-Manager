@@ -4,7 +4,7 @@ version = "0.2.0"
 edition = "2024"
 build = "build.rs"
 rust-version = "1.88"
-description = "Offline, versleutelde wachtwoordmanager voor de terminal"
+description = "Offline, encrypted password manager for the terminal (CakePass)"
 license = "MIT"
 publish = false
 
@@ -43,7 +43,7 @@ assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
 
-# Argon2 is in debug-builds extreem traag; optimaliseer het altijd zodat tests snel draaien.
+# Argon2 is extremely slow in debug builds; always optimize it so tests run fast.
 [profile.dev.package.argon2]
 opt-level = 3
 [profile.dev.package.blake2]

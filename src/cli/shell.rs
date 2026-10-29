@@ -1,18 +1,18 @@
-//! `kluis shell`: één keer ontgrendelen, daarna opdrachten typen.
+//! `kluis shell`: unlock once, then type commands.
 //!
-//! BEVEILIGING: als er `timeout` seconden geen invoer komt, wordt de kluis
-//! automatisch vergrendeld: de sleutel en alle ontsleutelde gegevens worden
-//! uit het geheugen gewist en het programma stopt. Voor `passwd` en
-//! `export` vraagt de shell het hoofdwachtwoord opnieuw.
+//! SECURITY: when no input arrives for `timeout` seconds, the vault is
+//! locked automatically: the key and all decrypted data are wiped from memory
+//! and the program exits. For `passwd` and `export` the shell asks for the
+//! master password again.
 
 use std::io::{self, Write};
 
-use clap::{CommandFactory, FromArgMatches};
+use clap::FromArgMatches;
 
 use kluis::storage::VaultPaths;
 use kluis::{Error, Result};
 
-use super::args::{ShellLine, localize};
+use super::args::{ShellLine, shell_command};
 use super::{commands, prompt, ui};
 
 const MAX_TIMEOUT: u64 = 24 * 60 * 60;
@@ -22,15 +22,15 @@ enum Wait {
     TimedOut,
 }
 
-/// Wacht maximaal `secs` seconden tot er invoer op stdin staat.
+/// Wait at most `secs` seconds until there is input on stdin.
 fn wait_for_input(secs: u64) -> Result<Wait> {
     let mut fds = libc::pollfd { fd: 0, events: libc::POLLIN, revents: 0 };
     let ms = i32::try_from(secs * 1000).unwrap_or(i32::MAX);
     loop {
-        // SAFETY: één geldige pollfd-struct.
+        // SAFETY: one valid pollfd struct.
         let r = unsafe { libc::poll(&mut fds, 1, ms) };
         if r > 0 {
-            return Ok(Wait::Ready); // invoer, of einde invoer (POLLHUP)
+            return Ok(Wait::Ready); // input, or end of input (POLLHUP)
         }
         if r == 0 {
             return Ok(Wait::TimedOut);
@@ -42,12 +42,12 @@ fn wait_for_input(secs: u64) -> Result<Wait> {
     }
 }
 
-/// Waakhond: vergrendelt ook als je midden in een vraag (bijv. "Gebruikersnaam:"
-/// of een verborgen wachtwoordprompt) wegloopt. Het proces stopt dan direct;
-/// het besturingssysteem geeft al het geheugen vrij (en wist pagina's voordat
-/// een ander proces ze krijgt). De terminalinstellingen worden eerst hersteld.
+/// Watchdog: also locks when you walk away in the middle of a question (e.g.
+/// "Username:" or a hidden password prompt). The process then exits at once;
+/// the operating system releases all memory (and wipes pages before another
+/// process gets them). The terminal settings are restored first.
 fn start_watchdog(timeout: u64, human: String) {
-    // SAFETY: termios is een gewone C-struct; tcgetattr vult hem in.
+    // SAFETY: termios is a plain C struct; tcgetattr fills it in.
     let saved = unsafe {
         let mut t: libc::termios = std::mem::zeroed();
         (libc::isatty(0) == 1 && libc::tcgetattr(0, &mut t) == 0).then_some(t)
@@ -56,30 +56,30 @@ fn start_watchdog(timeout: u64, human: String) {
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(std::time::Duration::from_secs(1));
-            // Iets ruimer dan de timeout, zodat bij de gewone `kluis>`-prompt de
-            // nette route (met expliciet wissen) eerst aan de beurt is.
+            // Slightly more generous than the timeout, so at the normal prompt
+            // the clean route (with explicit wiping) gets its turn first.
             if prompt::idle_secs() > timeout + 2 {
                 if let Some(t) = saved {
-                    // SAFETY: geldige termios die we eerder zelf hebben gelezen.
+                    // SAFETY: a valid termios that we read ourselves earlier.
                     unsafe {
                         libc::tcsetattr(0, libc::TCSANOW, &t);
                     }
                 }
                 ui::clear_screen();
                 eprintln!();
-                ui::info(&format!("🔒 Automatisch vergrendeld na {human} zonder invoer."));
+                ui::info(&format!("🔒 Locked automatically after {human} without input."));
                 std::process::exit(0);
             }
         }
     });
 }
 
-/// Gemak in de interactieve modus: `get mijn bank` betekent `get "mijn bank"`.
-/// Geldt voor opdrachten met één naam en alleen aan/uit-opties.
+/// Convenience inside the interactive mode: `get my bank` means `get "my bank"`.
+/// Applies to commands with a single name and only on/off options.
 fn join_name_words(words: Vec<String>) -> Vec<String> {
-    const SIMPLE: [&str; 8] = ["get", "show", "rm", "remove", "delete", "search", "find", "ls"];
+    const SIMPLE: [&str; 7] = ["get", "show", "rm", "remove", "delete", "search", "find"];
     match words.first() {
-        Some(cmd) if SIMPLE.contains(&cmd.as_str()) && cmd != "ls" => {
+        Some(cmd) if SIMPLE.contains(&cmd.as_str()) => {
             let (flags, names): (Vec<String>, Vec<String>) =
                 words[1..].iter().cloned().partition(|w| w.starts_with('-'));
             let mut out = vec![cmd.clone()];
@@ -94,23 +94,28 @@ fn join_name_words(words: Vec<String>) -> Vec<String> {
 }
 
 fn print_help() {
-    let help = localize(ShellLine::command()).render_help();
+    let help = shell_command().render_help();
     eprintln!("{help}");
-    eprintln!("Verder: help, exit/quit/lock (vergrendelen, scherm wissen en stoppen).");
-    eprintln!("Namen met spaties zet je tussen aanhalingstekens: get \"Mijn Bank\"");
+    eprintln!("Also: help, exit/quit/lock (lock, clear the screen and quit).");
+    eprintln!(
+        "Put names with spaces in quotes: get \"My Bank\" (get, rm and search also accept plain words)"
+    );
+}
+
+fn describe(timeout: u64) -> String {
+    if timeout.is_multiple_of(60) { format!("{} min", timeout / 60) } else { format!("{timeout} s") }
 }
 
 pub fn run(paths: &VaultPaths, timeout: u64) -> Result<()> {
     if timeout == 0 || timeout > MAX_TIMEOUT {
-        return Err(Error::InvalidInput("de timeout moet tussen 1 en 86400 seconden liggen".into()));
+        return Err(Error::InvalidInput("the timeout must be between 1 and 86400 seconds".into()));
     }
     let mut uv = commands::login_screen(paths)?;
-    let human =
-        if timeout.is_multiple_of(60) { format!("{} min", timeout / 60) } else { format!("{timeout} s") };
-    ui::success(&format!("Kluis ontgrendeld — {}.", commands::vault_summary(&uv.vault)));
+    let human = describe(timeout);
+    ui::success(&format!("Vault unlocked — {}.", commands::vault_summary(&uv.vault)));
     ui::info(&format!(
-        "  Typ 'help' voor de opdrachten of 'exit' om te vergrendelen. \
-         Na {human} zonder invoer vergrendelt CakePass vanzelf."
+        "  Type 'help' for the commands or 'exit' to lock. \
+         After {human} without input CakePass locks itself."
     ));
 
     start_watchdog(timeout, human.clone());
@@ -119,12 +124,12 @@ pub fn run(paths: &VaultPaths, timeout: u64) -> Result<()> {
         io::stderr().flush()?;
         if let Wait::TimedOut = wait_for_input(timeout)? {
             eprintln!();
-            ui::info(&format!("Automatisch vergrendeld na {human} zonder invoer."));
+            ui::info(&format!("Locked automatically after {human} without input."));
             break;
         }
         let Some(line) = prompt::read_raw_line()? else {
             eprintln!();
-            break; // Ctrl+D of einde invoer
+            break; // Ctrl+D or end of input
         };
         let line = line.trim();
         match line {
@@ -137,21 +142,19 @@ pub fn run(paths: &VaultPaths, timeout: u64) -> Result<()> {
             _ => {}
         }
         let Some(words) = shlex::split(line) else {
-            ui::error("ongeldige aanhalingstekens");
+            ui::error("invalid quotes");
             continue;
         };
         let argv = std::iter::once("kluis".to_string()).chain(join_name_words(words));
-        let parsed = localize(ShellLine::command())
-            .try_get_matches_from(argv)
-            .and_then(|m| ShellLine::from_arg_matches(&m));
+        let parsed = shell_command().try_get_matches_from(argv).and_then(|m| ShellLine::from_arg_matches(&m));
         match parsed {
             Ok(parsed) => match commands::execute(&mut uv, parsed.command, true) {
                 Ok(()) => {}
-                Err(Error::Cancelled) => ui::info("Afgebroken."),
+                Err(Error::Cancelled) => ui::info("Cancelled."),
                 Err(Error::ConcurrentModification) => {
                     ui::error(
-                        "de kluis is buiten deze shell gewijzigd. Sluit de shell (exit) en open \
-                         hem opnieuw; je laatste wijziging is niet opgeslagen.",
+                        "the vault was changed outside this shell. Close the shell (exit) and open \
+                         it again; your last change was not saved.",
                     );
                 }
                 Err(e) => ui::error(&e.to_string()),
@@ -162,9 +165,9 @@ pub fn run(paths: &VaultPaths, timeout: u64) -> Result<()> {
         }
     }
     drop(uv);
-    // Wis het scherm (en de scrollback), zodat getoonde geheimen weg zijn.
+    // Clear the screen (and scrollback), so secrets that were shown are gone.
     ui::clear_screen();
-    ui::success("🔒 CakePass vergrendeld; de sleutel is uit het geheugen gewist.");
+    ui::success("🔒 CakePass locked; the key has been wiped from memory.");
     Ok(())
 }
 
@@ -177,11 +180,17 @@ mod tests {
     }
 
     #[test]
-    fn losse_woorden_worden_een_naam() {
-        assert_eq!(join_name_words(w("get mijn bank --show")), w("get 'mijn bank' --show"));
-        assert_eq!(join_name_words(w("rm oude site -y")), w("rm 'oude site' -y"));
-        assert_eq!(join_name_words(w("get \"al goed\"")), w("get 'al goed'"));
-        assert_eq!(join_name_words(w("edit a --username b")), w("edit a --username b"), "edit niet aanraken");
+    fn loose_words_become_one_name() {
+        assert_eq!(join_name_words(w("get my bank --show")), w("get 'my bank' --show"));
+        assert_eq!(join_name_words(w("rm old site -y")), w("rm 'old site' -y"));
+        assert_eq!(join_name_words(w("get \"already fine\"")), w("get 'already fine'"));
+        assert_eq!(join_name_words(w("edit a --username b")), w("edit a --username b"), "leave edit alone");
         assert_eq!(join_name_words(w("list")), w("list"));
+    }
+
+    #[test]
+    fn timeout_description() {
+        assert_eq!(describe(300), "5 min");
+        assert_eq!(describe(90), "90 s");
     }
 }

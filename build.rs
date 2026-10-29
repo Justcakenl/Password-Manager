@@ -1,9 +1,9 @@
-//! Bouwscript: bewaart in het programma uit welke git-versie (commit) het
-//! gebouwd is. `kluis --update` vergelijkt dat met de nieuwste versie op GitHub.
+//! Build script: records which git version (commit) the program was built
+//! from. `kluis --update` compares that with the newest version on GitHub.
 //!
-//! De PKGBUILD geeft de commit door via KLUIS_GIT_COMMIT; bij een gewone
-//! `cargo build` vragen we het aan git zelf. Lukt dat niet, dan is het
-//! "onbekend" (en biedt `kluis --update` altijd een update aan).
+//! The PKGBUILD passes the commit via KLUIS_GIT_COMMIT; with a plain
+//! `cargo build` we ask git ourselves. If that fails the value is "unknown"
+//! (and `kluis --update` will then always offer an update).
 
 use std::process::Command;
 
@@ -18,7 +18,7 @@ fn main() {
         let c = String::from_utf8(out.stdout).ok()?.trim().to_string();
         (out.status.success() && is_commit(&c)).then_some(c)
     });
-    println!("cargo:rustc-env=KLUIS_GIT_COMMIT={}", commit.unwrap_or_else(|| "onbekend".into()));
+    println!("cargo:rustc-env=KLUIS_GIT_COMMIT={}", commit.unwrap_or_else(|| "unknown".into()));
 }
 
 fn is_commit(s: &str) -> bool {

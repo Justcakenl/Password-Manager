@@ -1,31 +1,29 @@
-//! `kluis --update`: CakePass bijwerken naar de nieuwste versie op GitHub.
+//! `kluis --update`: update CakePass to the newest version on GitHub.
 //!
-//! BEVEILIGINGSKRITIEK – hoe dit werkt en waarom het zo veilig mogelijk is:
+//! SECURITY-CRITICAL – how this works and why it is as safe as possible:
 //!
-//! - Het programma zelf bevat GEEN netwerkcode. Alleen deze opdracht start
-//!   het programma `git`, en `git` gebruikt jouw eigen GitHub-toegang
-//!   (SSH-sleutel of inlog). `kluis` bewaart nooit een token of wachtwoord
-//!   voor GitHub.
-//! - De opdracht ontgrendelt je kluis NIET: tijdens het updaten staat er
-//!   geen sleutel of wachtwoord in het geheugen.
-//! - Je kluis (`~/.local/share/kluis/`) staat buiten de installatie en wordt
-//!   nooit overschreven. Vooraf maken we een extra kopie (`.voor-update-…`).
-//!   Nieuwere versies lezen oudere kluisformaten en zetten ze bij het openen
-//!   automatisch om; een oudere versie weigert een nieuwer formaat netjes.
-//! - We halen alleen nieuwe commits binnen met `git merge --ff-only`. Dat
-//!   herschrijft nooit je geschiedenis. Heb je zelf wijzigingen in de map,
-//!   dan stoppen we.
-//! - Je ziet eerst wat er nieuw is (de commit-titels) en waarvandaan het
-//!   komt, en moet bevestigen.
-//! - Het bouwen gebeurt met `makepkg` (inclusief alle tests). Mislukt iets,
-//!   dan zetten we de map terug zoals hij was; je huidige versie blijft
-//!   gewoon werken.
+//! - The program itself contains NO network code. Only this command starts
+//!   the program `git`, and `git` uses your own GitHub access (SSH key or
+//!   login). `kluis` never stores a token or password for GitHub.
+//! - The command does NOT unlock your vault: while updating there is no key
+//!   or password in memory.
+//! - Your vault (`~/.local/share/kluis/`) lives outside the installation and
+//!   is never overwritten. Beforehand we make an extra copy (`.pre-update-…`).
+//!   Newer versions read older vault formats and convert them when opened; an
+//!   older version cleanly refuses a newer format.
+//! - We only fetch new commits with `git merge --ff-only`. That never rewrites
+//!   your history. If you have changes of your own in the folder, we stop.
+//! - You first see what is new (the commit titles) and where it comes from,
+//!   and must confirm.
+//! - Building is done with `makepkg` (including all tests). If anything
+//!   fails, we restore the folder as it was; your current version keeps
+//!   working.
 //!
-//! De dagelijkse controle (`--check`, via een systemd-timer) haalt alleen
-//! binnen en meldt dat er een update is; installeren doe je zelf. Een
-//! wachtwoordmanager die zichzelf zonder jouw oog vervangt, is een te groot
-//! risico: wie bij je GitHub-account kan, zou dan code op je computer
-//! kunnen uitvoeren die bij je kluis kan.
+//! The daily check (`--check`, via a systemd timer) only fetches and reports
+//! that an update exists; you install it yourself. A password manager that
+//! replaces itself without you looking is too big a risk: anyone who can get
+//! into your GitHub account could then run code on your computer that has
+//! access to your vault.
 
 use std::fs;
 use std::io::Read;
@@ -40,20 +38,20 @@ use kluis::{Error, Result};
 
 use super::{prompt, ui};
 
-/// De commit waaruit dit programma gebouwd is (zie build.rs).
+/// The commit this program was built from (see build.rs).
 pub const INSTALLED_COMMIT: &str = env!("KLUIS_GIT_COMMIT");
-/// Waar de PKGBUILD de bronmap van de installatie vastlegt.
+/// Where the PKGBUILD records the source folder of the installation.
 const SOURCE_DIR_FILE: &str = "/usr/share/kluis/source-dir";
 const FETCH_TIMEOUT: Duration = Duration::from_secs(120);
 const TIMER: &str = "kluis-update.timer";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum AutoMode {
-    /// Elke dag automatisch controleren
+    /// Check automatically every day
     On,
-    /// Niet meer automatisch controleren
+    /// Stop checking automatically
     Off,
-    /// Laat zien of het aan staat
+    /// Show whether it is on
     Status,
 }
 
@@ -68,7 +66,7 @@ pub struct Options {
 
 // ───────────────────────── git ─────────────────────────
 
-/// Draai `git` in `dir`. `unattended` = nooit om een wachtwoord vragen.
+/// Run `git` in `dir`. `unattended` = never ask for a password.
 fn git(dir: &Path, args: &[&str], unattended: bool) -> Result<String> {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(dir).arg("--no-pager").args(args).env("LC_ALL", "C");
@@ -86,13 +84,13 @@ fn git(dir: &Path, args: &[&str], unattended: bool) -> Result<String> {
         .spawn()
         .map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => {
-                Error::InvalidInput("`git` is niet geïnstalleerd (sudo pacman -S git)".into())
+                Error::InvalidInput("`git` is not installed (sudo pacman -S git)".into())
             }
             _ => Error::Io(e),
         })?;
     let mut stdout = child.stdout.take().expect("stdout is piped");
     let mut stderr = child.stderr.take();
-    // Uitvoer leegmaken in aparte threads, zodat een volle pijp niets blokkeert.
+    // Drain the output in separate threads, so a full pipe blocks nothing.
     let out_thread = std::thread::spawn(move || {
         let mut buf = String::new();
         let _ = stdout.read_to_string(&mut buf);
@@ -113,7 +111,7 @@ fn git(dir: &Path, args: &[&str], unattended: bool) -> Result<String> {
         if unattended && start.elapsed() > FETCH_TIMEOUT {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(Error::InvalidInput("git deed er te lang over (netwerk of GitHub-toegang?)".into()));
+            return Err(Error::InvalidInput("git took too long (network or GitHub access?)".into()));
         }
         std::thread::sleep(Duration::from_millis(40));
     };
@@ -122,9 +120,9 @@ fn git(dir: &Path, args: &[&str], unattended: bool) -> Result<String> {
     if status.success() {
         Ok(out.trim().to_string())
     } else {
-        let why = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("onbekende fout");
+        let why = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("unknown error");
         Err(Error::InvalidInput(format!(
-            "git {} mislukte: {}",
+            "git {} failed: {}",
             args.first().unwrap_or(&""),
             ui::safe(why, false)
         )))
@@ -147,17 +145,17 @@ fn is_hex(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-// ───────────────────────── bronmap en status ─────────────────────────
+// ───────────────────────── source folder and status ─────────────────────────
 
-/// De map met de broncode waaruit CakePass is gebouwd.
+/// The folder with the source code CakePass was built from.
 fn source_dir(arg: Option<&Path>) -> Result<PathBuf> {
     let dir = match arg {
         Some(p) => p.to_path_buf(),
         None => {
             let text = fs::read_to_string(SOURCE_DIR_FILE).map_err(|_| {
                 Error::InvalidInput(format!(
-                    "ik weet niet waar de broncode staat (geen {SOURCE_DIR_FILE}). \
-                     Geef de map op met --source <map>, of installeer opnieuw met makepkg."
+                    "I do not know where the source code is (no {SOURCE_DIR_FILE}). \
+                     Give the folder with --source <dir>, or reinstall with makepkg."
                 ))
             })?;
             PathBuf::from(text.lines().next().unwrap_or("").trim())
@@ -165,8 +163,8 @@ fn source_dir(arg: Option<&Path>) -> Result<PathBuf> {
     };
     if !dir.is_absolute() || !dir.join(".git").exists() || !dir.join("packaging/arch/PKGBUILD").is_file() {
         return Err(Error::InvalidInput(format!(
-            "{} is geen CakePass-bronmap (git-checkout met packaging/arch/PKGBUILD). \
-             Geef de juiste map op met --source <map>.",
+            "{} is not a CakePass source folder (a git checkout with packaging/arch/PKGBUILD). \
+             Give the right folder with --source <dir>.",
             dir.display()
         )));
     }
@@ -181,7 +179,7 @@ fn cache_file() -> Option<PathBuf> {
     Some(base.join("kluis").join("update-status"))
 }
 
-/// Wat de laatste controle opleverde (staat in `~/.cache/kluis/update-status`).
+/// What the last check found (stored in `~/.cache/kluis/update-status`).
 #[derive(Debug, Default, PartialEq, Eq)]
 struct CachedStatus {
     remote: String,
@@ -223,18 +221,18 @@ impl CachedStatus {
         })();
     }
 
-    /// Is er volgens de laatste controle een nieuwere versie?
+    /// Is there a newer version according to the last check?
     fn update_available(&self) -> bool {
         !self.remote.is_empty() && !is_installed(&self.remote)
     }
 }
 
-/// Komt deze (volledige) commit overeen met het geïnstalleerde programma?
+/// Does this (full) commit match the installed program?
 fn is_installed(commit: &str) -> bool {
     installed_commit().is_some_and(|i| commit.starts_with(i.as_str()))
 }
 
-/// De geïnstalleerde commit; in debug-builds te overschrijven voor tests.
+/// The installed commit; can be overridden in debug builds for tests.
 fn installed_commit() -> Option<String> {
     #[cfg(debug_assertions)]
     if let Ok(c) = std::env::var("KLUIS_TEST_INSTALLED_COMMIT") {
@@ -248,19 +246,19 @@ fn running_as_root() -> bool {
     if std::env::var_os("KLUIS_TEST_ALLOW_ROOT").is_some() {
         return false;
     }
-    // SAFETY: geteuid is altijd veilig.
+    // SAFETY: geteuid is always safe.
     unsafe { libc::geteuid() == 0 }
 }
 
-/// Korte melding voor in `kluis info` en het inlogscherm (zonder netwerk:
-/// leest alleen het resultaat van de laatste controle).
+/// Short notice for `kluis info` and the login screen (no network: only
+/// reads the result of the last check).
 pub fn pending_notice() -> Option<String> {
-    CachedStatus::read().update_available().then(|| {
-        "🍰 Er is een nieuwe versie van CakePass beschikbaar. Typ in je terminal: kluis --update".into()
-    })
+    CachedStatus::read()
+        .update_available()
+        .then(|| "🍰 A new version of CakePass is available. Type in your terminal: kluis --update".into())
 }
 
-// ───────────────────────── de opdracht ─────────────────────────
+// ───────────────────────── the command ─────────────────────────
 
 struct Situation {
     dir: PathBuf,
@@ -270,28 +268,29 @@ struct Situation {
     origin: String,
 }
 
-/// Controleer GitHub: haal de laatste commits op en bepaal waar we staan.
+/// Check GitHub: fetch the latest commits and work out where we stand.
 fn inspect(dir: &Path, unattended: bool) -> Result<Situation> {
     let branch = git(dir, &["rev-parse", "--abbrev-ref", "HEAD"], true)?;
     if branch == "HEAD" || branch.is_empty() {
         return Err(Error::InvalidInput(
-            "de bronmap staat niet op een branch (losse commit). Ga met `git checkout main` terug naar main."
+            "the source folder is not on a branch (detached commit). Go back to main with `git checkout main`."
                 .into(),
         ));
     }
-    let origin = git(dir, &["remote", "get-url", "origin"], true)
-        .map_err(|_| Error::InvalidInput("de bronmap heeft geen GitHub-adres (remote 'origin')".into()))?;
+    let origin = git(dir, &["remote", "get-url", "origin"], true).map_err(|_| {
+        Error::InvalidInput("the source folder has no GitHub address (remote 'origin')".into())
+    })?;
     let spec = format!("refs/heads/{branch}:refs/remotes/origin/{branch}");
     git(dir, &["fetch", "--quiet", "origin", &spec], unattended)?;
     let remote_tip = git(dir, &["rev-parse", "--verify", &format!("refs/remotes/origin/{branch}")], true)?;
     let local_head = git(dir, &["rev-parse", "HEAD"], true)?;
     if !is_hex(&remote_tip) || !is_hex(&local_head) {
-        return Err(Error::InvalidInput("onverwachte uitvoer van git".into()));
+        return Err(Error::InvalidInput("unexpected output from git".into()));
     }
     Ok(Situation { dir: dir.to_path_buf(), branch, local_head, remote_tip, origin })
 }
 
-/// De titels van de nieuwe commits (maximaal 12), veilig om te tonen.
+/// The titles of the new commits (at most 12), safe to display.
 fn changelog(s: &Situation) -> (usize, Vec<String>) {
     let base = installed_commit().filter(|c| git_ok(&s.dir, &["cat-file", "-e", &format!("{c}^{{commit}}")]));
     let range = match &base {
@@ -313,12 +312,10 @@ pub fn run(opts: &Options, vault: &VaultPaths) -> Result<()> {
     let dir = source_dir(opts.source.as_deref())?;
     let unattended = opts.check_only && !prompt::stdin_is_tty();
     if opts.check_only {
-        ui::info("Controleren op een nieuwe versie…");
+        ui::info("Checking for a new version…");
     } else {
-        ui::info(&format!("Ik controleer GitHub via git ({}).", dir.display()));
-        ui::info(&ui::dim_err(
-            "  Er wordt niets van je kluis gelezen of verstuurd; alleen git praat met GitHub.",
-        ));
+        ui::info(&format!("Checking GitHub via git ({}).", dir.display()));
+        ui::info(&ui::dim_err("  Nothing from your vault is read or sent; only git talks to GitHub."));
     }
     let s = inspect(&dir, unattended)?;
     let up_to_date = is_installed(&s.remote_tip);
@@ -327,16 +324,14 @@ pub fn run(opts: &Options, vault: &VaultPaths) -> Result<()> {
 
     if up_to_date {
         ui::success(&format!(
-            "Je hebt al de nieuwste versie van CakePass (commit {}).",
+            "You already have the newest version of CakePass (commit {}).",
             &s.remote_tip[..12.min(s.remote_tip.len())]
         ));
         return Ok(());
     }
     let (count, lines) = changelog(&s);
     if opts.check_only {
-        ui::info(&format!(
-            "🍰 Update beschikbaar ({count} nieuwe wijziging(en)). Installeren: kluis --update"
-        ));
+        ui::info(&format!("🍰 Update available ({count} new change(s)). Install it with: kluis --update"));
         if opts.notify {
             notify(&s.remote_tip);
         }
@@ -346,7 +341,7 @@ pub fn run(opts: &Options, vault: &VaultPaths) -> Result<()> {
 }
 
 impl CachedStatus {
-    /// Bewaar het resultaat; bij "up to date" wordt de melding gewist.
+    /// Store the result; when "up to date" the notice is cleared.
     fn write_if(self, available: bool, remote: &str) {
         let mut s = self;
         s.remote = if available { remote.to_string() } else { String::new() };
@@ -354,15 +349,15 @@ impl CachedStatus {
     }
 }
 
-/// Stuur één desktopmelding per nieuwe versie (als notify-send bestaat).
+/// Send one desktop notification per new version (if notify-send exists).
 fn notify(remote: &str) {
     let mut st = CachedStatus::read();
     if st.notified == remote {
         return;
     }
     let sent = Command::new("notify-send")
-        .args(["-a", "CakePass", "-i", "dialog-information", "CakePass-update beschikbaar"])
-        .arg("Typ in een terminal: kluis --update")
+        .args(["-a", "CakePass", "-i", "dialog-information", "CakePass update available"])
+        .arg("Type in a terminal: kluis --update")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -375,23 +370,23 @@ fn notify(remote: &str) {
 }
 
 fn apply(s: &Situation, count: usize, lines: &[String], opts: &Options, vault: &VaultPaths) -> Result<()> {
-    // 1. Voorwaarden
+    // 1. Preconditions
     if running_as_root() {
         return Err(Error::InvalidInput(
-            "draai dit als gewone gebruiker, niet als root (makepkg weigert root). \
-             Je wordt zelf om je wachtwoord gevraagd voor de installatie."
+            "run this as a normal user, not as root (makepkg refuses root). \
+             You will be asked for your password for the installation."
                 .into(),
         ));
     }
     if Command::new("makepkg").arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_err()
     {
-        return Err(Error::InvalidInput("`makepkg` ontbreekt (sudo pacman -S base-devel)".into()));
+        return Err(Error::InvalidInput("`makepkg` is missing (sudo pacman -S base-devel)".into()));
     }
     let dirty = git(&s.dir, &["status", "--porcelain"], true)?;
     if !dirty.is_empty() {
         return Err(Error::InvalidInput(format!(
-            "er staan lokale wijzigingen in {} die niet op GitHub staan. Ik werk niets bij om ze \
-             niet kwijt te raken. Bekijk ze met `git -C {} status`.",
+            "there are local changes in {} that are not on GitHub. I will not update, so you do \
+             not lose them. Look at them with `git -C {} status`.",
             s.dir.display(),
             s.dir.display()
         )));
@@ -399,22 +394,22 @@ fn apply(s: &Situation, count: usize, lines: &[String], opts: &Options, vault: &
     let behind = s.local_head != s.remote_tip;
     if behind && !git_ok(&s.dir, &["merge-base", "--is-ancestor", &s.local_head, &s.remote_tip]) {
         return Err(Error::InvalidInput(
-            "jouw kopie wijkt af van GitHub (je hebt zelf commits gemaakt). Ik werk niets bij; \
-             los dat eerst zelf op met git."
+            "your copy differs from GitHub (you made commits yourself). I will not update; \
+             sort that out with git first."
                 .into(),
         ));
     }
 
-    // 2. Laat zien wat er gebeurt en vraag bevestiging
+    // 2. Show what will happen and ask for confirmation
     let short = |c: &str| c[..12.min(c.len())].to_string();
     ui::banner(&[
-        "Er is een nieuwe versie van CakePass.",
+        "There is a new version of CakePass.",
         "",
-        &format!("Nieuw: {count} wijziging(en)  (branch {})", ui::safe(&s.branch, false)),
-        &format!("Van:   {}", ui::safe(&s.origin, false)),
+        &format!("New:  {count} change(s)  (branch {})", ui::safe(&s.branch, false)),
+        &format!("From: {}", ui::safe(&s.origin, false)),
         &format!(
-            "Nu:    {}  →  straks: {}",
-            installed_commit().map_or("onbekend".into(), |c| short(&c)),
+            "Now:  {}  →  after: {}",
+            installed_commit().map_or("unknown".into(), |c| short(&c)),
             short(&s.remote_tip)
         ),
     ]);
@@ -422,33 +417,33 @@ fn apply(s: &Situation, count: usize, lines: &[String], opts: &Options, vault: &
         eprintln!("  • {l}");
     }
     if count > lines.len() {
-        eprintln!("  … en {} oudere", count - lines.len());
+        eprintln!("  … and {} older", count - lines.len());
     }
-    ui::info("\nJe kluis en je instellingen blijven onaangeroerd; er komt eerst een extra back-up.");
+    ui::info("\nYour vault and your settings stay untouched; an extra backup is made first.");
     ui::warn(
-        "Je installeert code van GitHub op je computer. Doe dit alleen als jij (of iemand die je \
-         vertrouwt) die wijzigingen heeft gepusht.",
+        "You are installing code from GitHub on your computer. Only do this if you (or someone \
+         you trust) pushed those changes.",
     );
-    if !opts.yes && !prompt::confirm("Nu bijwerken?")? {
-        ui::info("Niets gewijzigd.");
+    if !opts.yes && !prompt::confirm("Update now?")? {
+        ui::info("Nothing changed.");
         return Ok(());
     }
 
-    // 3. Extra back-up van de kluis
+    // 3. Extra backup of the vault
     match storage::backup_before_update(vault)? {
-        Some(path) => ui::success(&format!("Extra back-up van je kluis: {}", path.display())),
-        None => ui::info("Er is nog geen kluis; geen back-up nodig."),
+        Some(path) => ui::success(&format!("Extra backup of your vault: {}", path.display())),
+        None => ui::info("There is no vault yet; no backup needed."),
     }
 
-    // 4. Nieuwe code binnenhalen (alleen vooruit, nooit herschrijven)
+    // 4. Fetch the new code (forward only, never rewrite)
     if behind {
         git(&s.dir, &["merge", "--ff-only", "--quiet", &s.remote_tip], false)?;
-        ui::success("Nieuwe code binnengehaald.");
+        ui::success("New code fetched.");
     }
 
-    // 5. Bouwen, testen en installeren
+    // 5. Build, test and install
     ui::info(
-        "Bouwen en testen (dit duurt een minuutje); je wordt zo gevraagd om je wachtwoord voor de installatie…",
+        "Building and testing (this takes a minute); you will be asked for your password for the installation…",
     );
     let pkg_dir = s.dir.join("packaging/arch");
     remove_old_packages(&pkg_dir);
@@ -460,33 +455,33 @@ fn apply(s: &Situation, count: usize, lines: &[String], opts: &Options, vault: &
     let built = makepkg.status().is_ok_and(|st| st.success());
     if !built {
         if behind {
-            // De map was schoon en we deden alleen een fast-forward: terugzetten kan veilig.
+            // The folder was clean and we only did a fast-forward: restoring is safe.
             let back = git(&s.dir, &["reset", "--hard", "--quiet", &s.local_head], true);
             if back.is_err() {
                 ui::warn(&format!(
-                    "Terugzetten van de bronmap mislukte. Doe zelf: git -C {} reset --hard {}",
+                    "Restoring the source folder failed. Do it yourself: git -C {} reset --hard {}",
                     s.dir.display(),
                     short(&s.local_head)
                 ));
             }
         }
         return Err(Error::InvalidInput(
-            "het bijwerken is mislukt (bouwen, testen of installeren). Er is niets veranderd aan \
-             je geïnstalleerde versie; je kluis is veilig."
+            "the update failed (build, test or install). Nothing changed about your installed \
+             version; your vault is safe."
                 .into(),
         ));
     }
 
-    // 6. Klaar
+    // 6. Done
     CachedStatus::default().write_if(false, "");
-    ui::success("CakePass is bijgewerkt. Start `kluis` opnieuw om de nieuwe versie te gebruiken.");
+    ui::success("CakePass has been updated. Start `kluis` again to use the new version.");
     ui::info(
-        "Je kluis is niet aangeraakt. Is er een nieuw kluisformaat, dan wordt hij bij het eerstvolgende ontgrendelen automatisch omgezet.",
+        "Your vault was not touched. If there is a new vault format, it is converted automatically the next time you unlock.",
     );
     Ok(())
 }
 
-/// Verwijder eerder gebouwde pakketten, zodat makepkg zeker opnieuw bouwt.
+/// Remove previously built packages, so makepkg certainly builds again.
 fn remove_old_packages(dir: &Path) {
     let Ok(rd) = fs::read_dir(dir) else { return };
     for e in rd.flatten() {
@@ -497,14 +492,12 @@ fn remove_old_packages(dir: &Path) {
     }
 }
 
-// ───────────────────────── automatisch controleren ─────────────────────────
+// ───────────────────────── automatic checking ─────────────────────────
 
 fn systemctl(args: &[&str]) -> Result<(bool, String)> {
     let out =
         Command::new("systemctl").arg("--user").args(args).stdin(Stdio::null()).output().map_err(|_| {
-            Error::InvalidInput(
-                "`systemctl` niet gevonden; systemd is nodig voor de automatische controle".into(),
-            )
+            Error::InvalidInput("`systemctl` not found; systemd is needed for the automatic check".into())
         })?;
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     Ok((out.status.success(), text.trim().to_string()))
@@ -516,8 +509,8 @@ fn auto(mode: AutoMode) -> Result<()> {
             let (_, enabled) = systemctl(&["is-enabled", TIMER])?;
             let (_, next) = systemctl(&["list-timers", TIMER, "--no-pager", "--no-legend"])?;
             ui::info(&format!(
-                "Automatische controle: {}",
-                ui::safe(enabled.lines().next().unwrap_or("onbekend"), false)
+                "Automatic check: {}",
+                ui::safe(enabled.lines().next().unwrap_or("unknown"), false)
             ));
             if !next.is_empty() {
                 ui::info(&format!("  {}", ui::safe(next.lines().next().unwrap_or(""), false)));
@@ -528,24 +521,22 @@ fn auto(mode: AutoMode) -> Result<()> {
             let (ok, why) = systemctl(&["enable", "--now", TIMER])?;
             if !ok {
                 return Err(Error::InvalidInput(format!(
-                    "aanzetten lukte niet: {}. Is CakePass met makepkg geïnstalleerd?",
+                    "could not turn it on: {}. Was CakePass installed with makepkg?",
                     ui::safe(why.lines().last().unwrap_or(""), false)
                 )));
             }
             ui::success(
-                "Elke dag wordt gecontroleerd of er een nieuwe versie is. Je krijgt een melding; installeren doe je zelf met `kluis --update`.",
+                "Every day CakePass checks whether there is a new version. You get a notification; you install it yourself with `kluis --update`.",
             );
             ui::info(&ui::dim_err(
-                "  Tip: de controle werkt alleen zonder wachtwoordvraag als je GitHub-toegang automatisch werkt \
-                 (SSH-sleutel zonder wachtwoord, of `gh auth setup-git`).",
+                "  Tip: the check only works without a password prompt if your GitHub access works automatically \
+                 (an SSH key without passphrase, or `gh auth setup-git`).",
             ));
             Ok(())
         }
         AutoMode::Off => {
             let (_, _) = systemctl(&["disable", "--now", TIMER])?;
-            ui::success(
-                "De automatische controle staat uit. Handmatig updaten kan nog steeds met `kluis --update`.",
-            );
+            ui::success("The automatic check is off. You can still update manually with `kluis --update`.");
             Ok(())
         }
     }
@@ -556,30 +547,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn status_bestand_wordt_streng_gelezen() {
+    fn status_file_is_read_strictly() {
         let s = CachedStatus::parse("remote=abc123def456\nnotified=0123abcd\n");
         assert_eq!((s.remote.as_str(), s.notified.as_str()), ("abc123def456", "0123abcd"));
-        // Rommel, escape-codes en te lange waarden worden genegeerd.
-        let bad = CachedStatus::parse("remote=zzz\nnotified=\x1b[2J\nremote=\nonzin\nremote=ab cd\n");
+        // Junk, escape codes and over-long values are ignored.
+        let bad = CachedStatus::parse("remote=zzz\nnotified=\x1b[2J\nremote=\njunk\nremote=ab cd\n");
         assert_eq!(bad, CachedStatus::default());
         let long = format!("remote={}", "a".repeat(65));
         assert_eq!(CachedStatus::parse(&long), CachedStatus::default());
     }
 
     #[test]
-    fn hex_controle() {
+    fn hex_check() {
         assert!(is_hex("0123abcdefABCDEF"));
         assert!(!is_hex("") && !is_hex("xyz") && !is_hex("ab;rm"));
     }
 
     #[test]
-    fn installed_vergelijking() {
-        // Het ingebouwde commit is hex (of "onbekend", dan nooit gelijk).
+    fn installed_comparison() {
+        // The built-in commit is hex (or "unknown", then never equal).
         let commit = installed_commit();
         if let Some(c) = commit {
             assert!(is_installed(&format!("{c}0000000000000000000000000000")[..40]));
             assert!(!is_installed("ffffffffffffffffffffffffffffffffffffffff") || c.chars().all(|x| x == 'f'));
         }
-        assert!(!is_installed(""), "leeg komt nooit overeen");
+        assert!(!is_installed(""), "empty never matches");
     }
 }
