@@ -652,6 +652,7 @@ fn startup_notices_are_shown_once() {
     ]);
     let s = t.screen();
     assert!(s.contains("Please note") && s.contains("lighter Argon2") && s.contains("new version"), "{s}");
+    assert!(s.contains("─ Please note ─"), "the title sits cleanly in the border: {s}");
     t.key(Key::Enter);
     assert!(t.app.modals.is_empty());
 }

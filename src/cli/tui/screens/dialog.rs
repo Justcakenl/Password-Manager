@@ -50,7 +50,8 @@ fn text_box(
     let r = area.centered(w, h);
     g.dialog(r, title);
     if warning {
-        g.print(r.x + 2, r.y, r.w.saturating_sub(5), title, Style::WARN);
+        // Same place as the title the frame drew, in the warning colour.
+        g.print(r.x + 3, r.y, r.w.saturating_sub(6), title, Style::WARN);
     }
     let inner = r.inner();
     let mut y = inner.y + 1;
