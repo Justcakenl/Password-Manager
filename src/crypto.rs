@@ -123,9 +123,7 @@ pub fn derive_key(password: &[u8], salt: &[u8], params: &KdfParams) -> Result<Ma
         .map_err(|_| Error::InvalidKdfParams("geweigerd door Argon2"))?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon_params);
     let mut key = SecureBuf::zeroed(KEY_LEN);
-    argon
-        .hash_password_into(password, salt, key.as_mut_slice())
-        .map_err(|_| Error::Kdf)?;
+    argon.hash_password_into(password, salt, key.as_mut_slice()).map_err(|_| Error::Kdf)?;
     Ok(MasterKey(key))
 }
 
@@ -174,7 +172,8 @@ mod tests {
     use super::*;
 
     /// Snelle parameters voor tests (sterkte is hier niet relevant).
-    pub(crate) const TEST_PARAMS: KdfParams = KdfParams { memory_kib: 8 * 1024, iterations: 1, parallelism: 1 };
+    pub(crate) const TEST_PARAMS: KdfParams =
+        KdfParams { memory_kib: 8 * 1024, iterations: 1, parallelism: 1 };
 
     #[test]
     fn standaardparameters_zijn_geldig() {

@@ -169,8 +169,7 @@ impl SecureBuf {
         if new_len < self.len {
             // SAFETY: bereik [new_len, len) ligt binnen het blok.
             unsafe {
-                std::slice::from_raw_parts_mut(self.ptr.as_ptr().add(new_len), self.len - new_len)
-                    .zeroize();
+                std::slice::from_raw_parts_mut(self.ptr.as_ptr().add(new_len), self.len - new_len).zeroize();
             }
             self.len = new_len;
         }

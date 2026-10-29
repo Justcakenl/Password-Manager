@@ -17,9 +17,7 @@ pub enum Error {
     #[error("het kluisbestand is te kort of afgekapt")]
     Truncated,
 
-    #[error(
-        "bestandsversie {0} wordt niet ondersteund; gebruik een nieuwere versie van kluis"
-    )]
+    #[error("bestandsversie {0} wordt niet ondersteund; gebruik een nieuwere versie van kluis")]
     UnsupportedVersion(u16),
 
     #[error("het kluisbestand gebruikt een onbekend algoritme")]
@@ -28,9 +26,7 @@ pub enum Error {
     #[error("ongeldige parameters voor sleutelafleiding: {0}")]
     InvalidKdfParams(&'static str),
 
-    #[error(
-        "ontsleutelen mislukt: verkeerd hoofdwachtwoord, of het bestand is beschadigd of gemanipuleerd"
-    )]
+    #[error("ontsleutelen mislukt: verkeerd hoofdwachtwoord, of het bestand is beschadigd of gemanipuleerd")]
     Decrypt,
 
     #[error("het bestand is te groot om een kluis te zijn")]
@@ -54,9 +50,7 @@ pub enum Error {
     #[error("er bestaat al een bestand op {0}; ik overschrijf het niet")]
     AlreadyExists(PathBuf),
 
-    #[error(
-        "de kluis is intussen door een ander kluis-proces gewijzigd; probeer het opnieuw"
-    )]
+    #[error("de kluis is intussen door een ander kluis-proces gewijzigd; probeer het opnieuw")]
     ConcurrentModification,
 
     #[error("geen item gevonden met de naam '{0}'")]
