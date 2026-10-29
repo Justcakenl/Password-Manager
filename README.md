@@ -1,7 +1,10 @@
-# kluis
+# CakePass 🍰
 
-Een **offline wachtwoordmanager voor de terminal** op Arch Linux.
-Al je wachtwoorden staan in één versleuteld bestand op je eigen computer.
+![CakePass-inlogscherm](docs/cakepass-login.gif)
+
+Een **offline kluis voor de terminal** op Arch Linux, voor **wachtwoorden,
+API-sleutels en beveiligde notities**. Het commando heet `kluis`.
+Alles staat in één versleuteld bestand op je eigen computer.
 Geen cloud, geen account, geen telemetrie en geen enkele netwerkverbinding.
 
 ```text
@@ -24,15 +27,16 @@ Wachtwoord:      (verborgen; gebruik --show)
 1. [Installatie](#installatie)
 2. [Eerste keer: kluis maken](#eerste-keer-kluis-maken)
 3. [Dagelijks gebruik](#dagelijks-gebruik)
-4. [Wachtwoorden genereren](#wachtwoorden-genereren)
-5. [Shell-modus en automatisch vergrendelen](#shell-modus-en-automatisch-vergrendelen)
-6. [Overstappen van een andere wachtwoordmanager (CSV)](#overstappen-van-een-andere-wachtwoordmanager-csv)
-7. [Back-ups](#back-ups)
-8. [Hoofdwachtwoord vergeten?](#hoofdwachtwoord-vergeten)
-9. [Hoe de beveiliging werkt](#hoe-de-beveiliging-werkt)
-10. [Security-review en resterende risico's](#security-review-en-resterende-risicos)
-11. [Problemen oplossen](#problemen-oplossen)
-12. [Voor later](#voor-later)
+4. [Soorten items: logins, API-sleutels en notities](#soorten-items-logins-api-sleutels-en-notities)
+5. [Wachtwoorden genereren](#wachtwoorden-genereren)
+6. [Inlogscherm, shell-modus en automatisch vergrendelen](#inlogscherm-shell-modus-en-automatisch-vergrendelen)
+7. [Overstappen van een andere wachtwoordmanager (CSV)](#overstappen-van-een-andere-wachtwoordmanager-csv)
+8. [Back-ups](#back-ups)
+9. [Hoofdwachtwoord vergeten?](#hoofdwachtwoord-vergeten)
+10. [Hoe de beveiliging werkt](#hoe-de-beveiliging-werkt)
+11. [Security-review en resterende risico's](#security-review-en-resterende-risicos)
+12. [Problemen oplossen](#problemen-oplossen)
+13. [Voor later](#voor-later)
 
 ---
 
@@ -141,6 +145,49 @@ Tips:
 
 ---
 
+## Soorten items: logins, API-sleutels en notities
+
+Je kunt drie soorten dingen opslaan. Ze worden allemaal even sterk versleuteld
+(zie [Hoe de beveiliging werkt](#hoe-de-beveiliging-werkt)).
+
+| Soort | Wat | Toevoegen |
+|---|---|---|
+| **login** | gebruikersnaam, URL, wachtwoord, notities | `kluis add GitHub` |
+| **api** | account/sleutel-ID, service, de API-sleutel of token, notities | `kluis add OpenAI --type api` |
+| **notitie** | tekst van meerdere regels, bijv. herstelcodes, pincodes, wifi | `kluis add Herstelcodes --type notitie` |
+
+```text
+$ kluis add OpenAI --type api
+Hoofdwachtwoord:
+Account of sleutel-ID (optioneel): project-1
+Service-URL (optioneel): https://api.openai.com
+Tags, gescheiden door komma's (optioneel): ai, werk
+Notities (optioneel, één regel):
+API-sleutel (verborgen invoer; plakken mag):
+✔ Api-sleutel 'OpenAI' versleuteld opgeslagen.
+
+$ kluis add Herstelcodes --type notitie
+Hoofdwachtwoord:
+Tags, gescheiden door komma's (optioneel): google
+Typ of plak de tekst van je notitie (wordt versleuteld opgeslagen):
+  Sluit af met een regel met alleen een punt (.) of druk op Ctrl+D.
+│ Code 1: 7731-0012
+│ Code 2: 9921-4410
+│ .
+✔ Notitie 'Herstelcodes' versleuteld opgeslagen.
+```
+
+- `kluis get OpenAI` kopieert de API-sleutel naar het klembord (20 s);
+  `kluis get Herstelcodes` kopieert de tekst van de notitie. Met `--show` zie
+  je het op het scherm.
+- `kluis list --type api` of `kluis list --type notitie` toont alleen die soort.
+- Sleutel vervangen: `kluis edit OpenAI --password`. Notitie aanpassen:
+  `kluis edit Herstelcodes --notes`.
+- Een API-sleutel typ je in een verborgen prompt (plakken met Ctrl+Shift+V
+  werkt); hij komt nooit in je shellgeschiedenis.
+
+---
+
 ## Wachtwoorden genereren
 
 ```bash
@@ -158,7 +205,17 @@ hoofdwachtwoord is dat ruim voldoende.
 
 ---
 
-## Shell-modus en automatisch vergrendelen
+## Inlogscherm, shell-modus en automatisch vergrendelen
+
+Typ alleen `kluis` (of `kluis shell`) en je krijgt het **CakePass-inlogscherm**:
+een 3D-logo dat in beeld draait (roze glazuur, cakelagen, hagelslag en een
+glans), daarna de vraag om je hoofdwachtwoord. Je hebt drie pogingen.
+
+- Het logo is echt 3D: elke letter is een blok met diepte, met licht,
+  schaduw en perspectief, getekend met halve blokjes (▀) in truecolor.
+- Je ziet het alleen in een kleurenterminal. In scripts en pipes verschijnt
+  het niet. Uitzetten: `--no-animation` of `KLUIS_NO_ANIMATION=1`.
+- Alleen even kijken: `kluis logo`.
 
 Normaal vraagt **elk** commando opnieuw je hoofdwachtwoord. Na afloop staat
 de sleutel nergens meer in het geheugen. Dat is de veiligste vorm van
@@ -172,16 +229,20 @@ kluis shell --timeout 120    # na 2 minuten
 ```
 
 ```text
-kluis> list
-kluis> get "Mijn Bank"
-kluis> add Netflix --generate
-kluis> exit
+cakepass ❯ list
+cakepass ❯ get mijn bank
+cakepass ❯ add Netflix --generate
+cakepass ❯ exit
 ```
 
 - Na de ingestelde tijd zonder invoer wordt de sleutel gewist en stopt de
   shell. Dat gebeurt ook als je midden in een vraag wegloopt.
 - `passwd` en `export` vragen in de shell het hoofdwachtwoord opnieuw.
 - `exit`, `quit`, `lock` of Ctrl+D vergrendelt meteen.
+- Bij het vergrendelen wordt het scherm én de scrollback van je terminal
+  gewist, zodat getoonde wachtwoorden niet meer terug te scrollen zijn.
+- Namen met spaties hoeven in de shell geen aanhalingstekens bij `get`,
+  `rm` en `search`.
 
 ---
 
@@ -305,15 +366,17 @@ In gewone taal:
 2. **Twee lagen versleuteling.** Uit die sleutel worden met HKDF-SHA256 twee
    aparte sleutels gemaakt:
    - de **bestandssleutel** versleutelt de hele kluis op schijf;
-   - de **itemsleutel** versleutelt daarnaast **elk wachtwoord en elke notitie
-     apart**, elk met een eigen willekeurige nonce.
+   - de **itemsleutel** versleutelt daarnaast **alle inhoud van elk item
+     apart**: gebruikersnaam, URL, wachtwoord of API-sleutel, en notities.
+     Elk veld heeft een eigen willekeurige nonce.
 
-   Ook als je kluis open is (bijvoorbeeld in `kluis shell`), staan wachtwoorden
-   en notities dus alleen versleuteld in het geheugen. Ze worden pas
-   ontsleuteld op het moment dat jij er één opvraagt (`get`, `get --show`)
-   en meteen daarna weer gewist. `list` en `search` ontsleutelen nooit een
-   wachtwoord. Getest: in het geheugen van een geopende kluis staat
-   het wachtwoord 0 keer als leesbare tekst, ook direct na `get --show`.
+   Ook als je kluis open is (bijvoorbeeld in `kluis shell`), staat die inhoud
+   dus alleen versleuteld in het geheugen. Alleen de naam, de soort en de
+   tags zijn leesbaar, zodat je kunt zoeken. Een veld wordt pas ontsleuteld
+   op het moment dat het nodig is (`get`, `list` toont gebruikersnaam en
+   URL), en meteen daarna weer gewist. Getest: in het geheugen van een
+   geopende kluis staan wachtwoord, API-sleutel, notitie, gebruikersnaam en
+   URL 0 keer als leesbare tekst, ook direct na `list` en `get --show`.
 3. De hele kluis wordt met **XChaCha20-Poly1305** versleuteld. Dat versleutelt
    en controleert tegelijk ("authenticated encryption"). Verandert er ook maar
    één bit in het bestand, dan weigert `kluis` het te openen. Bij elke keer
@@ -363,10 +426,10 @@ tegen beschermen):
    je het typt, of je geheugen en klembord lezen. Installeer alleen software
    die je vertrouwt.
 2. **Swap en slaapstand (hibernate).** De sleutels en de ontsleutelde kluis
-   staan in vergrendeld geheugen, en wachtwoorden en notities blijven ook in
-   het geheugen versleuteld. Namen, gebruikersnamen en URL's van een geopende
-   kluis, het ene wachtwoord dat je net opvraagt en het geheugen van Argon2
-   zijn niet vergrendeld en kunnen in swap belanden. Bij hibernatie gaat al het geheugen naar schijf. Gebruik
+   staan in vergrendeld geheugen, en alle inhoud van items blijft ook in het
+   geheugen versleuteld. Itemnamen en tags, het ene veld dat je net opvraagt
+   en het geheugen van Argon2 zijn niet vergrendeld en kunnen in swap
+   belanden. Bij hibernatie gaat al het geheugen naar schijf. Gebruik
    versleutelde swap (LUKS), zram, of helemaal geen swap.
 3. **Het klembord.** Zolang een wachtwoord op het klembord staat (max. 20 s),
    kan elk programma in je sessie het lezen. Klembordbeheerders (KDE Klipper,
@@ -412,8 +475,10 @@ Bewust nog niet in versie 1 (liever weinig functies die goed werken):
 - **TUI** met [ratatui](https://ratatui.rs): de bibliotheek (`src/lib.rs`) is
   al los van de CLI, dus een TUI kan er zo bovenop.
 - **TOTP** (tweestapscodes, zoals Google Authenticator).
+- Meer soorten items (bankpas, SSH-sleutels, bestanden als bijlage).
+- Notities bewerken in `$EDITOR`. Dat zit er bewust nog niet in: een editor
+  schrijft tijdelijke bestanden onversleuteld naar schijf.
 - **Browser-integratie** (automatisch invullen).
-- Meerregelige notities in een editor (`$EDITOR`).
 - Nederlandse diceware-woordenlijst.
 - Aanpasbare klembordtijd en een `--clip-time`-optie.
 - Signaal voor klembordbeheerders dat het om een wachtwoord gaat
@@ -433,12 +498,13 @@ src/
 ├── crypto.rs       Argon2id + XChaCha20-Poly1305               ← kritiek
 ├── format.rs       bestandsformaat met versie-header           ← kritiek
 ├── storage.rs      XDG-pad, atomisch schrijven, back-up, slot  ← kritiek
-├── vault.rs        items en bewerkingen
+├── vault.rs        items (login/api/notitie), alle inhoud per veld versleuteld
 ├── generator.rs    wachtwoorden en passphrases                 ← kritiek
 ├── import.rs       CSV-import
 ├── clipboard.rs    klembord met automatisch wissen             ← kritiek
 ├── main.rs         start: allocator + procesbeveiliging
-└── cli/            argumenten, prompts, opdrachten, shell-modus
+└── cli/            argumenten, prompts, opdrachten, shell-modus,
+                    logo.rs: het 3D-inlogscherm
 tests/cli.rs        integratietests met het echte programma
 packaging/arch/     PKGBUILD
 assets/             EFF-woordenlijst (CC BY 3.0 US)

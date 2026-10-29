@@ -292,7 +292,7 @@ fn info_werkt_zonder_wachtwoord() {
             .and(contains("Rechten:          600"))
             .and(contains("Core dumps uit:   ja"))
             .and(contains("Formaatversie:    2"))
-            .and(contains("elk wachtwoord en elke notitie apart versleuteld")),
+            .and(contains("alle inhoud per item apart versleuteld")),
     );
 }
 
@@ -385,4 +385,119 @@ fn kluisbestand_bevat_geen_klare_tekst() {
         );
     }
     assert_eq!(&raw[..8], b"KLUISVLT");
+}
+
+#[test]
+fn api_sleutels_opslaan_en_ophalen() {
+    let k = Kluis::new().init();
+    const KEY: &str = "sk-proj-Zeer-Geheim-0042";
+    k.run(
+        &["add", "OpenAI", "--type", "api", "-u", "project-1", "--url", "https://api.openai.com", "-t", "ai"],
+        &format!("{PW}\n{KEY}\n"),
+    )
+    .success()
+    .stderr(contains("Api-sleutel 'OpenAI' versleuteld opgeslagen"));
+    // Zonder --show: sleutel verborgen, en zonder klembord een nette fout.
+    k.run(&["get", "openai"], &format!("{PW}\n"))
+        .failure()
+        .stdout(contains("api-sleutel").and(contains("project-1")).and(contains(KEY).not()))
+        .stderr(contains("geen klembord"));
+    k.run(&["get", "openai", "--show"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains(format!("API-sleutel:     {KEY}")));
+    // Lege sleutel wordt geweigerd.
+    k.run(&["add", "Leeg", "--type", "api", "-u", "", "--url", "", "-t", ""], &format!("{PW}\n\n"))
+        .failure()
+        .stderr(contains("mag niet leeg zijn"));
+    // Sleutel vervangen.
+    k.run(&["edit", "openai", "--password"], &format!("{PW}\nsk-nieuw-1\n")).success();
+    k.run(&["get", "openai", "--show"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("sk-nieuw-1").and(contains(KEY).not()));
+}
+
+#[test]
+fn beveiligde_notities_met_meerdere_regels() {
+    let k = Kluis::new().init();
+    // tags, daarna de tekst (afgesloten met een punt)
+    k.run(
+        &["add", "Herstelcodes", "--type", "notitie"],
+        &format!("{PW}\nprive\nCode 1: 7731\nCode 2: 9921\n.\n"),
+    )
+    .success()
+    .stderr(contains("Notitie 'Herstelcodes' versleuteld opgeslagen"));
+    k.run(&["get", "herstelcodes", "--no-copy"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("notitie").and(contains("(verborgen").and(contains("7731").not())));
+    k.run(&["get", "herstelcodes", "--show"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("Code 1: 7731").and(contains("Code 2: 9921")));
+    // Een notitie heeft geen gebruikersnaam of wachtwoord.
+    k.run(&["add", "X", "--type", "notitie", "-u", "jan"], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("geen gebruikersnaam"));
+    k.run(&["edit", "herstelcodes", "--generate"], &format!("{PW}\n")).failure();
+    // Inhoud wijzigen.
+    k.run(&["edit", "herstelcodes", "--notes"], &format!("{PW}\nNieuwe code 5555\n.\n")).success();
+    k.run(&["get", "herstelcodes", "--show"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("5555").and(contains("7731").not()));
+}
+
+#[test]
+fn lijst_filtert_op_soort() {
+    let k = Kluis::new().init();
+    k.add("GitHub", "jan", ITEM_PW);
+    k.run(
+        &["add", "Stripe", "--type", "api", "-u", "", "--url", "", "-t", ""],
+        &format!("{PW}\nsk_live_x\n"),
+    )
+    .success();
+    k.run(&["add", "Dagboek", "--type", "note", "-t", ""], &format!("{PW}\ntekst\n.\n")).success();
+    k.run(&["list"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("GitHub").and(contains("Stripe")).and(contains("Dagboek")))
+        .stderr(contains("3 item(s): 1 login(s) · 1 API-sleutel(s) · 1 notitie(s)"));
+    k.run(&["list", "--type", "api"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("Stripe").and(contains("GitHub").not()));
+    k.run(&["list", "--type", "notitie"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("Dagboek").and(contains("Stripe").not()));
+    k.run(&["list", "--type", "fiets"], "").failure();
+    k.run(&["search", "notitie"], &format!("{PW}\n")).success().stdout(contains("Dagboek"));
+}
+
+#[test]
+fn shell_voegt_losse_woorden_samen_tot_naam() {
+    let k = Kluis::new().init();
+    k.add("Mijn Bank", "jan", ITEM_PW);
+    k.run(&["shell"], &format!("{PW}\nget mijn bank --show\nexit\n")).success().stdout(contains(ITEM_PW));
+}
+
+#[test]
+fn zonder_opdracht() {
+    let k = Kluis::new();
+    // Nog geen kluis: hint om er een te maken.
+    k.run(&[], "").success().stderr(contains("kluis init"));
+    // Met kluis: inlogscherm + interactieve modus.
+    let k = k.init();
+    k.run(&[], &format!("{PW}\nlist\nexit\n")).success().stderr(contains("Kluis ontgrendeld"));
+}
+
+#[test]
+fn geen_ansi_codes_buiten_een_terminal() {
+    let k = Kluis::new().init();
+    k.add("GitHub", "jan", ITEM_PW);
+    let out = k
+        .cmd()
+        .env_remove("NO_COLOR")
+        .env("COLORTERM", "truecolor")
+        .args(["shell"])
+        .write_stdin(format!("{PW}\nlist\nexit\n"))
+        .assert()
+        .success();
+    let o = out.get_output();
+    assert!(!o.stdout.contains(&0x1b) && !o.stderr.contains(&0x1b), "geen escape-codes in pipes");
+    k.cmd().args(["logo"]).assert().success().stderr(contains("kleurenterminal"));
 }

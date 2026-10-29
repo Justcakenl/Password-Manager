@@ -65,18 +65,38 @@ fn start_watchdog(timeout: u64, human: String) {
                         libc::tcsetattr(0, libc::TCSANOW, &t);
                     }
                 }
+                ui::clear_screen();
                 eprintln!();
-                ui::info(&format!("Automatisch vergrendeld na {human} zonder invoer."));
+                ui::info(&format!("🔒 Automatisch vergrendeld na {human} zonder invoer."));
                 std::process::exit(0);
             }
         }
     });
 }
 
+/// Gemak in de interactieve modus: `get mijn bank` betekent `get "mijn bank"`.
+/// Geldt voor opdrachten met één naam en alleen aan/uit-opties.
+fn join_name_words(words: Vec<String>) -> Vec<String> {
+    const SIMPLE: [&str; 8] = ["get", "show", "rm", "remove", "delete", "search", "find", "ls"];
+    match words.first() {
+        Some(cmd) if SIMPLE.contains(&cmd.as_str()) && cmd != "ls" => {
+            let (flags, names): (Vec<String>, Vec<String>) =
+                words[1..].iter().cloned().partition(|w| w.starts_with('-'));
+            let mut out = vec![cmd.clone()];
+            if !names.is_empty() {
+                out.push(names.join(" "));
+            }
+            out.extend(flags);
+            out
+        }
+        _ => words,
+    }
+}
+
 fn print_help() {
     let help = localize(ShellLine::command()).render_help();
     eprintln!("{help}");
-    eprintln!("Verder: help, exit/quit/lock (vergrendelen en stoppen).");
+    eprintln!("Verder: help, exit/quit/lock (vergrendelen, scherm wissen en stoppen).");
     eprintln!("Namen met spaties zet je tussen aanhalingstekens: get \"Mijn Bank\"");
 }
 
@@ -84,17 +104,18 @@ pub fn run(paths: &VaultPaths, timeout: u64) -> Result<()> {
     if timeout == 0 || timeout > MAX_TIMEOUT {
         return Err(Error::InvalidInput("de timeout moet tussen 1 en 86400 seconden liggen".into()));
     }
-    let mut uv = commands::unlock(paths)?;
+    let mut uv = commands::login_screen(paths)?;
     let human =
         if timeout.is_multiple_of(60) { format!("{} min", timeout / 60) } else { format!("{timeout} s") };
-    ui::success(&format!(
-        "Kluis ontgrendeld. Typ 'help' voor de opdrachten of 'exit' om te vergrendelen. \
-         Na {human} zonder invoer vergrendelt de kluis vanzelf."
+    ui::success(&format!("Kluis ontgrendeld — {}.", commands::vault_summary(&uv.vault)));
+    ui::info(&format!(
+        "  Typ 'help' voor de opdrachten of 'exit' om te vergrendelen. \
+         Na {human} zonder invoer vergrendelt CakePass vanzelf."
     ));
 
     start_watchdog(timeout, human.clone());
     loop {
-        eprint!("kluis> ");
+        eprint!("{} ", ui::pink_bold("cakepass ❯"));
         io::stderr().flush()?;
         if let Wait::TimedOut = wait_for_input(timeout)? {
             eprintln!();
@@ -119,7 +140,7 @@ pub fn run(paths: &VaultPaths, timeout: u64) -> Result<()> {
             ui::error("ongeldige aanhalingstekens");
             continue;
         };
-        let argv = std::iter::once("kluis".to_string()).chain(words);
+        let argv = std::iter::once("kluis".to_string()).chain(join_name_words(words));
         let parsed = localize(ShellLine::command())
             .try_get_matches_from(argv)
             .and_then(|m| ShellLine::from_arg_matches(&m));
@@ -141,6 +162,26 @@ pub fn run(paths: &VaultPaths, timeout: u64) -> Result<()> {
         }
     }
     drop(uv);
-    ui::success("Kluis vergrendeld; de sleutel is uit het geheugen gewist.");
+    // Wis het scherm (en de scrollback), zodat getoonde geheimen weg zijn.
+    ui::clear_screen();
+    ui::success("🔒 CakePass vergrendeld; de sleutel is uit het geheugen gewist.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn w(s: &str) -> Vec<String> {
+        shlex::split(s).unwrap()
+    }
+
+    #[test]
+    fn losse_woorden_worden_een_naam() {
+        assert_eq!(join_name_words(w("get mijn bank --show")), w("get 'mijn bank' --show"));
+        assert_eq!(join_name_words(w("rm oude site -y")), w("rm 'oude site' -y"));
+        assert_eq!(join_name_words(w("get \"al goed\"")), w("get 'al goed'"));
+        assert_eq!(join_name_words(w("edit a --username b")), w("edit a --username b"), "edit niet aanraken");
+        assert_eq!(join_name_words(w("list")), w("list"));
+    }
 }

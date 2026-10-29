@@ -23,6 +23,48 @@ fn paint(stdout: bool, code: &str, text: &str) -> String {
     if on.load(Ordering::Relaxed) { format!("\x1b[{code}m{text}\x1b[0m") } else { text.to_string() }
 }
 
+/// Of er kleur gebruikt wordt op stderr (meldingen, logo).
+pub fn color_on_stderr() -> bool {
+    COLOR_STDERR.load(Ordering::Relaxed)
+}
+
+/// Grijs (voor stderr).
+pub fn dim_err(text: &str) -> String {
+    paint(false, "2", text)
+}
+
+/// CakePass-roze (voor stderr).
+pub fn pink(text: &str) -> String {
+    paint(false, "38;5;211", text)
+}
+
+/// CakePass-roze en vet (voor stderr), bijv. voor de prompt.
+pub fn pink_bold(text: &str) -> String {
+    paint(false, "1;38;5;205", text)
+}
+
+/// Een gekleurd label per soort item (voor stdout).
+pub fn kind_label(kind: kluis::vault::Kind) -> String {
+    use kluis::vault::Kind;
+    let code = match kind {
+        Kind::Login => "38;5;211",
+        Kind::Api => "38;5;117",
+        Kind::Note => "38;5;222",
+    };
+    paint(true, code, kind.label())
+}
+
+/// Wis het scherm én de scrollback (bijv. na vergrendelen), zodat getoonde
+/// geheimen niet meer zichtbaar zijn. Alleen in een terminal.
+pub fn clear_screen() {
+    use std::io::Write;
+    if std::io::stderr().is_terminal() {
+        let mut err = std::io::stderr();
+        let _ = err.write_all(b"\x1b[2J\x1b[3J\x1b[H");
+        let _ = err.flush();
+    }
+}
+
 /// Vetgedrukt (voor stdout).
 pub fn bold(text: &str) -> String {
     paint(true, "1", text)

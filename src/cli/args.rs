@@ -7,6 +7,12 @@
 use std::path::PathBuf;
 
 use clap::{ArgAction, Args, Parser, Subcommand};
+use kluis::vault::Kind;
+
+/// Lees een soort item ("login", "api" of "notitie") voor clap.
+fn parse_kind(s: &str) -> Result<Kind, String> {
+    Kind::parse(s).ok_or_else(|| format!("onbekende soort '{s}'; kies login, api of notitie"))
+}
 
 const HELP_TEMPLATE: &str = "{about-with-newline}\nGebruik: {usage}\n\n{all-args}{after-help}";
 
@@ -34,7 +40,7 @@ pub fn localize(cmd: clap::Command) -> clap::Command {
 #[command(
     name = "kluis",
     version,
-    about = "kluis – offline, versleutelde wachtwoordmanager voor de terminal",
+    about = "CakePass – offline, versleutelde kluis voor wachtwoorden, API-sleutels en notities\n(commando: kluis)",
     help_template = HELP_TEMPLATE,
     disable_help_flag = true,
     disable_version_flag = true,
@@ -43,11 +49,13 @@ pub fn localize(cmd: clap::Command) -> clap::Command {
     subcommand_value_name = "OPDRACHT",
     next_help_heading = "Opties",
     after_help = "Voorbeelden:\n  \
+        kluis                         inlogscherm + interactieve modus\n  \
         kluis init                    nieuwe kluis maken\n  \
-        kluis add GitHub              item toevoegen (vraagt alles één voor één)\n  \
+        kluis add GitHub              login toevoegen (vraagt alles één voor één)\n  \
+        kluis add OpenAI --type api   API-sleutel opslaan\n  \
+        kluis add Herstelcodes --type notitie   beveiligde notitie\n  \
         kluis get GitHub              wachtwoord naar klembord (20 s)\n  \
-        kluis generate --passphrase   passphrase maken\n  \
-        kluis shell                   één keer ontgrendelen, auto-vergrendeling\n\n\
+        kluis generate --passphrase   passphrase maken\n\n\
         Wachtwoorden worden nooit als argument meegegeven; je typt ze in een verborgen prompt."
 )]
 pub struct Cli {
@@ -59,6 +67,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub no_color: bool,
 
+    /// Geen animatie op het inlogscherm
+    #[arg(long, global = true)]
+    pub no_animation: bool,
+
     /// Toon deze hulp
     #[arg(short = 'h', long = "help", action = ArgAction::Help, global = true)]
     help: Option<bool>,
@@ -67,8 +79,9 @@ pub struct Cli {
     #[arg(short = 'V', long = "version", action = ArgAction::Version)]
     version: Option<bool>,
 
+    /// Zonder opdracht opent het inlogscherm met de interactieve modus.
     #[command(subcommand)]
-    pub command: Cmd,
+    pub command: Option<Cmd>,
 }
 
 /// Wordt gebruikt om regels in `kluis shell` te ontleden.
@@ -99,10 +112,10 @@ pub enum Cmd {
         kdf: KdfArgs,
     },
 
-    /// Voeg een item toe (zonder opties vraagt kluis alle velden)
+    /// Voeg een login, API-sleutel of notitie toe (zonder opties vraagt kluis alles)
     Add(AddArgs),
 
-    /// Toon een item en kopieer het wachtwoord naar het klembord
+    /// Toon een item en kopieer het geheim (wachtwoord, sleutel, notitie) naar het klembord
     #[command(alias = "show")]
     Get(GetArgs),
 
@@ -119,15 +132,18 @@ pub enum Cmd {
         yes: bool,
     },
 
-    /// Toon alle items (zonder wachtwoorden)
+    /// Toon alle items (zonder geheimen)
     #[command(alias = "ls")]
     List {
         /// Alleen items met deze tag
         #[arg(short, long)]
         tag: Option<String>,
+        /// Alleen deze soort: login, api of notitie
+        #[arg(long = "type", value_name = "SOORT", value_parser = parse_kind)]
+        kind: Option<Kind>,
     },
 
-    /// Zoek in naam, gebruikersnaam, URL en tags
+    /// Zoek in naam, soort, tags, gebruikersnaam en URL
     #[command(alias = "find")]
     Search {
         /// Zoekterm (hoofdletters maken niet uit)
@@ -171,6 +187,9 @@ pub enum Cmd {
 
     /// Toon informatie over de kluis en de beveiliging (geen wachtwoord nodig)
     Info,
+
+    /// Toon het CakePass-logo (met animatie)
+    Logo,
 
     /// Interactieve modus: één keer ontgrendelen, vergrendelt bij inactiviteit
     Shell {
@@ -250,10 +269,13 @@ pub struct GenArgs {
 pub struct AddArgs {
     /// Naam van het item, bijv. "GitHub"
     pub name: String,
-    /// Gebruikersnaam of e-mailadres
+    /// Soort item: login, api (API-sleutel/token) of notitie
+    #[arg(long = "type", short = 'k', value_name = "SOORT", value_parser = parse_kind, default_value = "login")]
+    pub kind: Kind,
+    /// Gebruikersnaam of e-mailadres (bij een API-sleutel: account of sleutel-ID)
     #[arg(short, long)]
     pub username: Option<String>,
-    /// Webadres
+    /// Webadres (bij een API-sleutel: de service)
     #[arg(long)]
     pub url: Option<String>,
     /// Tags, gescheiden door komma's
@@ -270,10 +292,10 @@ pub struct AddArgs {
 pub struct GetArgs {
     /// Naam van het item
     pub name: String,
-    /// Toon wachtwoord en notities op het scherm (let op meekijkers!)
+    /// Toon het geheim en de notities op het scherm (let op meekijkers!)
     #[arg(long)]
     pub show: bool,
-    /// Kopieer de gebruikersnaam in plaats van het wachtwoord
+    /// Kopieer de gebruikersnaam in plaats van het geheim
     #[arg(long, conflicts_with = "show")]
     pub copy_username: bool,
     /// Kopieer niets
@@ -297,13 +319,13 @@ pub struct EditArgs {
     /// Nieuwe tags (vervangt de oude), gescheiden door komma's
     #[arg(short, long, value_delimiter = ',')]
     pub tags: Option<Vec<String>>,
-    /// Typ een nieuw wachtwoord in (verborgen prompt)
+    /// Typ een nieuw wachtwoord of nieuwe API-sleutel in (verborgen prompt)
     #[arg(long, conflicts_with = "generate")]
     pub password: bool,
     /// Genereer een nieuw wachtwoord
     #[arg(short, long)]
     pub generate: bool,
-    /// Typ nieuwe notities in
+    /// Typ nieuwe notities in (bij een notitie: de nieuwe inhoud)
     #[arg(long)]
     pub notes: bool,
     #[command(flatten)]

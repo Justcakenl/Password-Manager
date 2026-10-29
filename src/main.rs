@@ -30,6 +30,9 @@ fn main() -> ExitCode {
     let matches = cli::args::localize(cli::args::Cli::command()).get_matches();
     let args = cli::args::Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     cli::ui::init(args.no_color);
+    if args.no_animation {
+        cli::logo::disable();
+    }
     match cli::commands::run(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(kluis::Error::Cancelled) => {

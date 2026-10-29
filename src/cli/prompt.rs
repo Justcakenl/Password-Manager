@@ -100,6 +100,44 @@ pub fn line(prompt: &str) -> Result<String> {
     }
 }
 
+/// Vraag om tekst van meerdere regels (voor notities). In een terminal sluit
+/// je af met een regel met alleen een punt (`.`) of met Ctrl+D.
+pub fn multiline(intro: &str) -> Result<Zeroizing<String>> {
+    let tty = stdin_is_tty();
+    if tty {
+        super::ui::info(intro);
+        super::ui::info(&super::ui::dim_err(
+            "  Sluit af met een regel met alleen een punt (.) of druk op Ctrl+D.",
+        ));
+    }
+    let mut out = Zeroizing::new(String::new());
+    loop {
+        if tty {
+            eprint!("{} ", super::ui::pink("│"));
+            io::stderr().flush()?;
+        }
+        match read_raw_line()? {
+            None => {
+                if tty {
+                    eprintln!();
+                }
+                break;
+            }
+            Some(line) if line.as_str() == "." => break,
+            Some(line) => {
+                if out.len() + line.len() > 64 * 1024 {
+                    return Err(Error::InvalidInput("de tekst is te lang (max. 64 KiB)".into()));
+                }
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(&line);
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Vraag om ja/nee. Standaard is "nee".
 pub fn confirm(prompt: &str) -> Result<bool> {
     let answer = line(&format!("{prompt} [j/N] "))?.to_lowercase();

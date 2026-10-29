@@ -12,7 +12,7 @@ use std::path::Path;
 
 use crate::crypto::ItemKey;
 use crate::error::{Error, Result};
-use crate::vault::{Entry, NewEntry, Vault};
+use crate::vault::{Entry, Kind, NewEntry, Vault};
 
 const NAME: &[&str] = &["name", "title", "account", "item name", "site"];
 const URL: &[&str] = &["url", "login_uri", "uri", "website", "web site", "login url", "urls"];
@@ -21,6 +21,7 @@ const USERNAME: &[&str] =
 const PASSWORD: &[&str] = &["password", "login_password", "pass"];
 const NOTES: &[&str] = &["notes", "note", "extra", "comments", "comment"];
 const TAGS: &[&str] = &["tags", "folder", "group", "grouping", "category", "collection"];
+const TYPE: &[&str] = &["type", "item type"];
 
 #[derive(Default)]
 struct Columns {
@@ -30,6 +31,7 @@ struct Columns {
     password: Option<usize>,
     notes: Option<usize>,
     tags: Option<usize>,
+    kind: Option<usize>,
 }
 
 fn find(headers: &[String], names: &[&str]) -> Option<usize> {
@@ -71,6 +73,7 @@ pub fn parse_csv(reader: impl Read, key: &ItemKey) -> Result<CsvImport> {
         password: find(&headers, PASSWORD),
         notes: find(&headers, NOTES),
         tags: find(&headers, TAGS),
+        kind: find(&headers, TYPE),
     };
     if cols.password.is_none() && cols.name.is_none() {
         return Err(Error::InvalidInput(
@@ -91,7 +94,13 @@ pub fn parse_csv(reader: impl Read, key: &ItemKey) -> Result<CsvImport> {
             }
         }
         let get = |c: Option<usize>| c.and_then(|i| record.get(i)).unwrap_or("").trim().to_string();
+        // Bitwarden markeert beveiligde notities met type "note".
+        let kind = match get(cols.kind).to_lowercase().as_str() {
+            "note" | "securenote" | "secure note" | "notitie" => Kind::Note,
+            _ => Kind::Login,
+        };
         let mut fields = NewEntry {
+            kind,
             name: get(cols.name),
             username: get(cols.username),
             password: record.get(cols.password.unwrap_or(usize::MAX)).unwrap_or("").to_string(),
@@ -188,12 +197,22 @@ mod tests {
         let r = parse(csv).unwrap();
         assert_eq!(r.vault.len(), 2);
         let e = r.vault.get("GitHub").unwrap();
-        assert_eq!(e.username(), "jan");
+        assert_eq!(e.username(&test_item_key(1)).unwrap().as_str(), "jan");
         assert_eq!(pw(e), "p,w\"1");
-        assert_eq!(e.url(), "https://github.com");
+        assert_eq!(e.url(&test_item_key(1)).unwrap().as_str(), "https://github.com");
         assert_eq!(e.notes(&test_item_key(1)).unwrap().as_str(), "mijn notitie");
         assert_eq!(e.tags(), &["Werk".to_string()]);
-        assert_eq!(r.vault.get("GitHub (2)").unwrap().username(), "piet");
+        assert_eq!(r.vault.get("GitHub (2)").unwrap().username(&test_item_key(1)).unwrap().as_str(), "piet");
+    }
+
+    #[test]
+    fn bitwarden_notitie() {
+        let csv = "folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp\n\
+                   ,,note,Herstelcodes,\"code 1\ncode 2\",,0,,,,\n";
+        let r = parse(csv).unwrap();
+        let e = r.vault.get("Herstelcodes").unwrap();
+        assert_eq!(e.kind(), Kind::Note);
+        assert_eq!(e.secret(&test_item_key(1)).unwrap().as_str(), "code 1\ncode 2");
     }
 
     #[test]
@@ -228,8 +247,8 @@ mod tests {
             "name,username,password,url,notes\nx,\"u\u{1b}[31m\",pw,\"https://a\u{7}\",\"r1\nr2\u{1b}[2J\"\n";
         let r = parse(csv).unwrap();
         let e = r.vault.get("x").unwrap();
-        assert!(!e.username().contains('\u{1b}'));
-        assert!(!e.url().contains('\u{7}'));
+        assert!(!e.username(&test_item_key(1)).unwrap().contains('\u{1b}'));
+        assert!(!e.url(&test_item_key(1)).unwrap().contains('\u{7}'));
         assert_eq!(e.notes(&test_item_key(1)).unwrap().as_str(), "r1\nr2 [2J");
     }
 

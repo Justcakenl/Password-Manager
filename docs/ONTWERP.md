@@ -34,8 +34,10 @@ De CLI is een dunne laag. Alle beveiligingslogica zit in de bibliotheek.
 | Versleuteling | XChaCha20-Poly1305, nieuwe willekeurige nonce van 24 bytes per keer opslaan | Authenticated encryption; een willekeurige nonce van 24 bytes is veilig |
 | Header | Volledige header is AEAD "associated data" | Elke wijziging, ook aan de parameters, valt op |
 | Sleutelscheiding | HKDF-SHA256 leidt uit de Argon2-sleutel een bestandssleutel en een itemsleutel af | Elke sleutel dient één doel |
-| Tweede laag | Elk wachtwoord en elke notitie apart versleuteld (XChaCha20-Poly1305, eigen nonce, veldnaam als associated data) | Ook in een geopende kluis staan geheimen alleen versleuteld in het geheugen; ontsleutelen gebeurt per item, op verzoek |
-| Migratie | Formaat 1 (één laag) wordt bij openen automatisch omgezet naar formaat 2 | Bestaande kluizen blijven werken |
+| Tweede laag | Alle inhoud van elk item (gebruikersnaam, URL, wachtwoord/API-sleutel, notities) per veld apart versleuteld (XChaCha20-Poly1305, eigen nonce, veldnaam als associated data) | Ook in een geopende kluis staat de inhoud alleen versleuteld in het geheugen; ontsleutelen gebeurt per veld, op het moment dat het nodig is |
+| Soorten items | login, api, notitie (schema 3) | Eén kluis voor wachtwoorden, API-sleutels en beveiligde notities |
+| Inlogscherm | 3D-gerenderd logo (eigen kleine renderer, geen extra crates), alleen in een kleurenterminal | Mooi, maar nooit in scripts of pipes; wist het scherm bij vergrendelen |
+| Migratie | Formaat 1 en inhoudsschema 1/2 worden bij openen automatisch omgezet naar formaat 2 / schema 3 | Bestaande kluizen blijven werken |
 | Willekeur | Alleen `getrandom` (OS-CSPRNG) | Geen eigen of zwakke RNG |
 | Geheugen | Wissende globale allocator + `SecureBuf` (mlock, MADV_DONTDUMP) + `secrecy`/`zeroize` | Zo weinig mogelijk kopieën van geheimen in RAM en swap |
 | Proces | `RLIMIT_CORE=0` en `PR_SET_DUMPABLE=0` | Geen core dumps, geen ptrace door andere processen van dezelfde gebruiker |

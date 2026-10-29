@@ -1,6 +1,6 @@
 # Voortgang `kluis`
 
-Laatst bijgewerkt: stap 5 (tweede versleutelingslaag per wachtwoord).
+Laatst bijgewerkt: stap 6 (API-sleutels, notities, CakePass-inlogscherm in 3D).
 Branch: `claude/kluis-v1` (nog niet samengevoegd met `main`).
 
 ## Wat ik vanavond op mijn computer moet doen
@@ -63,6 +63,20 @@ Branch: `claude/kluis-v1` (nog niet samengevoegd met `main`).
   het geheugen van een draaiende `kluis shell` te doorzoeken: 0 leesbare
   kopieën van wachtwoord en notitie, ook direct na `get --show`.
 
+- [x] **Stap 6 – Meer soorten items + CakePass-inlogscherm**:
+  - Naast logins nu ook **API-sleutels** (`--type api`) en **beveiligde
+    notities** van meerdere regels (`--type notitie`).
+  - **Alle inhoud** van elk item is nu per veld versleuteld: ook gebruikersnaam
+    en URL (schema 3). Alleen naam, soort en tags zijn leesbaar in een
+    geopende kluis. Oude kluizen worden automatisch omgezet.
+  - **Inlogscherm**: `kluis` (zonder opdracht) toont een 3D-gerenderd,
+    draaiend CakePass-logo (roze glazuur, cakelagen, hagelslag, glans) en
+    vraagt het hoofdwachtwoord (3 pogingen). Bij vergrendelen worden scherm
+    en scrollback gewist. Voorbeeld: `docs/cakepass-login.gif`.
+  - Geheugenscan van een geopende kluis: wachtwoord, API-sleutel, notitie,
+    gebruikersnaam en URL staan er 0 keer leesbaar in, ook na `list` en
+    `get --show`.
+
 ## Nog te doen
 
 - [ ] De punten onder "Testen op Arch" op je eigen computer controleren.
@@ -95,6 +109,11 @@ Zie `docs/ONTWERP.md` voor de uitleg. Kort samengevat:
   kwetsbaarheid hebben (RUSTSEC-2026-0009).
 - De PKGBUILD staat in `packaging/arch/`, omdat makepkg zelf een map `src/`
   aanmaakt die anders botst met de Rust-broncode.
+- Merknaam **CakePass**, maar het commando blijft `kluis` (kort en Nederlands).
+  Omdopen naar `cakepass` kan later nog, zolang er geen echte kluis is.
+- Het logo wordt alleen getoond bij `kluis`, `kluis shell`, `kluis init` en
+  `kluis logo`, niet bij losse opdrachten zoals `kluis get` (dat zou snel
+  irritant worden).
 - Twee lagen: bestandssleutel en itemsleutel worden met HKDF-SHA256 uit de
   Argon2-sleutel afgeleid. Naam, gebruikersnaam, URL en tags zijn niet apart
   versleuteld (wel op schijf), zodat `list` en `search` werken zonder één
@@ -108,7 +127,7 @@ Zie `docs/ONTWERP.md` voor de uitleg. Kort samengevat:
 
 | Controle | Resultaat |
 |---|---|
-| `cargo test` | 94 geslaagd (68 bibliotheek, 7 CLI-unit, 19 integratie) |
+| `cargo test` | 108 geslaagd (71 bibliotheek, 12 CLI-unit, 25 integratie) |
 | `cargo clippy --all-targets -- -D warnings` | geen meldingen |
 | `cargo audit` | geen kwetsbaarheden (140 crates gescand) |
 | `cargo build --release --locked` | gelukt (Ubuntu-container) |
@@ -148,6 +167,15 @@ Dit kon NIET getest worden in de cloud. Doe het zelf en vink af:
 - [ ] Kleuren: groen ✔ en gele waarschuwingen in je terminal; geen kleurcodes
       bij `kluis list | cat` of met `NO_COLOR=1`
 - [ ] `kluis shell`: na 5 min niets doen verschijnt "Automatisch vergrendeld"
+- [ ] **Inlogscherm**: typ `kluis`. Draait het 3D-logo soepel in je terminal
+      (kitty, Alacritty, Konsole, GNOME Terminal)? Zie je roze letters met
+      cakelagen? Lelijk of schokkerig? Probeer `kluis logo` in een breder
+      venster, of zet het uit met `--no-animation`.
+- [ ] Ziet het logo er goed uit als je terminal geen truecolor meldt?
+      (`echo $COLORTERM`; leeg = 256 kleuren)
+- [ ] Na `exit` in de shell: is het scherm leeg en kun je niet terugscrollen
+      naar getoonde wachtwoorden?
+- [ ] API-sleutel plakken in de verborgen prompt (Ctrl+Shift+V) werkt
 - [ ] Core dumps: open `kluis shell`, doe in een tweede terminal
       `kill -SEGV $(pgrep -x kluis)` en daarna `coredumpctl list` → geen
       dump van kluis
