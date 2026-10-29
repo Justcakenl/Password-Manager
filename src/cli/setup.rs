@@ -11,7 +11,7 @@
 
 use std::fs;
 
-use cakepass::storage::VaultPaths;
+use cakepass::storage::{UnlockedVault, VaultPaths};
 use cakepass::{Error, Result};
 
 use super::args::{ConfigAction, ConfigKey, KdfArgs};
@@ -35,8 +35,14 @@ fn ask_minutes(default: u64) -> Result<u64> {
     })
 }
 
-/// The first-time setup wizard.
+/// The first-time setup wizard (`cakepass setup`).
 pub fn run(paths: &VaultPaths, kdf_args: &KdfArgs) -> Result<()> {
+    wizard(paths, kdf_args).map(drop)
+}
+
+/// The wizard itself. Returns the new vault, still unlocked, when it created
+/// one (so the caller can use it right away without asking again).
+pub fn wizard(paths: &VaultPaths, kdf_args: &KdfArgs) -> Result<Option<UnlockedVault>> {
     let kdf = commands::kdf_from_args(kdf_args)?;
     let have_vault = fs::symlink_metadata(&paths.file).is_ok();
     let mut cfg = config::load();
@@ -59,15 +65,16 @@ pub fn run(paths: &VaultPaths, kdf_args: &KdfArgs) -> Result<()> {
     ui::success("Settings saved.");
 
     ui::info(&ui::pink_bold("\nStep 3 of 3 — Master password"));
-    if have_vault {
+    let created = if have_vault {
         ui::info(&format!(
             "  A vault already exists at {}; keeping it as it is.\n  \
              (Change its master password with `cakepass passwd`.)",
             paths.file.display()
         ));
+        None
     } else {
-        commands::create_vault(paths, kdf)?;
-    }
+        Some(commands::create_vault(paths, kdf)?)
+    };
 
     ui::success("All set!");
     ui::info("  Start CakePass:      cakepass");
@@ -77,7 +84,7 @@ pub fn run(paths: &VaultPaths, kdf_args: &KdfArgs) -> Result<()> {
     if !have_vault {
         ui::info("  Make regular copies of the vault file (see the README, \"Backups\").");
     }
-    Ok(())
+    Ok(created)
 }
 
 /// `cakepass config` (show) and `cakepass config set <key> <value>`.

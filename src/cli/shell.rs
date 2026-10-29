@@ -102,7 +102,8 @@ fn print_help() {
     );
 }
 
-fn describe(timeout: u64) -> String {
+/// "5 min" or "90 s".
+pub(super) fn describe(timeout: u64) -> String {
     if timeout.is_multiple_of(60) { format!("{} min", timeout / 60) } else { format!("{timeout} s") }
 }
 

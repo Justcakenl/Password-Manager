@@ -141,15 +141,32 @@ pub(super) fn warn_if_weak_kdf(p: &KdfParams) {
     }
 }
 
-fn after_unlock(uv: &mut UnlockedVault) {
-    for w in uv.take_warnings() {
-        ui::warn(&w);
-    }
-    if let Some(n) = update::pending_notice() {
-        ui::info(&n);
+/// Something to tell the user right after unlocking.
+pub struct Notice {
+    pub warning: bool,
+    pub text: String,
+}
+
+/// Warnings from opening the vault, an update notice and the mlock state.
+pub(super) fn unlock_notices(uv: &mut UnlockedVault) -> Vec<Notice> {
+    let mut out: Vec<Notice> =
+        uv.take_warnings().into_iter().map(|text| Notice { warning: true, text }).collect();
+    if let Some(text) = update::pending_notice() {
+        out.push(Notice { warning: false, text });
     }
     if secure_mem::mlock_failed() {
-        ui::warn("Memory could not be locked (mlock). Secrets may end up in swap. See `cakepass info`.");
+        out.push(Notice {
+            warning: true,
+            text: "Memory could not be locked (mlock). Secrets may end up in swap. See `cakepass info`."
+                .into(),
+        });
+    }
+    out
+}
+
+fn after_unlock(uv: &mut UnlockedVault) {
+    for n in unlock_notices(uv) {
+        if n.warning { ui::warn(&n.text) } else { ui::info(&n.text) }
     }
 }
 
@@ -167,6 +184,13 @@ pub fn unlock(paths: &VaultPaths) -> Result<UnlockedVault> {
 
 /// The login screen: animated logo and at most three attempts.
 pub fn login_screen(paths: &VaultPaths) -> Result<UnlockedVault> {
+    let mut uv = login(paths)?;
+    after_unlock(&mut uv);
+    Ok(uv)
+}
+
+/// The login screen without the messages afterwards (see [`unlock_notices`]).
+pub(super) fn login(paths: &VaultPaths) -> Result<UnlockedVault> {
     storage::read_header(&paths.file)?;
     logo::show(true);
     logo::tagline(TAGLINE);
@@ -174,9 +198,8 @@ pub fn login_screen(paths: &VaultPaths) -> Result<UnlockedVault> {
     for attempt in 1..=ATTEMPTS {
         let pw = prompt::secret(&format!("  {} ", ui::pink_bold("🔑 Master password ❯")))?;
         match UnlockedVault::open(paths.clone(), pw.expose_secret().as_bytes()) {
-            Ok(mut uv) => {
+            Ok(uv) => {
                 drop(pw);
-                after_unlock(&mut uv);
                 return Ok(uv);
             }
             Err(Error::Decrypt) if attempt < ATTEMPTS && prompt::stdin_is_tty() => {
@@ -195,30 +218,50 @@ fn reconfirm(uv: &UnlockedVault) -> Result<()> {
     if uv.verify_password(pw.expose_secret().as_bytes())? { Ok(()) } else { Err(Error::Decrypt) }
 }
 
-fn split_tags(s: &str) -> Vec<String> {
+pub(super) fn split_tags(s: &str) -> Vec<String> {
     s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect()
+}
+
+/// What to generate: a password or a passphrase. Shared by the command line
+/// (`generate`, `add --generate`, ...) and the generator of the screen mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Recipe {
+    Password(PasswordOptions),
+    Passphrase(PassphraseOptions),
+}
+
+impl Recipe {
+    pub(super) fn from_args(g: &GenArgs) -> Recipe {
+        if g.passphrase {
+            Recipe::Passphrase(PassphraseOptions { words: g.words, separator: g.separator.clone() })
+        } else {
+            Recipe::Password(PasswordOptions {
+                length: g.length,
+                uppercase: !g.no_uppercase,
+                lowercase: !g.no_lowercase,
+                digits: !g.no_digits,
+                symbols: !g.no_symbols,
+                exclude_lookalikes: g.no_lookalikes,
+            })
+        }
+    }
+
+    /// The secret and its strength in bits.
+    pub(super) fn generate(&self) -> Result<(Zeroizing<String>, f64)> {
+        match self {
+            Recipe::Password(o) => Ok((generator::generate_password(o)?, o.entropy_bits())),
+            Recipe::Passphrase(o) => Ok((generator::generate_passphrase(o)?, o.entropy_bits())),
+        }
+    }
 }
 
 /// Generate a password or passphrase according to the options.
 fn generate_secret(g: &GenArgs) -> Result<(Zeroizing<String>, f64)> {
-    if g.passphrase {
-        let opts = PassphraseOptions { words: g.words, separator: g.separator.clone() };
-        Ok((generator::generate_passphrase(&opts)?, opts.entropy_bits()))
-    } else {
-        let opts = PasswordOptions {
-            length: g.length,
-            uppercase: !g.no_uppercase,
-            lowercase: !g.no_lowercase,
-            digits: !g.no_digits,
-            symbols: !g.no_symbols,
-            exclude_lookalikes: g.no_lookalikes,
-        };
-        Ok((generator::generate_password(&opts)?, opts.entropy_bits()))
-    }
+    Recipe::from_args(g).generate()
 }
 
 /// "The password" / "The API key" / "The note".
-fn secret_noun(kind: Kind) -> &'static str {
+pub(super) fn secret_noun(kind: Kind) -> &'static str {
     match kind {
         Kind::Login => "The password",
         Kind::Api => "The API key",
@@ -227,7 +270,7 @@ fn secret_noun(kind: Kind) -> &'static str {
 }
 
 /// "Login" / "API key" / "Note" (for messages).
-fn kind_noun(kind: Kind) -> &'static str {
+pub(super) fn kind_noun(kind: Kind) -> &'static str {
     match kind {
         Kind::Login => "Login",
         Kind::Api => "API key",
@@ -235,13 +278,19 @@ fn kind_noun(kind: Kind) -> &'static str {
     }
 }
 
-/// Copy to the clipboard and have it cleared after 20 s.
-fn copy_to_clipboard(secret: &str, what: &str) -> Result<()> {
+/// Copy to the clipboard and start the helper that clears it after 20 s.
+/// Returns the name of the clipboard tool that was used.
+pub(super) fn copy_secret(secret: &str) -> Result<&'static str> {
     let tool = clipboard::detect().ok_or(Error::NoClipboard)?;
     clipboard::copy_with_auto_clear(tool, secret.as_bytes())?;
+    Ok(tool.name())
+}
+
+/// Copy to the clipboard and have it cleared after 20 s.
+fn copy_to_clipboard(secret: &str, what: &str) -> Result<()> {
+    let tool = copy_secret(secret)?;
     ui::success(&format!(
-        "{what} was copied to the clipboard (via {}); it will be cleared in {CLEAR_AFTER_SECS} seconds.",
-        tool.name()
+        "{what} was copied to the clipboard (via {tool}); it will be cleared in {CLEAR_AFTER_SECS} seconds."
     ));
     Ok(())
 }
@@ -312,7 +361,7 @@ enum Review {
 }
 
 /// "24 characters, about 150 bits" (generated) or "... strength 3/4" (typed).
-fn strength_text(secret: &str, bits: Option<f64>) -> String {
+pub(super) fn strength_text(secret: &str, bits: Option<f64>) -> String {
     let n = secret.chars().count();
     match bits {
         Some(b) => format!("{n} characters, about {b:.0} bits"),
@@ -549,22 +598,17 @@ fn add_item(
             Kind::Api => (ask_api_key()?, None),
         }
     };
-    let entry = Entry::new(
-        NewEntry {
-            name: a.name.clone(),
-            kind,
-            username,
-            email,
-            password: secret.to_string(),
-            url,
-            notes: notes.to_string(),
-            tags,
-        },
-        uv.item_key(),
-    )?;
-    let name = entry.name().to_string();
-    uv.vault.add(entry)?;
-    uv.save()?;
+    let fields = NewEntry {
+        name: a.name.clone(),
+        kind,
+        username,
+        email,
+        password: secret.to_string(),
+        url,
+        notes: notes.to_string(),
+        tags,
+    };
+    let name = add_entry(uv, fields)?;
     ui::success(&format!("{} '{name}' saved (encrypted).", kind_noun(kind)));
     if let Some(bits) = generated_bits {
         report_generated(&name, &secret, bits);
@@ -572,10 +616,30 @@ fn add_item(
     Ok(())
 }
 
+/// Encrypt a new item, add it and save the vault. If saving fails the item
+/// is taken out again, so memory never holds what the file does not.
+/// Used by `add`, `generate --save` and the screen mode.
+pub(super) fn add_entry(uv: &mut UnlockedVault, fields: NewEntry) -> Result<String> {
+    let entry = Entry::new(fields, uv.item_key())?;
+    let name = entry.name().to_string();
+    uv.vault.add(entry)?;
+    if let Err(e) = uv.save() {
+        let _ = uv.vault.remove(&name);
+        return Err(e);
+    }
+    Ok(name)
+}
+
+/// Whether a (non-empty) e-mail address looks wrong.
+pub(super) fn email_looks_odd(email: &str) -> bool {
+    let e = email.trim();
+    !e.is_empty() && !(e.contains('@') && !e.starts_with('@') && !e.ends_with('@') && !e.contains(' '))
+}
+
 /// A gentle hint (not an error) when an e-mail address looks wrong.
 fn warn_if_not_email(email: &str) {
-    let e = email.trim();
-    if !e.is_empty() && !(e.contains('@') && !e.starts_with('@') && !e.ends_with('@') && !e.contains(' ')) {
+    if email_looks_odd(email) {
+        let e = email.trim();
         ui::warn(&format!("'{}' does not look like an e-mail address (saved anyway).", ui::safe(e, false)));
     }
 }
@@ -653,7 +717,7 @@ fn get(uv: &UnlockedVault, g: &GetArgs) -> Result<()> {
     }
 }
 
-fn capitalize(s: &str) -> String {
+pub(super) fn capitalize(s: &str) -> String {
     let mut c = s.chars();
     c.next().map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
 }
