@@ -67,19 +67,20 @@ Prefer to do it by hand? See [Manual install](#manual-install).
 ## Contents
 
 1. [First-time setup](#first-time-setup)
-2. [Daily use](#daily-use)
-3. [Item types: logins, API keys and notes](#item-types-logins-api-keys-and-notes)
-4. [Generating passwords](#generating-passwords)
-5. [Login screen, settings and auto-lock](#login-screen-settings-and-auto-lock)
-6. [Switching from another password manager (CSV)](#switching-from-another-password-manager-csv)
-7. [Backups](#backups)
-8. [Updating](#updating)
-9. [Forgot your master password?](#forgot-your-master-password)
-10. [How the security works](#how-the-security-works)
-11. [Security review and remaining risks](#security-review-and-remaining-risks)
-12. [Troubleshooting](#troubleshooting)
-13. [Manual install](#manual-install)
-14. [For later](#for-later)
+2. [Using the screen (arrow keys)](#using-the-screen-arrow-keys)
+3. [Daily use (commands)](#daily-use-commands)
+4. [Item types: logins, API keys and notes](#item-types-logins-api-keys-and-notes)
+5. [Generating passwords](#generating-passwords)
+6. [Login screen, settings and auto-lock](#login-screen-settings-and-auto-lock)
+7. [Switching from another password manager (CSV)](#switching-from-another-password-manager-csv)
+8. [Backups](#backups)
+9. [Updating](#updating)
+10. [Forgot your master password?](#forgot-your-master-password)
+11. [How the security works](#how-the-security-works)
+12. [Security review and remaining risks](#security-review-and-remaining-risks)
+13. [Troubleshooting](#troubleshooting)
+14. [Manual install](#manual-install)
+15. [For later](#for-later)
 
 ---
 
@@ -105,8 +106,8 @@ Step 3 of 3 — Master password
 - **Animation**: the 3D CakePass logo that spins in when you start the program.
   Turn it off if you prefer a still logo; change it later with
   `cakepass config set animation off`.
-- **Auto-lock**: after this many idle minutes the interactive mode locks itself
-  and wipes your secrets from memory.
+- **Auto-lock**: after this many idle minutes CakePass (the screen and the line
+  mode) locks itself and wipes your secrets from memory.
 - **Master password**: the **only** key to your vault. `cakepass` checks it with
   zxcvbn (score 3 of 4 or higher). A great choice is a phrase of five or more
   random words; let cakepass make one: `cakepass generate --passphrase --show`.
@@ -119,14 +120,106 @@ The vault goes to `~/.local/share/cakepass/vault.enc` (or
 `$XDG_DATA_HOME/cakepass/vault.enc`). Use `--vault <path>` or the environment
 variable `CAKEPASS_VAULT` to choose another place.
 
+When the wizard has created your vault it asks **"Open CakePass now?"**; press
+Enter and you are in the screen described below.
+
 ---
 
-## Daily use
+## Using the screen (arrow keys)
 
-Type `cakepass` to open the login screen and the interactive mode (see
-[below](#login-screen-settings-and-auto-lock)). Or run single commands; each one
-asks for your master password in a hidden prompt (you see nothing while typing,
-that is on purpose).
+Type `cakepass`, enter your master password, and you get a screen that you use
+with the **arrow keys, Enter, Esc and a few letters**. You never have to
+remember a command: the bottom line always shows the keys that work right now,
+and **`?`** shows them all.
+
+```text
+ CakePass  vault.enc                                              locks in 4:59
+ All 3   Logins 1   API keys 1   Notes 1                               / search
+┌─ Items ───────────────────────────────────┬─ Details ────────────────────────┐
+│▌ login  GitHub               john         │ Name        GitHub               │
+│  api    OpenAI               proj-1       │ Type        login                │
+│  note   Recovery codes                    │ Username    john                 │
+│                                           │ E-mail      john@example.org     │
+│                                           │ URL         https://github.com   │
+│                                           │ Tags        work, code           │
+│                                           │ Modified    2026-10-29 18:10 UTC │
+│                                           │ Password    ••••••••             │
+│                                           │ Notes       ••••••••             │
+│                                           │ Enter shows · c copies · e edits │
+└───────────────────────────────────────────┴──────────────────────────────────┘
+ 3 items: 1 login · 1 API key · 1 note
+ ↑↓ move  Enter show  c copy  a add  q quit  e edit  d delete  / search  ? help
+```
+
+**The list**
+
+| Key | What it does |
+|---|---|
+| ↑ ↓, PgUp PgDn, Home End | choose an item |
+| ← → (or Tab) | switch between All · Logins · API keys · Notes |
+| `/` | search in name, type, tags, username, e-mail and URL (never in passwords or notes). Any key that is not a shortcut (a capital letter, a digit) starts the search too. Esc clears it |
+| Enter or `v` | show / hide the password, API key and notes. They hide themselves after **10 seconds**, and when you choose another item or open another screen |
+| `c` | copy the password, API key or note to the clipboard; it is **cleared after 20 seconds** |
+| `u` / `m` | copy the username / the e-mail address |
+| `a` or `n` | add an item |
+| `e` | edit the selected item |
+| `d` or Delete | delete it (asks first; the answer is "no" unless you choose "Delete") |
+| `g` | password generator |
+| `s` | settings |
+| `l` | lock: wipe the key from memory and close |
+| `q` or Ctrl+C | quit (that locks too) |
+| `?` | help |
+
+**Adding and editing** (`a`, `e`): a form with the fields Name, Type, Username
+(for an API key: Account/ID), E-mail, URL, Tags, Password (or API key) and Notes.
+
+| Key | What it does |
+|---|---|
+| ↑ ↓, Tab, Shift+Tab | move between the fields (Enter goes to the next field) |
+| ← → Home End, Backspace Delete | edit the text; Ctrl+U clears the field |
+| ← → on *Type* | login, API key or note (a note has only a name, tags and its text) |
+| Ctrl+R | show / hide the password while you type |
+| Ctrl+G | open the generator; Enter puts the password in the field |
+| Enter in *Notes* | a new line |
+| Ctrl+S (or the Save button) | save |
+| Esc | cancel (asks first when you changed something) |
+
+When you edit an item, the password field shows `•••••••• (unchanged)`. Leave it
+and the password stays as it is; type and you replace it; Ctrl+R shows it.
+Pasting (Ctrl+Shift+V) works in every field, also for long API keys: pasted text
+is always just text, it never triggers a shortcut.
+
+**The generator** (`g`, or Ctrl+G in the form) shows a new password as dots, its
+strength in bits, and the options: ↑ ↓ choose an option, ← → change it (length,
+upper/lowercase, digits, symbols, no look-alikes, or a passphrase with the number
+of words and the separator). `r` makes a new one, `v` shows it, `e` lets you type
+your own (twice), `c` copies it, Enter uses it, Esc cancels. Opened from the list,
+Enter asks for a name and saves it as a new login (like `cakepass generate --save`).
+
+**Settings** (`s`): the startup animation (on/off), the auto-lock time (← → one
+minute, PgUp/PgDn ten), **Change master password** (asks for the current one
+first, then a new strong one twice), and information about your vault, the
+version and the clipboard tool. Changes are saved at once.
+
+Good to know:
+
+- Passwords, API keys and notes are shown as dots until you reveal them.
+- After the idle time (default 5 minutes; the countdown is in the top right
+  corner) CakePass locks itself: the key is wiped and the program closes. Leaving
+  (`q`, `l`, Ctrl+C or the auto-lock) also clears the screen and the scrollback.
+- The screen needs a window of at least 60×16 characters; a smaller window shows
+  a notice until you make it bigger. Without UTF-8 it draws with plain `+-|`;
+  with `--no-color` or `NO_COLOR` it uses bold and reverse video only.
+- Prefer typing commands? `cakepass shell` (or `cakepass --no-tui`) is the line
+  mode. In scripts and pipes `cakepass` uses the line mode automatically.
+
+---
+
+## Daily use (commands)
+
+Everything in the screen above also works as single commands, handy in scripts
+or when you know exactly what you want. Each command asks for your master
+password in a hidden prompt (you see nothing while typing, that is on purpose).
 
 | What | Command |
 |---|---|
@@ -251,8 +344,10 @@ E-mail address (optional): john@example.org
 
 Type `cakepass` (or `cakepass shell`) and you get the **CakePass login screen**: a 3D
 logo that spins into view (pink frosting, cake layers, sprinkles and a shine),
-then the question for your master password. You get three attempts. If there is
-no vault yet, `cakepass` starts the [first-time setup](#first-time-setup) instead.
+then the question for your master password. You get three attempts. Then
+`cakepass` opens [the screen](#using-the-screen-arrow-keys) and `cakepass shell`
+the line mode. If there is no vault yet, `cakepass` starts the
+[first-time setup](#first-time-setup) instead.
 
 - The logo is truly 3D: every letter is a block with depth, with light, shadow
   and perspective, drawn with half blocks (▀) in truecolor.
@@ -261,7 +356,8 @@ no vault yet, `cakepass` starts the [first-time setup](#first-time-setup) instea
   instead. For a single run: `--no-animation` or `CAKEPASS_NO_ANIMATION=1`.
   Just look at it: `cakepass logo`.
 
-**Settings** are kept in `~/.config/cakepass/config` (plain text, no secrets):
+**Settings** are kept in `~/.config/cakepass/config` (plain text, no secrets).
+Change them on the settings screen (`s`) or with:
 
 ```bash
 cakepass config                           # show the settings
@@ -270,8 +366,10 @@ cakepass config set lock-timeout 10       # minutes of inactivity before auto-lo
 ```
 
 **Auto-lock.** A single command asks for your master password every time; when
-it ends, no key is left in memory. That is the safest kind of "auto-lock". For
-many actions in a row use the interactive mode:
+it ends, no key is left in memory. That is the safest kind of "auto-lock". The
+screen (`cakepass`) locks itself after the configured idle time, also when a
+laptop was asleep in the meantime. For many typed commands in a row there is the
+line mode, `cakepass shell` (or `cakepass --no-tui`):
 
 ```text
 cakepass ❯ list
@@ -283,6 +381,8 @@ cakepass ❯ exit
 - After the configured idle time (default 5 minutes) the key is wiped and the
   mode ends. That also happens if you walk away in the middle of a question.
   One-off override: `cakepass shell --timeout 120` (seconds).
+- On the screen (`cakepass`) changing the master password asks for the current
+  one first as well.
 - `passwd` and `export` ask for the master password again.
 - `exit`, `quit`, `lock` or Ctrl+D locks at once.
 - On locking, the screen **and the scrollback** of your terminal are cleared, so
@@ -478,7 +578,7 @@ In plain language:
      separately**: username, e-mail address, URL, password or API key, and notes.
      Every field has its own random nonce.
 
-   Even while your vault is open (for example in the interactive mode), that
+   Even while your vault is open (for example on the screen or in the line mode), that
    content is only in memory in encrypted form. Only the name, type and tags are
    readable inside the program while it is open, so you can search (on disk they
    are encrypted by the first layer like everything else). A field is decrypted
@@ -505,6 +605,18 @@ In plain language:
 8. All randomness comes from the operating system (`getrandom`).
 9. `cakepass` itself contains no network code. Only the command `cakepass --update`
    starts `git` to fetch your repository, and then your vault is not open.
+10. **The screen (arrow keys)** decrypts only what it shows: the usernames of the
+    rows you see, the fields of the selected item, and a password, API key or note
+    only when you reveal or copy it (and again for every redraw, instead of
+    keeping a copy). The picture it draws is kept in a buffer that is wiped on
+    every redraw and when you leave, and the bytes for the terminal are written
+    straight to it (no buffered output) and wiped. It draws on the terminal's
+    "alternate screen", so nothing ends up in your scrollback, and it clears the
+    screen when you leave. Tested: after revealing, hiding and editing, the memory
+    of the running program contains the password, API key, notes, username,
+    e-mail address and URL 0 times as readable text; only the screen cells of the
+    item you have selected (its username, e-mail and URL) are in memory while
+    they are on screen.
 
 The crates used (among others `argon2`, `chacha20poly1305`, `hkdf`, `sha2`,
 `blake2`, `zeroize` and `subtle`) come from the RustCrypto project. `cakepass`
@@ -545,7 +657,10 @@ no known vulnerabilities.
    cliphist, CopyQ, GNOME extensions) sometimes keep a **history** that `cakepass`
    cannot clear. Turn that off or exclude cakepass.
 4. **Onlookers and scrollback.** `--show` puts the password on your screen and
-   in your terminal's scrollback.
+   in your terminal's scrollback. On the screen (arrow keys) a revealed password
+   is visible for up to 10 seconds; it is not in the scrollback, but a terminal
+   recorder (`script`, asciinema) or a terminal emulator's own memory can still
+   hold what was shown.
 5. **A weak or leaked master password.** Everything stands or falls with your
    master password. Do not use it anywhere else.
 6. **Physical access to a running, unlocked computer.** Lock your screen.
@@ -580,6 +695,9 @@ no known vulnerabilities.
 | `the vault was changed by another cakepass process` | You had two terminals open. Run the command again. Your other change was kept. |
 | `is a symbolic link` | Give the real path with `--vault`. |
 | After Ctrl+C you cannot see what you type | Type `reset` and press Enter. |
+| The screen shows odd characters instead of lines | Your terminal or locale is not UTF-8. Set `LANG` to a UTF-8 locale (e.g. `en_US.UTF-8`), or use `cakepass shell`. |
+| "Terminal too small" | Make the window at least 60 columns by 16 rows, or use `cakepass shell`. |
+| The arrow-key screen does not appear | `cakepass` falls back to the line mode when input or output is not a terminal, with `TERM=dumb`, or in a tiny window. |
 | The logo looks wrong or choppy | Try a wider/other terminal, or turn the animation off: `cakepass config set animation off`. |
 | Installer: `could not download the code` | The repository is private. Log in: `gh auth login`, or set up an SSH key, then run the installer again. |
 | `cakepass --update`: `I do not know where the source code is` | You did not install with `makepkg -si`/the installer, or the folder was moved. Give it: `cakepass --update --source ~/cakepass`. |
@@ -636,8 +754,7 @@ cargo build --release --locked
 
 Deliberately not in this version (fewer features that work well beats many):
 
-- **TUI** with [ratatui](https://ratatui.rs): the library (`src/lib.rs`) is
-  already separate from the CLI, so a TUI can sit right on top of it.
+- Mouse support and themes for the screen (arrow keys); an export button there.
 - **TOTP** (two-factor codes, like Google Authenticator).
 - **Browser integration** (auto-fill).
 - More item types (bank card, SSH keys, file attachments).
@@ -667,12 +784,13 @@ src/
 ├── import.rs       CSV import
 ├── clipboard.rs    clipboard with automatic clearing            ← critical
 ├── main.rs         start: allocator + process hardening
-└── cli/            arguments, prompts, commands, interactive mode,
+└── cli/            arguments, prompts, commands, line mode (shell.rs),
                     setup.rs + config.rs: first-time setup and settings
                     logo.rs: the 3D login screen
                     update.rs: cakepass --update (via git and makepkg)
+                    tui/: the screen with arrow keys (no extra libraries)  ← critical
 build.rs            records which git commit it was built from
-tests/              integration tests (cli, update, installer)
+tests/              integration tests (cli, tui in a pseudo-terminal, update, installer)
 packaging/arch/     PKGBUILD + systemd timer for the update check
 assets/             EFF word list (CC BY 3.0 US)
 docs/DESIGN.md      design and threat analysis
