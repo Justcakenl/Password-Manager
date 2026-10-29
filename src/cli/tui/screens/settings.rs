@@ -190,9 +190,9 @@ impl App {
             }
         }
         let help = match s.row {
-            0 => "← → or Enter: play the 3D logo animation at startup, or show it still.",
-            1 => "← → (PgUp PgDn: 10): lock and wipe the key after this many idle minutes.",
-            _ => "Enter: change the master password (asks for the current one first).",
+            0 => "← → or Enter: an animated or a still logo at startup.",
+            1 => "← → (PgUp PgDn: ±10): minutes until CakePass locks itself.",
+            _ => "Enter: change it (asks for the current one first).",
         };
         g.print(1, h - 2, w - 2, help, Style::DIM);
         vec![("↑↓", "choose"), ("←→", "change"), ("Enter", "select"), ("Esc", "back"), ("?", "help")]

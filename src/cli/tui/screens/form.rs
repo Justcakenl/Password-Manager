@@ -296,19 +296,17 @@ impl Form {
     /// What the focused field is for (shown in the status line).
     fn help(&self) -> &'static str {
         match (self.focus, self.kind) {
-            (Field::Name, _) => "The name you find it by, e.g. GitHub. Every name is used once.",
+            (Field::Name, _) => "The name you find it by, e.g. GitHub (each name once).",
             (Field::Kind, _) if !self.adding() => "The type cannot be changed.",
-            (Field::Kind, _) => "← → choose: login (website), API key (token) or note (text only).",
+            (Field::Kind, _) => "← → choose: login, API key or note (a note is text only).",
             (Field::User, Kind::Api) => "Optional: the account or key ID.",
             (Field::User, _) => "Optional.",
             (Field::Email, _) => "Optional: the e-mail address that belongs to it.",
             (Field::Url, _) => "Optional: the web address.",
             (Field::Tags, _) => "Optional, separated by commas: work, mail",
-            (Field::Secret, _) if self.secret_unchanged => {
-                "Unchanged. Typing replaces it; Ctrl+R shows it, Ctrl+G generates a new one."
-            }
+            (Field::Secret, _) if self.secret_unchanged => "Unchanged; typing replaces it. Ctrl+R shows it.",
             (Field::Secret, Kind::Api) => "Hidden. Paste or type the key; Ctrl+R shows it.",
-            (Field::Secret, _) => "Hidden while you type. Ctrl+R shows it, Ctrl+G generates one.",
+            (Field::Secret, _) => "Hidden while you type. Ctrl+R shows, Ctrl+G generates.",
             (Field::Notes, Kind::Note) => "The text of the note. Enter starts a new line.",
             (Field::Notes, _) => "Optional. Enter starts a new line.",
             (Field::Buttons, _) => "Enter: save or cancel. Ctrl+S saves from any field.",
@@ -387,7 +385,7 @@ impl App {
             f.focus = Field::Secret;
             return Err(Some(match kind {
                 Kind::Api => "The API key must not be empty.".into(),
-                _ => "The password is empty: type one, or press Ctrl+G to generate one.".into(),
+                _ => "The password is empty: type one or press Ctrl+G.".into(),
             }));
         }
         let tags = commands::split_tags(f.tags.as_str());
