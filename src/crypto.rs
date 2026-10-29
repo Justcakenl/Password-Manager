@@ -10,12 +10,18 @@
 //!   Elke wijziging aan het bestand (ook aan de header, die als "associated
 //!   data" meedoet) maakt het ontsleutelen onmogelijk. De 24-byte nonce is zo
 //!   groot dat een willekeurige nonce per schrijfactie veilig is.
+//! - **HKDF-SHA256** (`hkdf`): leidt uit de Argon2-sleutel aparte
+//!   subsleutels af voor het kluisbestand en voor de losse wachtwoorden en
+//!   notities ("key separation"), zodat één sleutel nooit voor twee doelen dient.
 //! - Willekeur komt alleen van de OS-CSPRNG (`getrandom`, op Linux de
 //!   `getrandom(2)`-systeemaanroep).
 
 use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::aead::AeadInOut;
 use chacha20poly1305::{KeyInit, XChaCha20Poly1305, XNonce};
+use hkdf::Hkdf;
+use sha2::Sha256;
+use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 use crate::secure_mem::SecureBuf;
@@ -97,6 +103,19 @@ impl MasterKey {
         bool::from(self.as_bytes().ct_eq(other.as_bytes()))
     }
 
+    /// Leid met HKDF-SHA256 een subsleutel af voor één specifiek doel (`info`).
+    pub fn derive_subkey(&self, info: &[u8]) -> MasterKey {
+        let hk = Hkdf::<Sha256>::new(None, self.as_bytes());
+        let mut out = SecureBuf::zeroed(KEY_LEN);
+        hk.expand(info, out.as_mut_slice()).expect("32 bytes is een geldige HKDF-lengte");
+        MasterKey(out)
+    }
+
+    /// Een kopie in nieuw vergrendeld geheugen.
+    pub fn duplicate(&self) -> MasterKey {
+        MasterKey(SecureBuf::from_slice(self.as_bytes()))
+    }
+
     /// Maak een sleutel van ruwe bytes (alleen voor tests).
     #[cfg(test)]
     pub(crate) fn from_bytes_for_test(bytes: &[u8; KEY_LEN]) -> Self {
@@ -108,6 +127,78 @@ impl std::fmt::Debug for MasterKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("MasterKey([VERBORGEN])")
     }
+}
+
+/// Sleutel voor de tweede versleutelingslaag: elk wachtwoord en elke notitie
+/// wordt afzonderlijk versleuteld (eigen willekeurige nonce per veld).
+///
+/// Ook als de kluis geopend is, staan wachtwoorden en notities dus
+/// versleuteld in het geheugen. Ze worden pas ontsleuteld op het moment dat
+/// je er één opvraagt (`get --show`, klembord, export), en direct daarna
+/// weer gewist.
+pub struct ItemKey(MasterKey);
+
+/// Overhead per versleuteld veld: nonce + tag.
+pub const SEALED_OVERHEAD: usize = NONCE_LEN + TAG_LEN;
+
+impl ItemKey {
+    pub fn new(key: MasterKey) -> ItemKey {
+        ItemKey(key)
+    }
+
+    fn aad(field: &str) -> Vec<u8> {
+        // Het veldtype doet mee in de authenticatie, zodat een versleuteld
+        // wachtwoord niet als notitie (of andersom) kan worden ingezet.
+        format!("kluis/item/v1/{field}").into_bytes()
+    }
+
+    /// Versleutel een veld. Resultaat: base64(nonce || ciphertext || tag).
+    pub fn seal(&self, field: &str, plaintext: &str) -> Result<String> {
+        use base64ct::{Base64, Encoding};
+        let nonce = random_array::<NONCE_LEN>()?;
+        let ct = encrypt(&self.0, &nonce, &Self::aad(field), plaintext.as_bytes())?;
+        let mut raw = Vec::with_capacity(NONCE_LEN + ct.len());
+        raw.extend_from_slice(&nonce);
+        raw.extend_from_slice(&ct);
+        Ok(Base64::encode_string(&raw))
+    }
+
+    /// Ontsleutel een veld dat met [`ItemKey::seal`] is versleuteld.
+    pub fn open(&self, field: &str, sealed: &str) -> Result<Zeroizing<String>> {
+        let raw = decode_sealed(sealed)?;
+        let (nonce, ct) = raw.split_at(NONCE_LEN);
+        let nonce: [u8; NONCE_LEN] = nonce.try_into().expect("lengte gecontroleerd");
+        let plain = decrypt(&self.0, &nonce, &Self::aad(field), ct)?;
+        let text = std::str::from_utf8(plain.as_slice()).map_err(|_| Error::CorruptPayload)?;
+        Ok(Zeroizing::new(text.to_string()))
+    }
+}
+
+/// Een vaste itemsleutel voor tests.
+#[cfg(test)]
+pub(crate) fn test_item_key(n: u8) -> ItemKey {
+    ItemKey::new(MasterKey::from_bytes_for_test(&[n; KEY_LEN]))
+}
+
+impl std::fmt::Debug for ItemKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ItemKey([VERBORGEN])")
+    }
+}
+
+/// Controleer en decodeer een versleuteld veld (zonder te ontsleutelen).
+pub fn decode_sealed(sealed: &str) -> Result<Vec<u8>> {
+    use base64ct::{Base64, Encoding};
+    let raw = Base64::decode_vec(sealed).map_err(|_| Error::CorruptPayload)?;
+    if raw.len() < SEALED_OVERHEAD {
+        return Err(Error::CorruptPayload);
+    }
+    Ok(raw)
+}
+
+/// Lengte van de klare tekst van een versleuteld veld (zonder te ontsleutelen).
+pub fn sealed_plaintext_len(sealed: &str) -> usize {
+    decode_sealed(sealed).map_or(0, |raw| raw.len() - SEALED_OVERHEAD)
 }
 
 /// Vul een buffer met cryptografisch veilige willekeurige bytes van het OS.
@@ -269,6 +360,51 @@ mod tests {
         // Afgekapt.
         assert!(decrypt(&key, &nonce, b"aad", &ct[..ct.len() - 1]).is_err());
         assert!(matches!(decrypt(&key, &nonce, b"aad", &ct[..5]), Err(Error::Truncated)));
+    }
+
+    #[test]
+    fn hkdf_officiele_testvector_rfc5869() {
+        // RFC 5869, testgeval 3 (zonder salt en info): controleert de HKDF-crate.
+        let hk = Hkdf::<Sha256>::new(None, &[0x0b; 22]);
+        let mut okm = [0u8; 42];
+        hk.expand(&[], &mut okm).unwrap();
+        let hex: String = okm.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(
+            hex,
+            "8da4e775a563c18f715f802a063c5a31b8a11f5c5ee1879ec3454e5f3c738d2d9d201395faa4b61a96c8"
+        );
+    }
+
+    #[test]
+    fn subsleutels_zijn_verschillend() {
+        let m = MasterKey::from_bytes_for_test(&[7u8; 32]);
+        let a = m.derive_subkey(b"doel a");
+        let b = m.derive_subkey(b"doel b");
+        assert!(!a.ct_eq(&b));
+        assert!(!a.ct_eq(&m));
+        assert!(a.ct_eq(&m.derive_subkey(b"doel a")));
+    }
+
+    #[test]
+    fn veldversleuteling() {
+        let k = ItemKey::new(MasterKey::from_bytes_for_test(&[1u8; 32]));
+        let other = ItemKey::new(MasterKey::from_bytes_for_test(&[2u8; 32]));
+        let a = k.seal("password", "geheim").unwrap();
+        let b = k.seal("password", "geheim").unwrap();
+        assert_ne!(a, b, "elke versleuteling heeft een eigen nonce");
+        assert!(!a.contains("geheim"));
+        assert_eq!(k.open("password", &a).unwrap().as_str(), "geheim");
+        assert_eq!(sealed_plaintext_len(&a), 6);
+        assert_eq!(sealed_plaintext_len(&k.seal("password", "").unwrap()), 0);
+        // Verkeerde sleutel, verkeerd veldtype, gemanipuleerd of onzin: altijd fout.
+        assert!(matches!(other.open("password", &a), Err(Error::Decrypt)));
+        assert!(matches!(k.open("notes", &a), Err(Error::Decrypt)));
+        let mut raw = decode_sealed(&a).unwrap();
+        raw[30] ^= 1;
+        use base64ct::{Base64, Encoding};
+        assert!(matches!(k.open("password", &Base64::encode_string(&raw)), Err(Error::Decrypt)));
+        assert!(matches!(k.open("password", "geen base64!"), Err(Error::CorruptPayload)));
+        assert!(matches!(k.open("password", "AAAA"), Err(Error::CorruptPayload)));
     }
 
     #[test]

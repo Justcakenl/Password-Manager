@@ -16,7 +16,7 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsE
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
-use crate::crypto::{self, KdfParams};
+use crate::crypto::{self, ItemKey, KdfParams};
 use crate::error::{Error, Result};
 use crate::format::{self, Header, MAX_FILE_SIZE, VaultKey};
 use crate::vault::Vault;
@@ -227,8 +227,9 @@ impl UnlockedVault {
                 paths.file.display()
             ));
         }
-        let (plaintext, key) = format::open(&bytes, password)?;
-        let vault = Vault::from_json(plaintext.as_slice())?;
+        let (plaintext, key, version) = format::open(&bytes, password)?;
+        let (vault, migrated) = Vault::from_json(plaintext.as_slice(), key.item_key())?;
+        drop(plaintext);
         if key.kdf().weaker_than_default() {
             warnings.push(
                 "Deze kluis gebruikt lichtere Argon2-instellingen dan aanbevolen. \
@@ -236,7 +237,18 @@ impl UnlockedVault {
                     .into(),
             );
         }
-        Ok(UnlockedVault { vault, key, paths, on_disk: bytes, warnings })
+        let mut uv = UnlockedVault { vault, key, paths, on_disk: bytes, warnings };
+        if migrated || version < format::CURRENT_VERSION {
+            // Oud formaat: meteen opslaan in het nieuwe formaat, zodat elk
+            // wachtwoord en elke notitie ook op schijf apart versleuteld is.
+            uv.save()?;
+            uv.warnings.push(
+                "Je kluis is bijgewerkt naar formaat 2: elk wachtwoord en elke notitie is nu \
+                 ook nog eens apart versleuteld. (De back-up .bak is nog de oude versie.)"
+                    .into(),
+            );
+        }
+        Ok(uv)
     }
 
     pub fn paths(&self) -> &VaultPaths {
@@ -245,6 +257,16 @@ impl UnlockedVault {
 
     pub fn kdf(&self) -> KdfParams {
         self.key.kdf()
+    }
+
+    /// De sleutel om wachtwoorden en notities van items te ontsleutelen.
+    pub fn item_key(&self) -> &ItemKey {
+        self.key.item_key()
+    }
+
+    /// De kluis (om te wijzigen) plus de itemsleutel, tegelijk te gebruiken.
+    pub fn parts_mut(&mut self) -> (&mut Vault, &ItemKey) {
+        (&mut self.vault, self.key.item_key())
     }
 
     /// Controleer het hoofdwachtwoord opnieuw (bijv. vóór `passwd` in de shell).
@@ -272,10 +294,14 @@ impl UnlockedVault {
     pub fn change_password(&mut self, new_password: &[u8], kdf: KdfParams) -> Result<()> {
         kdf.validate()?;
         let new_key = VaultKey::create(new_password, kdf)?;
-        let plaintext = self.vault.to_json()?;
+        // Alle losse geheimen opnieuw versleutelen met de nieuwe itemsleutel.
+        let mut rekeyed = self.vault.clone();
+        rekeyed.rekey(self.key.item_key(), new_key.item_key())?;
+        let plaintext = rekeyed.to_json()?;
         let new_bytes = format::seal(&new_key, plaintext.as_slice())?;
         drop(plaintext);
         self.replace_file(new_bytes, true)?;
+        self.vault = rekeyed;
         self.key = new_key;
         Ok(())
     }
@@ -305,17 +331,21 @@ impl UnlockedVault {
     /// Exporteer de kluis als nieuw versleuteld bestand met een eigen wachtwoord.
     pub fn export_to(&self, path: &Path, password: &[u8], kdf: KdfParams) -> Result<()> {
         let key = VaultKey::create(password, kdf)?;
-        let plaintext = self.vault.to_json()?;
+        let mut copy = self.vault.clone();
+        copy.rekey(self.key.item_key(), key.item_key())?;
+        let plaintext = copy.to_json()?;
         let bytes = format::seal(&key, plaintext.as_slice())?;
         write_new_file(path, &bytes)
     }
 }
 
 /// Open een geëxporteerd (of ander) kluisbestand alleen om te lezen.
-pub fn read_vault_file(path: &Path, password: &[u8]) -> Result<Vault> {
+/// Geeft ook de sleutel terug, nodig om de items te ontsleutelen.
+pub fn read_vault_file(path: &Path, password: &[u8]) -> Result<(Vault, VaultKey)> {
     let bytes = read_file(path)?;
-    let (plaintext, _key) = format::open(&bytes, password)?;
-    Vault::from_json(plaintext.as_slice())
+    let (plaintext, key, _version) = format::open(&bytes, password)?;
+    let (vault, _migrated) = Vault::from_json(plaintext.as_slice(), key.item_key())?;
+    Ok((vault, key))
 }
 
 #[cfg(test)]
@@ -330,8 +360,12 @@ mod tests {
         VaultPaths::for_file(dir.path().join("sub").join("vault.enc"))
     }
 
-    fn item(name: &str) -> Entry {
-        Entry::new(NewEntry { name: name.into(), password: "geheim".into(), ..Default::default() }).unwrap()
+    fn add(uv: &mut UnlockedVault, name: &str) {
+        let (vault, key) = uv.parts_mut();
+        let e =
+            Entry::new(NewEntry { name: name.into(), password: "geheim".into(), ..Default::default() }, key)
+                .unwrap();
+        vault.add(e).unwrap();
     }
 
     #[test]
@@ -349,17 +383,17 @@ mod tests {
         let mut uv = UnlockedVault::create(p.clone(), PW, P).unwrap();
         assert_eq!(fs::metadata(&p.file).unwrap().mode() & 0o777, 0o600);
         assert_eq!(fs::metadata(p.dir()).unwrap().mode() & 0o777, 0o700);
-        uv.vault.add(item("een")).unwrap();
+        add(&mut uv, "een");
         uv.save().unwrap();
         assert!(p.backup.exists(), "back-up van de vorige versie");
         assert_eq!(fs::metadata(&p.backup).unwrap().mode() & 0o777, 0o600);
         drop(uv);
 
         let uv = UnlockedVault::open(p.clone(), PW).unwrap();
-        assert_eq!(uv.vault.get("een").unwrap().password(), "geheim");
+        assert_eq!(uv.vault.get("een").unwrap().password(uv.item_key()).unwrap().as_str(), "geheim");
         assert_eq!(uv.kdf(), P);
         // De back-up is de lege vorige versie en opent met hetzelfde wachtwoord.
-        assert!(read_vault_file(&p.backup, PW).unwrap().is_empty());
+        assert!(read_vault_file(&p.backup, PW).unwrap().0.is_empty());
         // Geen tijdelijke bestanden achtergebleven.
         let leftovers: Vec<_> = fs::read_dir(p.dir())
             .unwrap()
@@ -429,9 +463,9 @@ mod tests {
         UnlockedVault::create(p.clone(), PW, P).unwrap();
         let mut a = UnlockedVault::open(p.clone(), PW).unwrap();
         let mut b = UnlockedVault::open(p.clone(), PW).unwrap();
-        a.vault.add(item("van a")).unwrap();
+        add(&mut a, "van a");
         a.save().unwrap();
-        b.vault.add(item("van b")).unwrap();
+        add(&mut b, "van b");
         assert!(matches!(b.save(), Err(Error::ConcurrentModification)));
         // De wijziging van a is niet verloren gegaan.
         assert!(UnlockedVault::open(p, PW).unwrap().vault.get("van a").is_some());
@@ -442,11 +476,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         let mut uv = UnlockedVault::create(p.clone(), PW, P).unwrap();
-        uv.vault.add(item("x")).unwrap();
+        add(&mut uv, "x");
         uv.save().unwrap();
         let new_p = KdfParams { memory_kib: 9 * 1024, iterations: 2, parallelism: 1 };
         uv.change_password(b"nieuw wachtwoord", new_p).unwrap();
-        uv.vault.add(item("y")).unwrap();
+        add(&mut uv, "y");
         uv.save().unwrap(); // werkt met de nieuwe sleutel
         drop(uv);
         assert!(matches!(UnlockedVault::open(p.clone(), PW), Err(Error::Decrypt)));
@@ -454,6 +488,8 @@ mod tests {
         let uv = UnlockedVault::open(p.clone(), b"nieuw wachtwoord").unwrap();
         assert_eq!(uv.kdf(), new_p);
         assert_eq!(uv.vault.len(), 2);
+        // Ook de losse wachtwoorden zijn met de nieuwe sleutel versleuteld.
+        assert_eq!(uv.vault.get("x").unwrap().password(uv.item_key()).unwrap().as_str(), "geheim");
         assert!(read_vault_file(&p.backup, b"nieuw wachtwoord").is_ok());
     }
 
@@ -462,14 +498,35 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         let mut uv = UnlockedVault::create(p, PW, P).unwrap();
-        uv.vault.add(item("x")).unwrap();
+        add(&mut uv, "x");
         let out = dir.path().join("export.kluis");
         uv.export_to(&out, b"exportwachtwoord", P).unwrap();
         assert_eq!(fs::metadata(&out).unwrap().mode() & 0o777, 0o600);
         assert!(matches!(uv.export_to(&out, b"x", P), Err(Error::AlreadyExists(_))));
         assert!(matches!(read_vault_file(&out, PW), Err(Error::Decrypt)));
-        let v = read_vault_file(&out, b"exportwachtwoord").unwrap();
-        assert_eq!(v.get("x").unwrap().password(), "geheim");
+        let (v, k) = read_vault_file(&out, b"exportwachtwoord").unwrap();
+        assert_eq!(v.get("x").unwrap().password(k.item_key()).unwrap().as_str(), "geheim");
+        // De export heeft een eigen itemsleutel: de sleutel van de kluis werkt niet.
+        assert!(v.get("x").unwrap().password(uv.item_key()).is_err());
+    }
+
+    #[test]
+    fn oud_formaat_wordt_automatisch_bijgewerkt() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(&dir);
+        ensure_dir(p.dir()).unwrap();
+        let old_json = br#"{"schema":1,"entries":[{"name":"Oud","password":"oud-geheim","notes":"n"}]}"#;
+        let v1 = format::seal_v1_for_tests(PW, P, old_json).unwrap();
+        write_atomic(&p.file, &v1).unwrap();
+        assert_eq!(read_header(&p.file).unwrap().version, 1);
+
+        let mut uv = UnlockedVault::open(p.clone(), PW).unwrap();
+        assert!(uv.take_warnings().iter().any(|w| w.contains("formaat 2")));
+        assert_eq!(uv.vault.get("oud").unwrap().password(uv.item_key()).unwrap().as_str(), "oud-geheim");
+        drop(uv);
+        assert_eq!(read_header(&p.file).unwrap().version, 2);
+        let mut uv = UnlockedVault::open(p, PW).unwrap();
+        assert!(!uv.take_warnings().iter().any(|w| w.contains("formaat 2")), "maar één keer migreren");
     }
 
     #[test]
@@ -478,7 +535,7 @@ mod tests {
         let p = paths(&dir);
         UnlockedVault::create(p.clone(), PW, P).unwrap();
         let h = read_header(&p.file).unwrap();
-        assert_eq!(h.version, 1);
+        assert_eq!(h.version, 2);
         assert_eq!(h.kdf, P);
     }
 }

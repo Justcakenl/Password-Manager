@@ -1,6 +1,6 @@
 # Voortgang `kluis`
 
-Laatst bijgewerkt: stap 4 (packaging, README, security-review) – **versie 1 is af**.
+Laatst bijgewerkt: stap 5 (tweede versleutelingslaag per wachtwoord).
 Branch: `claude/kluis-v1` (nog niet samengevoegd met `main`).
 
 ## Wat ik vanavond op mijn computer moet doen
@@ -55,6 +55,14 @@ Branch: `claude/kluis-v1` (nog niet samengevoegd met `main`).
   Nederlandse `README.md`, `LICENSE` (MIT), security-review met drie
   gevonden en opgeloste problemen (zie README).
 
+- [x] **Stap 5 – Tweede versleutelingslaag**: elk wachtwoord en elke notitie
+  wordt nu apart versleuteld met een eigen itemsleutel (HKDF-SHA256 uit de
+  hoofdsleutel). Ook in een geopende kluis staan ze alleen versleuteld in het
+  geheugen; ontsleutelen gebeurt per item, alleen bij `get`. Formaatversie 2;
+  oude kluizen (versie 1) worden automatisch bijgewerkt. Gecontroleerd door
+  het geheugen van een draaiende `kluis shell` te doorzoeken: 0 leesbare
+  kopieën van wachtwoord en notitie, ook direct na `get --show`.
+
 ## Nog te doen
 
 - [ ] De punten onder "Testen op Arch" op je eigen computer controleren.
@@ -87,6 +95,12 @@ Zie `docs/ONTWERP.md` voor de uitleg. Kort samengevat:
   kwetsbaarheid hebben (RUSTSEC-2026-0009).
 - De PKGBUILD staat in `packaging/arch/`, omdat makepkg zelf een map `src/`
   aanmaakt die anders botst met de Rust-broncode.
+- Twee lagen: bestandssleutel en itemsleutel worden met HKDF-SHA256 uit de
+  Argon2-sleutel afgeleid. Naam, gebruikersnaam, URL en tags zijn niet apart
+  versleuteld (wel op schijf), zodat `list` en `search` werken zonder één
+  wachtwoord te ontsleutelen.
+- Een getoond wachtwoord (`--show`) gaat rechtstreeks naar de terminal, niet
+  via de uitvoerbuffer van Rust, zodat er geen kopie in het geheugen achterblijft.
 - EFF-diceware-woordenlijst in `assets/` (gecontroleerd tegen twee
   onafhankelijke bronnen; sha256 `addd3553…996b903e`).
 
@@ -94,7 +108,7 @@ Zie `docs/ONTWERP.md` voor de uitleg. Kort samengevat:
 
 | Controle | Resultaat |
 |---|---|
-| `cargo test` | 85 geslaagd (59 bibliotheek, 7 CLI-unit, 19 integratie) |
+| `cargo test` | 94 geslaagd (68 bibliotheek, 7 CLI-unit, 19 integratie) |
 | `cargo clippy --all-targets -- -D warnings` | geen meldingen |
 | `cargo audit` | geen kwetsbaarheden (140 crates gescand) |
 | `cargo build --release --locked` | gelukt (Ubuntu-container) |

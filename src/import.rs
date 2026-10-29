@@ -10,6 +10,7 @@ use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
+use crate::crypto::ItemKey;
 use crate::error::{Error, Result};
 use crate::vault::{Entry, NewEntry, Vault};
 
@@ -54,7 +55,8 @@ fn host_from_url(url: &str) -> Option<String> {
 }
 
 /// Lees een CSV-export in.
-pub fn parse_csv(reader: impl Read) -> Result<CsvImport> {
+/// Wachtwoorden en notities worden direct per veld versleuteld met `key`.
+pub fn parse_csv(reader: impl Read, key: &ItemKey) -> Result<CsvImport> {
     let mut rdr = csv::ReaderBuilder::new().flexible(true).trim(csv::Trim::Headers).from_reader(reader);
     let headers: Vec<String> = rdr
         .headers()
@@ -123,7 +125,7 @@ pub fn parse_csv(reader: impl Read) -> Result<CsvImport> {
         fields.url = fields.url.replace(char::is_control, " ");
         fields.notes = fields.notes.replace(|c: char| c.is_control() && c != '\n' && c != '\t', " ");
         fields.tags = fields.tags.iter().map(|t| t.replace(char::is_control, " ")).collect();
-        match Entry::new(fields) {
+        match Entry::new(fields, key) {
             Ok(e) => vault.add(e)?,
             Err(_) => skipped += 1,
         }
@@ -168,19 +170,28 @@ impl NoFollow for OpenOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::test_item_key;
+
+    fn parse(csv: &str) -> Result<CsvImport> {
+        parse_csv(csv.as_bytes(), &test_item_key(1))
+    }
+
+    fn pw(e: &Entry) -> String {
+        e.password(&test_item_key(1)).unwrap().to_string()
+    }
 
     #[test]
     fn bitwarden() {
         let csv = "folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp\n\
                    Werk,,login,GitHub,mijn notitie,,0,https://github.com,jan,\"p,w\"\"1\",\n\
                    ,,login,GitHub,,,0,https://github.com/2,piet,pw2,\n";
-        let r = parse_csv(csv.as_bytes()).unwrap();
+        let r = parse(csv).unwrap();
         assert_eq!(r.vault.len(), 2);
         let e = r.vault.get("GitHub").unwrap();
         assert_eq!(e.username(), "jan");
-        assert_eq!(e.password(), "p,w\"1");
+        assert_eq!(pw(e), "p,w\"1");
         assert_eq!(e.url(), "https://github.com");
-        assert_eq!(e.notes(), "mijn notitie");
+        assert_eq!(e.notes(&test_item_key(1)).unwrap().as_str(), "mijn notitie");
         assert_eq!(e.tags(), &["Werk".to_string()]);
         assert_eq!(r.vault.get("GitHub (2)").unwrap().username(), "piet");
     }
@@ -189,8 +200,8 @@ mod tests {
     fn keepassxc_en_bom() {
         let csv = "\u{feff}\"Group\",\"Title\",\"Username\",\"Password\",\"URL\",\"Notes\"\n\
                    \"Root\",\"Mail\",\"jan@x.nl\",\"geheim\",\"https://mail.x.nl\",\"\"\n";
-        let r = parse_csv(csv.as_bytes()).unwrap();
-        assert_eq!(r.vault.get("Mail").unwrap().password(), "geheim");
+        let r = parse(csv).unwrap();
+        assert_eq!(pw(r.vault.get("Mail").unwrap()), "geheim");
     }
 
     #[test]
@@ -198,7 +209,7 @@ mod tests {
         let csv = "\"url\",\"username\",\"password\",\"httpRealm\",\"formActionOrigin\",\"guid\"\n\
                    \"https://www.example.org:443\",\"jan\",\"pw\",,\"\",\"{x}\"\n\
                    \"\",\"\",\"\",,\"\",\"{y}\"\n";
-        let r = parse_csv(csv.as_bytes()).unwrap();
+        let r = parse(csv).unwrap();
         assert_eq!(r.vault.len(), 1);
         assert!(r.vault.get("example.org").is_some());
         assert_eq!(r.skipped, 1);
@@ -207,25 +218,25 @@ mod tests {
     #[test]
     fn chrome_en_wachtwoord_met_spaties() {
         let csv = "name,url,username,password,note\nsite,https://a.b,u, spatie pw ,n\n";
-        let r = parse_csv(csv.as_bytes()).unwrap();
-        assert_eq!(r.vault.get("site").unwrap().password(), " spatie pw ", "wachtwoord niet trimmen");
+        let r = parse(csv).unwrap();
+        assert_eq!(pw(r.vault.get("site").unwrap()), " spatie pw ", "wachtwoord niet trimmen");
     }
 
     #[test]
     fn stuurtekens_worden_onschadelijk() {
         let csv =
             "name,username,password,url,notes\nx,\"u\u{1b}[31m\",pw,\"https://a\u{7}\",\"r1\nr2\u{1b}[2J\"\n";
-        let r = parse_csv(csv.as_bytes()).unwrap();
+        let r = parse(csv).unwrap();
         let e = r.vault.get("x").unwrap();
         assert!(!e.username().contains('\u{1b}'));
         assert!(!e.url().contains('\u{7}'));
-        assert_eq!(e.notes(), "r1\nr2 [2J");
+        assert_eq!(e.notes(&test_item_key(1)).unwrap().as_str(), "r1\nr2 [2J");
     }
 
     #[test]
     fn onbekende_indeling() {
-        assert!(parse_csv("a,b,c\n1,2,3\n".as_bytes()).is_err());
-        assert!(parse_csv("".as_bytes()).is_err());
+        assert!(parse("a,b,c\n1,2,3\n").is_err());
+        assert!(parse("").is_err());
     }
 
     #[test]

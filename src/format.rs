@@ -1,11 +1,11 @@
-//! Het versleutelde bestandsformaat (versie 1).
+//! Het versleutelde bestandsformaat (versie 2; versie 1 blijft leesbaar).
 //!
 //! BEVEILIGINGSKRITIEK. Indeling (alle getallen little-endian):
 //!
 //! ```text
 //! offset  grootte  veld
 //! 0       8        magic "KLUISVLT"
-//! 8       2        formaatversie (u16) = 1
+//! 8       2        formaatversie (u16) = 2
 //! 10      1        KDF-id: 1 = Argon2id v1.3
 //! 11      4        Argon2 geheugen in KiB (u32)
 //! 15      4        Argon2 iteraties (u32)
@@ -21,16 +21,31 @@
 //! de AEAD. Wie dus ook maar één bit in de header verandert (bijv. de
 //! Argon2-parameters verlaagt), laat de authenticatie mislukken.
 //!
+//! Sleutels (vanaf versie 2):
+//!
+//! ```text
+//! hoofdwachtwoord ──Argon2id(salt)──► hoofdsleutel
+//!     hoofdsleutel ──HKDF-SHA256("…file…")──► bestandssleutel  (hele kluis)
+//!     hoofdsleutel ──HKDF-SHA256("…item…")──► itemsleutel      (elk wachtwoord
+//!                                                              en elke notitie apart)
+//! ```
+//!
+//! In versie 1 versleutelde de hoofdsleutel het bestand rechtstreeks en
+//! stonden wachtwoorden binnen de versleuteling als gewone tekst. Zo'n
+//! bestand wordt bij het openen automatisch naar versie 2 omgezet.
+//!
 //! Migraties: een nieuwe versie krijgt een eigen `decode_vN`; oude versies
 //! blijven leesbaar en worden bij de volgende opslag in de nieuwste versie
 //! geschreven.
 
-use crate::crypto::{self, KdfParams, MasterKey, NONCE_LEN, SALT_LEN, TAG_LEN};
+use crate::crypto::{self, ItemKey, KdfParams, MasterKey, NONCE_LEN, SALT_LEN, TAG_LEN};
 use crate::error::{Error, Result};
 use crate::secure_mem::SecureBuf;
 
 pub const MAGIC: [u8; 8] = *b"KLUISVLT";
-pub const CURRENT_VERSION: u16 = 1;
+pub const CURRENT_VERSION: u16 = 2;
+const FILE_KEY_INFO: &[u8] = b"kluis v2: bestandssleutel";
+const ITEM_KEY_INFO: &[u8] = b"kluis v2: itemsleutel";
 const KDF_ARGON2ID_V13: u8 = 1;
 const AEAD_XCHACHA20_POLY1305: u8 = 1;
 const MIN_SALT_LEN: usize = 16;
@@ -52,7 +67,7 @@ impl Header {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(49 + self.salt.len());
         out.extend_from_slice(&MAGIC);
-        out.extend_from_slice(&CURRENT_VERSION.to_le_bytes());
+        out.extend_from_slice(&self.version.to_le_bytes());
         out.push(KDF_ARGON2ID_V13);
         out.extend_from_slice(&self.kdf.memory_kib.to_le_bytes());
         out.extend_from_slice(&self.kdf.iterations.to_le_bytes());
@@ -78,13 +93,15 @@ impl Header {
         }
         let version = r.u16()?;
         match version {
-            1 => decode_v1(&mut r),
+            // Versie 1 en 2 hebben dezelfde header-indeling; alleen het
+            // sleutelgebruik verschilt (zie de documentatie bovenaan).
+            1 | 2 => decode_v1_v2(&mut r, version),
             other => Err(Error::UnsupportedVersion(other)),
         }
     }
 }
 
-fn decode_v1(r: &mut Reader<'_>) -> Result<(Header, usize)> {
+fn decode_v1_v2(r: &mut Reader<'_>, version: u16) -> Result<(Header, usize)> {
     if r.u8()? != KDF_ARGON2ID_V13 {
         return Err(Error::UnsupportedAlgorithm);
     }
@@ -99,7 +116,7 @@ fn decode_v1(r: &mut Reader<'_>) -> Result<(Header, usize)> {
         return Err(Error::UnsupportedAlgorithm);
     }
     let nonce: [u8; NONCE_LEN] = r.take(NONCE_LEN)?.try_into().expect("lengte klopt");
-    Ok((Header { version: 1, kdf, salt, nonce }, r.pos))
+    Ok((Header { version, kdf, salt, nonce }, r.pos))
 }
 
 /// Kleine, grenscontrolerende lezer.
@@ -129,35 +146,48 @@ impl<'a> Reader<'a> {
 /// Een ontgrendelde sleutel plus de parameters waarmee hij gemaakt is.
 ///
 /// Hiermee kan de kluis opnieuw worden opgeslagen zonder het hoofdwachtwoord
-/// nog eens te vragen. De sleutel wordt bij `Drop` gewist.
+/// nog eens te vragen. Alle sleutels worden bij `Drop` gewist.
 #[derive(Debug)]
 pub struct VaultKey {
-    key: MasterKey,
+    master: MasterKey,
+    file_key: MasterKey,
+    item_key: ItemKey,
     kdf: KdfParams,
     salt: Vec<u8>,
 }
 
 impl VaultKey {
+    fn from_master(master: MasterKey, kdf: KdfParams, salt: Vec<u8>) -> VaultKey {
+        let file_key = master.derive_subkey(FILE_KEY_INFO);
+        let item_key = ItemKey::new(master.derive_subkey(ITEM_KEY_INFO));
+        VaultKey { master, file_key, item_key, kdf, salt }
+    }
+
     /// Leid een nieuwe sleutel af met een nieuwe, willekeurige salt.
     pub fn create(password: &[u8], kdf: KdfParams) -> Result<VaultKey> {
         let salt = crypto::random_array::<SALT_LEN>()?.to_vec();
-        let key = crypto::derive_key(password, &salt, &kdf)?;
-        Ok(VaultKey { key, kdf, salt })
+        let master = crypto::derive_key(password, &salt, &kdf)?;
+        Ok(VaultKey::from_master(master, kdf, salt))
     }
 
     pub fn kdf(&self) -> KdfParams {
         self.kdf
     }
 
+    /// De sleutel voor de afzonderlijk versleutelde wachtwoorden en notities.
+    pub fn item_key(&self) -> &ItemKey {
+        &self.item_key
+    }
+
     /// Controleer of `password` dezelfde sleutel oplevert (constante tijd).
     pub fn verify(&self, password: &[u8]) -> Result<bool> {
         let candidate = crypto::derive_key(password, &self.salt, &self.kdf)?;
-        Ok(candidate.ct_eq(&self.key))
+        Ok(candidate.ct_eq(&self.master))
     }
 }
 
-/// Versleutel `plaintext` tot een compleet kluisbestand.
-/// Elke aanroep gebruikt een nieuwe, willekeurige nonce.
+/// Versleutel `plaintext` tot een compleet kluisbestand (altijd de nieuwste
+/// versie). Elke aanroep gebruikt een nieuwe, willekeurige nonce.
 pub fn seal(vk: &VaultKey, plaintext: &[u8]) -> Result<Vec<u8>> {
     let header = Header {
         version: CURRENT_VERSION,
@@ -166,7 +196,7 @@ pub fn seal(vk: &VaultKey, plaintext: &[u8]) -> Result<Vec<u8>> {
         nonce: crypto::random_array::<NONCE_LEN>()?,
     };
     let mut out = header.encode();
-    let ct = crypto::encrypt(&vk.key, &header.nonce, &out, plaintext)?;
+    let ct = crypto::encrypt(&vk.file_key, &header.nonce, &out, plaintext)?;
     out.extend_from_slice(&ct);
     if out.len() > MAX_FILE_SIZE {
         return Err(Error::TooLarge);
@@ -175,15 +205,39 @@ pub fn seal(vk: &VaultKey, plaintext: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Ontsleutel een kluisbestand met het hoofdwachtwoord.
-pub fn open(data: &[u8], password: &[u8]) -> Result<(SecureBuf, VaultKey)> {
+/// Geeft ook de formaatversie van het bestand terug (voor migratie).
+pub fn open(data: &[u8], password: &[u8]) -> Result<(SecureBuf, VaultKey, u16)> {
     let (header, header_len) = Header::decode(data)?;
     let ciphertext = &data[header_len..];
     if ciphertext.len() < TAG_LEN {
         return Err(Error::Truncated);
     }
-    let key = crypto::derive_key(password, &header.salt, &header.kdf)?;
-    let plaintext = crypto::decrypt(&key, &header.nonce, &data[..header_len], ciphertext)?;
-    Ok((plaintext, VaultKey { key, kdf: header.kdf, salt: header.salt }))
+    let master = crypto::derive_key(password, &header.salt, &header.kdf)?;
+    let vk = VaultKey::from_master(master, header.kdf, header.salt);
+    let plaintext = {
+        // Versie 1 gebruikte de hoofdsleutel rechtstreeks voor het bestand.
+        let v1_key;
+        let file_key = if header.version == 1 {
+            v1_key = vk.master.duplicate();
+            &v1_key
+        } else {
+            &vk.file_key
+        };
+        crypto::decrypt(file_key, &header.nonce, &data[..header_len], ciphertext)?
+    };
+    Ok((plaintext, vk, header.version))
+}
+
+/// Maak een bestand in het oude formaat (versie 1), alleen voor migratietests.
+#[doc(hidden)]
+pub fn seal_v1_for_tests(password: &[u8], kdf: KdfParams, plaintext: &[u8]) -> Result<Vec<u8>> {
+    let salt = crypto::random_array::<SALT_LEN>()?.to_vec();
+    let master = crypto::derive_key(password, &salt, &kdf)?;
+    let header = Header { version: 1, kdf, salt, nonce: crypto::random_array::<NONCE_LEN>()? };
+    let mut out = header.encode();
+    let ct = crypto::encrypt(&master, &header.nonce, &out, plaintext)?;
+    out.extend_from_slice(&ct);
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -199,7 +253,7 @@ mod tests {
 
     #[test]
     fn header_heen_en_terug() {
-        let h = Header { version: 1, kdf: KdfParams::DEFAULT, salt: vec![9; 32], nonce: [5; 24] };
+        let h = Header { version: 2, kdf: KdfParams::DEFAULT, salt: vec![9; 32], nonce: [5; 24] };
         let bytes = h.encode();
         assert_eq!(bytes.len(), 49 + 32);
         let (back, len) = Header::decode(&bytes).unwrap();
@@ -210,7 +264,8 @@ mod tests {
     #[test]
     fn opslaan_en_openen() {
         let (file, pw) = sample();
-        let (pt, vk) = open(&file, pw).unwrap();
+        let (pt, vk, version) = open(&file, pw).unwrap();
+        assert_eq!(version, CURRENT_VERSION);
         assert_eq!(pt.as_slice(), b"{\"inhoud\":1}");
         assert_eq!(vk.kdf(), P);
         // Opnieuw opslaan met dezelfde sleutel gebruikt een nieuwe nonce.
@@ -257,8 +312,8 @@ mod tests {
     fn onbekende_versie_en_algoritme() {
         let (file, pw) = sample();
         let mut v = file.clone();
-        v[8] = 2;
-        assert!(matches!(open(&v, pw), Err(Error::UnsupportedVersion(2))));
+        v[8] = 3;
+        assert!(matches!(open(&v, pw), Err(Error::UnsupportedVersion(3))));
         let mut k = file.clone();
         k[10] = 9;
         assert!(matches!(open(&k, pw), Err(Error::UnsupportedAlgorithm)));
@@ -288,6 +343,24 @@ mod tests {
     fn te_groot_bestand() {
         let big = vec![0u8; MAX_FILE_SIZE + 1];
         assert!(matches!(Header::decode(&big), Err(Error::TooLarge)));
+    }
+
+    #[test]
+    fn oud_formaat_versie_1_blijft_leesbaar() {
+        let old = seal_v1_for_tests(b"pw", P, b"oude inhoud").unwrap();
+        assert_eq!(u16::from_le_bytes([old[8], old[9]]), 1);
+        let (pt, vk, version) = open(&old, b"pw").unwrap();
+        assert_eq!(version, 1);
+        assert_eq!(pt.as_slice(), b"oude inhoud");
+        assert!(matches!(open(&old, b"fout"), Err(Error::Decrypt)));
+        // Opnieuw opslaan gebeurt in versie 2, met de bestandssubsleutel.
+        let new = seal(&vk, pt.as_slice()).unwrap();
+        assert_eq!(u16::from_le_bytes([new[8], new[9]]), 2);
+        assert_eq!(open(&new, b"pw").unwrap().0.as_slice(), b"oude inhoud");
+        // Een v2-bestand dat als v1 wordt aangeboden, faalt (andere sleutel én header).
+        let mut fake = new.clone();
+        fake[8] = 1;
+        assert!(matches!(open(&fake, b"pw"), Err(Error::Decrypt)));
     }
 
     #[test]

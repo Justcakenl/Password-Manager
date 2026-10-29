@@ -254,14 +254,10 @@ fn add(uv: &mut UnlockedVault, a: AddArgs) -> Result<()> {
     } else {
         ask_item_password(&a.gen_opts)?
     };
-    let entry = Entry::new(NewEntry {
-        name: a.name.clone(),
-        username,
-        password: password.to_string(),
-        url,
-        notes,
-        tags,
-    })?;
+    let entry = Entry::new(
+        NewEntry { name: a.name.clone(), username, password: password.to_string(), url, notes, tags },
+        uv.item_key(),
+    )?;
     let name = entry.name().to_string();
     uv.vault.add(entry)?;
     uv.save()?;
@@ -283,16 +279,27 @@ fn get(uv: &UnlockedVault, g: &GetArgs) -> Result<()> {
     println!("{}  {}", ui::bold("Tags:          "), or_dash(&e.tags().join(", ")));
     println!("{}  {}", ui::bold("Gewijzigd:     "), ui::format_time(e.modified()));
     if g.show {
-        println!("{}  {}", ui::bold("Notities:      "), or_dash(&ui::safe(e.notes(), true)));
-        println!("{}  {}", ui::bold("Wachtwoord:    "), or_dash(&ui::safe(e.password(), false)));
+        // Pas hier, op jouw uitdrukkelijke verzoek, worden ze ontsleuteld.
+        let key = uv.item_key();
+        let show = |label: &str, value: &str, keep_newlines: bool| -> Result<()> {
+            let shown = if value.is_empty() {
+                Zeroizing::new(empty.clone())
+            } else {
+                Zeroizing::new(ui::safe(value, keep_newlines))
+            };
+            ui::print_secret_line(&format!("{}  ", ui::bold(label)), &shown)?;
+            Ok(())
+        };
+        show("Notities:      ", &e.notes(key)?, true)?;
+        show("Wachtwoord:    ", &e.password(key)?, false)?;
         return Ok(());
     }
     println!(
         "{}  {}",
         ui::bold("Notities:      "),
-        if e.notes().is_empty() { empty.clone() } else { hidden.clone() }
+        if e.has_notes() { hidden.clone() } else { empty.clone() }
     );
-    println!("{}  {}", ui::bold("Wachtwoord:    "), if e.password().is_empty() { empty } else { hidden });
+    println!("{}  {}", ui::bold("Wachtwoord:    "), if e.has_password() { hidden } else { empty });
     if g.no_copy {
         return Ok(());
     }
@@ -301,11 +308,11 @@ fn get(uv: &UnlockedVault, g: &GetArgs) -> Result<()> {
             return Err(Error::InvalidInput("dit item heeft geen gebruikersnaam".into()));
         }
         copy_to_clipboard(e.username(), "De gebruikersnaam")
-    } else if e.password().is_empty() {
+    } else if !e.has_password() {
         ui::info("Dit item heeft geen wachtwoord.");
         Ok(())
     } else {
-        copy_to_clipboard(e.password(), "Het wachtwoord")
+        copy_to_clipboard(&e.password(uv.item_key())?, "Het wachtwoord")
     }
 }
 
@@ -380,7 +387,8 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
     }
 
     // Alles-of-niets: bij een fout (bijv. bestaande naam) blijft het item ongewijzigd.
-    uv.vault.update(&old_name, |entry| {
+    let (vault, key) = uv.parts_mut();
+    vault.update(&old_name, |entry| {
         if let Some(u) = &username {
             entry.set_username(u)?;
         }
@@ -391,10 +399,10 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
             entry.set_tags(t)?;
         }
         if let Some(n) = &notes {
-            entry.set_notes(n)?;
+            entry.set_notes(key, n)?;
         }
         if let Some(p) = &new_password {
-            entry.set_password(p)?;
+            entry.set_password(key, p)?;
         }
         if let Some(new_name) = &rename {
             entry.set_name(new_name)?;
@@ -475,7 +483,7 @@ fn search(vault: &Vault, query: &str) -> Result<()> {
 fn generate(g: &GenArgs, show: bool) -> Result<()> {
     let (secret, bits) = generate_secret(g)?;
     if show {
-        println!("{}", secret.as_str());
+        ui::print_secret_line("", &secret)?;
         ui::info(&format!("Sterkte: ongeveer {bits:.0} bits."));
         Ok(())
     } else {
@@ -522,9 +530,10 @@ fn export(uv: &UnlockedVault, file: &Path) -> Result<()> {
 
 fn import_vault(uv: &mut UnlockedVault, file: &Path) -> Result<()> {
     let pw = prompt::secret("Wachtwoord van het importbestand: ")?;
-    let other = storage::read_vault_file(file, pw.expose_secret().as_bytes())?;
+    let (other, other_key) = storage::read_vault_file(file, pw.expose_secret().as_bytes())?;
     drop(pw);
-    let (added, skipped) = uv.vault.merge(&other);
+    let (vault, key) = uv.parts_mut();
+    let (added, skipped) = vault.merge(&other, other_key.item_key(), key)?;
     if added > 0 {
         uv.save()?;
     }
@@ -549,8 +558,9 @@ fn import_csv(uv: &mut UnlockedVault, file: &Path) -> Result<()> {
             }
             _ => Error::Io(e),
         })?;
-    let parsed = import::parse_csv(f)?;
-    let (added, duplicates) = uv.vault.merge(&parsed.vault);
+    let parsed = import::parse_csv(f, uv.item_key())?;
+    let (vault, key) = uv.parts_mut();
+    let (added, duplicates) = vault.merge(&parsed.vault, key, key)?;
     if added > 0 {
         uv.save()?;
     }
@@ -603,6 +613,14 @@ fn info(paths: &VaultPaths) -> Result<()> {
                         if h.kdf.weaker_than_default() { " (lichter dan aanbevolen)" } else { "" }
                     );
                     println!("  Versleuteling:    XChaCha20-Poly1305");
+                    if h.version >= 2 {
+                        println!(
+                            "  Tweede laag:      elk wachtwoord en elke notitie apart versleuteld \
+                             (XChaCha20-Poly1305, eigen HKDF-subsleutel)"
+                        );
+                    } else {
+                        println!("  Tweede laag:      nog niet (oud formaat; wordt bij openen bijgewerkt)");
+                    }
                 }
                 Err(e) => println!("  Header:           onleesbaar ({e})"),
             }

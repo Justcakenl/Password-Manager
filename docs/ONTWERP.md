@@ -14,8 +14,8 @@ src/
 ├── error.rs        één fouttype, meldingen zonder geheimen
 ├── secure_mem.rs   wissende allocator, mlock-buffer, core dumps uit
 ├── crypto.rs       Argon2id + XChaCha20-Poly1305 (RustCrypto-crates)
-├── format.rs       versioneerde bestandskop + versleutelen/ontsleutelen
-├── vault.rs        items (naam, gebruiker, wachtwoord, URL, notities, tags)
+├── format.rs       versioneerde bestandskop, sleutelafleiding (HKDF), migratie v1 → v2
+├── vault.rs        items; wachtwoord en notities per item versleuteld
 ├── storage.rs      XDG-pad, atomisch schrijven, back-up, bestandsslot
 ├── generator.rs    wachtwoorden en diceware-passphrases
 ├── import.rs       CSV-import uit andere managers
@@ -33,6 +33,9 @@ De CLI is een dunne laag. Alle beveiligingslogica zit in de bibliotheek.
 | Sleutelafleiding | Argon2id v1.3, standaard m=64 MiB, t=3, p=4, salt van 32 bytes | Bestand tegen raden met GPU's; parameters staan in de header en zijn instelbaar |
 | Versleuteling | XChaCha20-Poly1305, nieuwe willekeurige nonce van 24 bytes per keer opslaan | Authenticated encryption; een willekeurige nonce van 24 bytes is veilig |
 | Header | Volledige header is AEAD "associated data" | Elke wijziging, ook aan de parameters, valt op |
+| Sleutelscheiding | HKDF-SHA256 leidt uit de Argon2-sleutel een bestandssleutel en een itemsleutel af | Elke sleutel dient één doel |
+| Tweede laag | Elk wachtwoord en elke notitie apart versleuteld (XChaCha20-Poly1305, eigen nonce, veldnaam als associated data) | Ook in een geopende kluis staan geheimen alleen versleuteld in het geheugen; ontsleutelen gebeurt per item, op verzoek |
+| Migratie | Formaat 1 (één laag) wordt bij openen automatisch omgezet naar formaat 2 | Bestaande kluizen blijven werken |
 | Willekeur | Alleen `getrandom` (OS-CSPRNG) | Geen eigen of zwakke RNG |
 | Geheugen | Wissende globale allocator + `SecureBuf` (mlock, MADV_DONTDUMP) + `secrecy`/`zeroize` | Zo weinig mogelijk kopieën van geheimen in RAM en swap |
 | Proces | `RLIMIT_CORE=0` en `PR_SET_DUMPABLE=0` | Geen core dumps, geen ptrace door andere processen van dezelfde gebruiker |

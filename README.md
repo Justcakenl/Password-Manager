@@ -302,24 +302,36 @@ In gewone taal:
    4 lanes, een willekeurige salt van 32 bytes) omgezet in een sleutel van
    256 bits. Argon2id is expres traag en gebruikt veel geheugen. Raden met
    dure videokaarten wordt daardoor erg kostbaar.
-2. De hele kluis wordt met **XChaCha20-Poly1305** versleuteld. Dat versleutelt
+2. **Twee lagen versleuteling.** Uit die sleutel worden met HKDF-SHA256 twee
+   aparte sleutels gemaakt:
+   - de **bestandssleutel** versleutelt de hele kluis op schijf;
+   - de **itemsleutel** versleutelt daarnaast **elk wachtwoord en elke notitie
+     apart**, elk met een eigen willekeurige nonce.
+
+   Ook als je kluis open is (bijvoorbeeld in `kluis shell`), staan wachtwoorden
+   en notities dus alleen versleuteld in het geheugen. Ze worden pas
+   ontsleuteld op het moment dat jij er één opvraagt (`get`, `get --show`)
+   en meteen daarna weer gewist. `list` en `search` ontsleutelen nooit een
+   wachtwoord. Getest: in het geheugen van een geopende kluis staat
+   het wachtwoord 0 keer als leesbare tekst, ook direct na `get --show`.
+3. De hele kluis wordt met **XChaCha20-Poly1305** versleuteld. Dat versleutelt
    en controleert tegelijk ("authenticated encryption"). Verandert er ook maar
    één bit in het bestand, dan weigert `kluis` het te openen. Bij elke keer
    opslaan hoort een nieuwe willekeurige nonce.
-3. Het bestand begint met een header met versienummer en instellingen. Die
+4. Het bestand begint met een header met versienummer en instellingen. Die
    header telt mee in de controle, dus ook daar valt niet mee te knoeien.
-4. Opslaan gaat **atomisch**: eerst naar een tijdelijk bestand, dan `fsync`,
+5. Opslaan gaat **atomisch**: eerst naar een tijdelijk bestand, dan `fsync`,
    dan hernoemen. Bij stroomuitval heb je altijd óf de oude, óf de nieuwe kluis.
-5. Bestanden krijgen rechten 600, de map 700. Alleen jij kunt erbij.
-6. In het geheugen worden geheimen na gebruik gewist (`zeroize`, `secrecy`
+6. Bestanden krijgen rechten 600, de map 700. Alleen jij kunt erbij.
+7. In het geheugen worden geheimen na gebruik gewist (`zeroize`, `secrecy`
    en een allocator die al het vrijgegeven geheugen wist). De sleutel en de
    ontsleutelde kluis staan in met `mlock` vergrendeld geheugen, dus niet in
    swap. Core dumps staan uit en andere programma's kunnen niet in het
    geheugen meekijken (`PR_SET_DUMPABLE=0`).
-7. Alle willekeur komt van het besturingssysteem (`getrandom`).
-8. `kluis` maakt nooit een netwerkverbinding.
+8. Alle willekeur komt van het besturingssysteem (`getrandom`).
+9. `kluis` maakt nooit een netwerkverbinding.
 
-De gebruikte crates (onder andere `argon2`, `chacha20poly1305`, `blake2`,
+De gebruikte crates (onder andere `argon2`, `chacha20poly1305`, `hkdf`, `sha2`, `blake2`,
 `zeroize` en `subtle`) komen van het RustCrypto-project. `kluis` implementeert
 zelf geen cryptografie. Meer details staan in [`docs/ONTWERP.md`](docs/ONTWERP.md).
 
@@ -350,10 +362,11 @@ tegen beschermen):
    gebruiker of als root, dan kan die je hoofdwachtwoord onderscheppen terwijl
    je het typt, of je geheugen en klembord lezen. Installeer alleen software
    die je vertrouwt.
-2. **Swap en slaapstand (hibernate).** Alleen de sleutel en de ontsleutelde
-   kluis staan in vergrendeld geheugen. Losse kopieën (bijvoorbeeld tijdens
-   het verwerken) en het geheugen van Argon2 zijn niet vergrendeld en kunnen
-   in swap belanden. Bij hibernatie gaat al het geheugen naar schijf. Gebruik
+2. **Swap en slaapstand (hibernate).** De sleutels en de ontsleutelde kluis
+   staan in vergrendeld geheugen, en wachtwoorden en notities blijven ook in
+   het geheugen versleuteld. Namen, gebruikersnamen en URL's van een geopende
+   kluis, het ene wachtwoord dat je net opvraagt en het geheugen van Argon2
+   zijn niet vergrendeld en kunnen in swap belanden. Bij hibernatie gaat al het geheugen naar schijf. Gebruik
    versleutelde swap (LUKS), zram, of helemaal geen swap.
 3. **Het klembord.** Zolang een wachtwoord op het klembord staat (max. 20 s),
    kan elk programma in je sessie het lezen. Klembordbeheerders (KDE Klipper,

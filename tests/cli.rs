@@ -290,7 +290,9 @@ fn info_werkt_zonder_wachtwoord() {
     k.run(&["info"], "").success().stdout(
         contains("Argon2id, 8 MiB")
             .and(contains("Rechten:          600"))
-            .and(contains("Core dumps uit:   ja")),
+            .and(contains("Core dumps uit:   ja"))
+            .and(contains("Formaatversie:    2"))
+            .and(contains("elk wachtwoord en elke notitie apart versleuteld")),
     );
 }
 

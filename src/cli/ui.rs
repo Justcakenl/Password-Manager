@@ -76,6 +76,35 @@ pub fn safe(s: &str, keep_newlines: bool) -> String {
         .collect()
 }
 
+/// Schrijf een regel met een geheim rechtstreeks naar stdout (fd 1).
+///
+/// BEVEILIGING: `println!` gaat via een interne buffer van Rust die nooit
+/// wordt vrijgegeven en dus ook niet gewist; het laatst getoonde wachtwoord
+/// zou daar blijven staan. Hier bouwen we de regel in een `Zeroizing`-buffer
+/// en schrijven die zonder tussenbuffer weg, waarna hij gewist wordt.
+pub fn print_secret_line(label: &str, value: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    std::io::stdout().flush()?;
+    let mut line = zeroize::Zeroizing::new(String::with_capacity(label.len() + value.len() + 8));
+    line.push_str(label);
+    line.push_str(value);
+    line.push('\n');
+    let mut bytes = line.as_bytes();
+    while !bytes.is_empty() {
+        // SAFETY: geldige buffer met de opgegeven lengte.
+        let n = unsafe { libc::write(1, bytes.as_ptr().cast(), bytes.len()) };
+        if n < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+        bytes = &bytes[n as usize..];
+    }
+    Ok(())
+}
+
 /// Unix-tijd → "2026-10-29 14:03 UTC".
 pub fn format_time(secs: u64) -> String {
     if secs == 0 {
