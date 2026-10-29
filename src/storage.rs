@@ -21,7 +21,10 @@ use crate::error::{Error, Result};
 use crate::format::{self, Header, MAX_FILE_SIZE, VaultKey};
 use crate::vault::Vault;
 
-const APP_DIR: &str = "kluis";
+const APP_DIR: &str = "cakepass";
+/// Name of the folder used by the first releases (when the command was still
+/// called `kluis`). Moved to the new name automatically, see [`app_dir`].
+const LEGACY_APP_DIR: &str = "kluis";
 const VAULT_FILE: &str = "vault.enc";
 
 /// All paths that belong to one vault.
@@ -45,14 +48,30 @@ impl VaultPaths {
     }
 
     /// Default location according to the XDG Base Directory specification:
-    /// `$XDG_DATA_HOME/kluis/vault.enc`, of `~/.local/share/kluis/vault.enc`.
+    /// `$XDG_DATA_HOME/cakepass/vault.enc`, of `~/.local/share/cakepass/vault.enc`.
     pub fn default_location() -> Result<VaultPaths> {
-        Ok(Self::for_file(data_home()?.join(APP_DIR).join(VAULT_FILE)))
+        Ok(Self::for_file(app_dir(&data_home()?).join(VAULT_FILE)))
     }
 
     pub fn dir(&self) -> &Path {
         self.file.parent().unwrap_or(Path::new("."))
     }
+}
+
+/// The CakePass folder inside an XDG base directory (data, config or cache).
+///
+/// If only the folder of the first releases (`kluis`) exists, it is renamed
+/// to `cakepass` first, so an existing vault is never left behind. A plain
+/// rename within the same directory is atomic and keeps the permissions.
+pub fn app_dir(base: &Path) -> PathBuf {
+    let new = base.join(APP_DIR);
+    let old = base.join(LEGACY_APP_DIR);
+    if fs::symlink_metadata(&new).is_err()
+        && fs::symlink_metadata(&old).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
+    {
+        let _ = fs::rename(&old, &new);
+    }
+    new
 }
 
 fn data_home() -> Result<PathBuf> {
@@ -99,7 +118,7 @@ fn read_file(path: &Path) -> Result<Vec<u8>> {
     Ok(data)
 }
 
-/// Read only the (unencrypted) header, for `kluis info`.
+/// Read only the (unencrypted) header, for `cakepass info`.
 pub fn read_header(path: &Path) -> Result<Header> {
     Ok(Header::decode(&read_file(path)?)?.0)
 }
@@ -233,7 +252,7 @@ impl UnlockedVault {
         if key.kdf().weaker_than_default() {
             warnings.push(
                 "This vault uses lighter Argon2 settings than recommended. \
-                 Consider running `kluis passwd` with the default settings."
+                 Consider running `cakepass passwd` with the default settings."
                     .into(),
             );
         }
@@ -347,7 +366,7 @@ const KEEP_UPDATE_BACKUPS: usize = 3;
 /// there are more than three. Returns `None` if there is no vault (yet).
 ///
 /// The copy is an ordinary encrypted vault file and opens with your master
-/// password: `kluis --vault <copy> list`.
+/// password: `cakepass --vault <copy> list`.
 pub fn backup_before_update(paths: &VaultPaths) -> Result<Option<PathBuf>> {
     let data = match read_file(&paths.file) {
         Ok(d) => d,
@@ -546,7 +565,7 @@ mod tests {
         let p = paths(&dir);
         let mut uv = UnlockedVault::create(p, PW, P).unwrap();
         add(&mut uv, "x");
-        let out = dir.path().join("export.kluis");
+        let out = dir.path().join("export.cakepass");
         uv.export_to(&out, b"export password", P).unwrap();
         assert_eq!(fs::metadata(&out).unwrap().mode() & 0o777, 0o600);
         assert!(matches!(uv.export_to(&out, b"x", P), Err(Error::AlreadyExists(_))));
@@ -610,5 +629,23 @@ mod tests {
         let h = read_header(&p.file).unwrap();
         assert_eq!(h.version, 2);
         assert_eq!(h.kdf, P);
+    }
+
+    #[test]
+    fn old_app_folder_is_moved_to_the_new_name() {
+        let base = tempfile::tempdir().unwrap();
+        // Nothing there yet: just the new path, nothing created.
+        assert_eq!(app_dir(base.path()), base.path().join("cakepass"));
+        assert!(!base.path().join("cakepass").exists());
+        // Folder of the first releases: moved, contents kept.
+        fs::create_dir(base.path().join("kluis")).unwrap();
+        fs::write(base.path().join("kluis").join("vault.enc"), b"data").unwrap();
+        let dir = app_dir(base.path());
+        assert_eq!(fs::read(dir.join("vault.enc")).unwrap(), b"data");
+        assert!(!base.path().join("kluis").exists());
+        // A second call changes nothing; an existing new folder is never touched.
+        fs::create_dir(base.path().join("kluis")).unwrap();
+        assert_eq!(app_dir(base.path()), dir);
+        assert!(base.path().join("kluis").exists(), "old folder left alone when the new one exists");
     }
 }

@@ -2,11 +2,11 @@
 Description=CakePass: check for a new version
 Documentation=https://github.com/Justcakenl/passcode-manager-cli-
 # Only checks and reports; nothing is installed and your vault is not opened.
-ConditionPathExists=/usr/share/kluis/source-dir
+ConditionPathExists=/usr/share/cakepass/source-dir
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/kluis update --check --notify
+ExecStart=/usr/bin/cakepass update --check --notify
 Nice=10
 NoNewPrivileges=yes
 PrivateTmp=yes

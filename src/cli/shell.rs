@@ -1,4 +1,4 @@
-//! `kluis shell`: unlock once, then type commands.
+//! `cakepass shell`: unlock once, then type commands.
 //!
 //! SECURITY: when no input arrives for `timeout` seconds, the vault is
 //! locked automatically: the key and all decrypted data are wiped from memory
@@ -9,8 +9,8 @@ use std::io::{self, Write};
 
 use clap::FromArgMatches;
 
-use kluis::storage::VaultPaths;
-use kluis::{Error, Result};
+use cakepass::storage::VaultPaths;
+use cakepass::{Error, Result};
 
 use super::args::{ShellLine, shell_command};
 use super::{commands, prompt, ui};
@@ -145,7 +145,7 @@ pub fn run(paths: &VaultPaths, timeout: u64) -> Result<()> {
             ui::error("invalid quotes");
             continue;
         };
-        let argv = std::iter::once("kluis".to_string()).chain(join_name_words(words));
+        let argv = std::iter::once("cakepass".to_string()).chain(join_name_words(words));
         let parsed = shell_command().try_get_matches_from(argv).and_then(|m| ShellLine::from_arg_matches(&m));
         match parsed {
             Ok(parsed) => match commands::execute(&mut uv, parsed.command, true) {

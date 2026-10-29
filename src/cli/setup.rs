@@ -1,4 +1,4 @@
-//! First-time setup (`kluis setup`) and the `kluis config` command.
+//! First-time setup (`cakepass setup`) and the `cakepass config` command.
 //!
 //! The setup wizard asks three things, in this order:
 //!
@@ -11,8 +11,8 @@
 
 use std::fs;
 
-use kluis::storage::VaultPaths;
-use kluis::{Error, Result};
+use cakepass::storage::VaultPaths;
+use cakepass::{Error, Result};
 
 use super::args::{ConfigAction, ConfigKey, KdfArgs};
 use super::config::{self, Config, LOCK_MINUTES_RANGE};
@@ -50,7 +50,9 @@ pub fn run(paths: &VaultPaths, kdf_args: &KdfArgs) -> Result<()> {
     logo::set_animation(cfg.animation);
 
     ui::info(&ui::pink_bold("\nStep 2 of 3 — Auto-lock"));
-    ui::info("  The interactive mode (`kluis`) locks itself and wipes your secrets from memory when idle.");
+    ui::info(
+        "  The interactive mode (`cakepass`) locks itself and wipes your secrets from memory when idle.",
+    );
     cfg.lock_timeout_minutes = ask_minutes(cfg.lock_timeout_minutes)?;
 
     config::save(&cfg)?;
@@ -60,7 +62,7 @@ pub fn run(paths: &VaultPaths, kdf_args: &KdfArgs) -> Result<()> {
     if have_vault {
         ui::info(&format!(
             "  A vault already exists at {}; keeping it as it is.\n  \
-             (Change its master password with `kluis passwd`.)",
+             (Change its master password with `cakepass passwd`.)",
             paths.file.display()
         ));
     } else {
@@ -68,17 +70,17 @@ pub fn run(paths: &VaultPaths, kdf_args: &KdfArgs) -> Result<()> {
     }
 
     ui::success("All set!");
-    ui::info("  Start CakePass:      kluis");
-    ui::info("  Add something:       kluis add GitHub   (or --type api, --type note)");
-    ui::info("  Change settings:     kluis config");
-    ui::info("  Update later:        kluis --update");
+    ui::info("  Start CakePass:      cakepass");
+    ui::info("  Add something:       cakepass add GitHub   (or --type api, --type note)");
+    ui::info("  Change settings:     cakepass config");
+    ui::info("  Update later:        cakepass --update");
     if !have_vault {
         ui::info("  Make regular copies of the vault file (see the README, \"Backups\").");
     }
     Ok(())
 }
 
-/// `kluis config` (show) and `kluis config set <key> <value>`.
+/// `cakepass config` (show) and `cakepass config set <key> <value>`.
 pub fn config_command(action: Option<ConfigAction>) -> Result<()> {
     match action {
         None | Some(ConfigAction::Show) => {
@@ -115,5 +117,5 @@ fn show(cfg: &Config) {
     println!("  animation:     {}", if cfg.animation { "on" } else { "off" });
     println!("  lock-timeout:  {} minute(s)", cfg.lock_timeout_minutes);
     println!("  file:          {}", config::path().map_or("-".to_string(), |p| p.display().to_string()));
-    ui::info("Change with: kluis config set animation off   |   kluis config set lock-timeout 10");
+    ui::info("Change with: cakepass config set animation off   |   cakepass config set lock-timeout 10");
 }

@@ -1,13 +1,13 @@
-//! `kluis --update`: update CakePass to the newest version on GitHub.
+//! `cakepass --update`: update CakePass to the newest version on GitHub.
 //!
 //! SECURITY-CRITICAL – how this works and why it is as safe as possible:
 //!
 //! - The program itself contains NO network code. Only this command starts
 //!   the program `git`, and `git` uses your own GitHub access (SSH key or
-//!   login). `kluis` never stores a token or password for GitHub.
+//!   login). `cakepass` never stores a token or password for GitHub.
 //! - The command does NOT unlock your vault: while updating there is no key
 //!   or password in memory.
-//! - Your vault (`~/.local/share/kluis/`) lives outside the installation and
+//! - Your vault (`~/.local/share/cakepass/`) lives outside the installation and
 //!   is never overwritten. Beforehand we make an extra copy (`.pre-update-…`).
 //!   Newer versions read older vault formats and convert them when opened; an
 //!   older version cleanly refuses a newer format.
@@ -32,18 +32,18 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use cakepass::storage::{self, VaultPaths};
+use cakepass::{Error, Result};
 use clap::ValueEnum;
-use kluis::storage::{self, VaultPaths};
-use kluis::{Error, Result};
 
 use super::{prompt, ui};
 
 /// The commit this program was built from (see build.rs).
-pub const INSTALLED_COMMIT: &str = env!("KLUIS_GIT_COMMIT");
+pub const INSTALLED_COMMIT: &str = env!("CAKEPASS_GIT_COMMIT");
 /// Where the PKGBUILD records the source folder of the installation.
-const SOURCE_DIR_FILE: &str = "/usr/share/kluis/source-dir";
+const SOURCE_DIR_FILE: &str = "/usr/share/cakepass/source-dir";
 const FETCH_TIMEOUT: Duration = Duration::from_secs(120);
-const TIMER: &str = "kluis-update.timer";
+const TIMER: &str = "cakepass-update.timer";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum AutoMode {
@@ -176,10 +176,10 @@ fn cache_file() -> Option<PathBuf> {
         Some(p) if p.is_absolute() => p,
         _ => PathBuf::from(std::env::var_os("HOME")?).join(".cache"),
     };
-    Some(base.join("kluis").join("update-status"))
+    Some(storage::app_dir(&base).join("update-status"))
 }
 
-/// What the last check found (stored in `~/.cache/kluis/update-status`).
+/// What the last check found (stored in `~/.cache/cakepass/update-status`).
 #[derive(Debug, Default, PartialEq, Eq)]
 struct CachedStatus {
     remote: String,
@@ -235,7 +235,7 @@ fn is_installed(commit: &str) -> bool {
 /// The installed commit; can be overridden in debug builds for tests.
 fn installed_commit() -> Option<String> {
     #[cfg(debug_assertions)]
-    if let Ok(c) = std::env::var("KLUIS_TEST_INSTALLED_COMMIT") {
+    if let Ok(c) = std::env::var("CAKEPASS_TEST_INSTALLED_COMMIT") {
         return is_hex(&c).then_some(c);
     }
     is_hex(INSTALLED_COMMIT).then(|| INSTALLED_COMMIT.to_string())
@@ -243,19 +243,19 @@ fn installed_commit() -> Option<String> {
 
 fn running_as_root() -> bool {
     #[cfg(debug_assertions)]
-    if std::env::var_os("KLUIS_TEST_ALLOW_ROOT").is_some() {
+    if std::env::var_os("CAKEPASS_TEST_ALLOW_ROOT").is_some() {
         return false;
     }
     // SAFETY: geteuid is always safe.
     unsafe { libc::geteuid() == 0 }
 }
 
-/// Short notice for `kluis info` and the login screen (no network: only
+/// Short notice for `cakepass info` and the login screen (no network: only
 /// reads the result of the last check).
 pub fn pending_notice() -> Option<String> {
     CachedStatus::read()
         .update_available()
-        .then(|| "🍰 A new version of CakePass is available. Type in your terminal: kluis --update".into())
+        .then(|| "🍰 A new version of CakePass is available. Type in your terminal: cakepass --update".into())
 }
 
 // ───────────────────────── the command ─────────────────────────
@@ -331,7 +331,7 @@ pub fn run(opts: &Options, vault: &VaultPaths) -> Result<()> {
     }
     let (count, lines) = changelog(&s);
     if opts.check_only {
-        ui::info(&format!("🍰 Update available ({count} new change(s)). Install it with: kluis --update"));
+        ui::info(&format!("🍰 Update available ({count} new change(s)). Install it with: cakepass --update"));
         if opts.notify {
             notify(&s.remote_tip);
         }
@@ -357,7 +357,7 @@ fn notify(remote: &str) {
     }
     let sent = Command::new("notify-send")
         .args(["-a", "CakePass", "-i", "dialog-information", "CakePass update available"])
-        .arg("Type in a terminal: kluis --update")
+        .arg("Type in a terminal: cakepass --update")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -474,7 +474,7 @@ fn apply(s: &Situation, count: usize, lines: &[String], opts: &Options, vault: &
 
     // 6. Done
     CachedStatus::default().write_if(false, "");
-    ui::success("CakePass has been updated. Start `kluis` again to use the new version.");
+    ui::success("CakePass has been updated. Start `cakepass` again to use the new version.");
     ui::info(
         "Your vault was not touched. If there is a new vault format, it is converted automatically the next time you unlock.",
     );
@@ -486,7 +486,7 @@ fn remove_old_packages(dir: &Path) {
     let Ok(rd) = fs::read_dir(dir) else { return };
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        if name.starts_with("kluis-") && name.contains(".pkg.tar") {
+        if name.starts_with("cakepass-") && name.contains(".pkg.tar") {
             let _ = fs::remove_file(e.path());
         }
     }
@@ -526,7 +526,7 @@ fn auto(mode: AutoMode) -> Result<()> {
                 )));
             }
             ui::success(
-                "Every day CakePass checks whether there is a new version. You get a notification; you install it yourself with `kluis --update`.",
+                "Every day CakePass checks whether there is a new version. You get a notification; you install it yourself with `cakepass --update`.",
             );
             ui::info(&ui::dim_err(
                 "  Tip: the check only works without a password prompt if your GitHub access works automatically \
@@ -536,7 +536,9 @@ fn auto(mode: AutoMode) -> Result<()> {
         }
         AutoMode::Off => {
             let (_, _) = systemctl(&["disable", "--now", TIMER])?;
-            ui::success("The automatic check is off. You can still update manually with `kluis --update`.");
+            ui::success(
+                "The automatic check is off. You can still update manually with `cakepass --update`.",
+            );
             Ok(())
         }
     }

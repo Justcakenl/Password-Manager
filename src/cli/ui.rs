@@ -44,8 +44,8 @@ pub fn pink_bold(text: &str) -> String {
 }
 
 /// A colored label per item type (for stdout).
-pub fn kind_label(kind: kluis::vault::Kind) -> String {
-    use kluis::vault::Kind;
+pub fn kind_label(kind: cakepass::vault::Kind) -> String {
+    use cakepass::vault::Kind;
     let code = match kind {
         Kind::Login => "38;5;211",
         Kind::Api => "38;5;117",

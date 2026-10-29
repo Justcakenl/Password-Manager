@@ -10,11 +10,11 @@
 #   3. downloads the CakePass source code with git into ~/cakepass
 #      (it uses YOUR GitHub access: gh, an SSH key, or a login prompt)
 #   4. builds, tests and installs the package with makepkg
-#   5. starts the first-time setup (`kluis setup`): animation on/off and your
+#   5. starts the first-time setup (`cakepass setup`): animation on/off and your
 #      master password
 #
 # Your vault is never touched by this script. Running it again simply updates
-# CakePass (the same thing `kluis --update` does).
+# CakePass (the same thing `cakepass --update` does).
 #
 # Options:
 #   -y, --yes        do not ask for confirmations (sudo still asks for your password)
@@ -106,9 +106,9 @@ main() {
 
   if [ "$UNINSTALL" -eq 1 ]; then
     step "Removing CakePass"
-    tty_run sudo pacman -R ${NOCONFIRM[@]+"${NOCONFIRM[@]}"} kluis
-    ok "The kluis program was removed."
-    say "Your vault in ~/.local/share/kluis was NOT removed, and neither was the source folder $DIR."
+    tty_run sudo pacman -R ${NOCONFIRM[@]+"${NOCONFIRM[@]}"} cakepass
+    ok "The cakepass program was removed."
+    say "Your vault in ~/.local/share/cakepass was NOT removed, and neither was the source folder $DIR."
     say "Remove them yourself only if you are sure you no longer need them."
     return 0
   fi
@@ -148,24 +148,29 @@ main() {
   # ── 4. build and install ──
   step "[4/5] Building, testing and installing"
   say "This takes a few minutes the first time. You will be asked for your sudo password."
+  if pacman -Q kluis >/dev/null 2>&1; then
+    say "Replacing the old 'kluis' program by 'cakepass' (same program, new name)."
+    say "${DIM}Your vault is not touched; its folder is renamed automatically the first time you run cakepass.${OFF}"
+    tty_run sudo pacman -R ${NOCONFIRM[@]+"${NOCONFIRM[@]}"} kluis
+  fi
   ( cd "$DIR/packaging/arch" && tty_run makepkg -si -f ${NOCONFIRM[@]+"${NOCONFIRM[@]}"} ) \
     || die "the build or installation failed. Nothing was changed about an existing CakePass."
-  command -v kluis >/dev/null 2>&1 || die "kluis was not found after installing. Open a new terminal and try again."
-  ok "installed: $(kluis --version 2>/dev/null || echo kluis)"
+  command -v cakepass >/dev/null 2>&1 || die "cakepass was not found after installing. Open a new terminal and try again."
+  ok "installed: $(cakepass --version 2>/dev/null || echo cakepass)"
 
   # ── 5. first-time setup ──
   step "[5/5] First-time setup"
   if [ "$SETUP" -eq 1 ] && [ "$HAVE_TTY" -eq 1 ]; then
     say "A short wizard follows: animation on/off, auto-lock time and your master password."
     printf '\n'
-    tty_run kluis setup || warn "setup was cancelled. Run it again any time with:  kluis setup"
+    tty_run cakepass setup || warn "setup was cancelled. Run it again any time with:  cakepass setup"
   else
-    say "Run the setup when you are ready:  ${BOLD}kluis setup${OFF}"
+    say "Run the setup when you are ready:  ${BOLD}cakepass setup${OFF}"
   fi
 
   printf '\n%s  All done! 🍰%s\n' "$GREEN$BOLD" "$OFF"
-  say "Start CakePass:   ${BOLD}kluis${OFF}"
-  say "Update later:     ${BOLD}kluis --update${OFF}"
+  say "Start CakePass:   ${BOLD}cakepass${OFF}"
+  say "Update later:     ${BOLD}cakepass --update${OFF}"
   say "Keep the folder ${BOLD}$DIR${OFF} – the updater uses it."
   printf '\n'
 }

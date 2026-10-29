@@ -1,4 +1,4 @@
-//! Integration tests: run the real `kluis` program with input via stdin.
+//! Integration tests: run the real `cakepass` program with input via stdin.
 //!
 //! All tests use a temporary directory and light Argon2 settings
 //! (8 MiB, t=1) so they are fast. A clipboard is never used. The settings
@@ -37,8 +37,8 @@ impl Vaulty {
     }
 
     fn cmd(&self) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_kluis"));
-        c.env("KLUIS_VAULT", &self.path)
+        let mut c = Command::new(env!("CARGO_BIN_EXE_cakepass"));
+        c.env("CAKEPASS_VAULT", &self.path)
             .env("NO_COLOR", "1")
             .env("XDG_CONFIG_HOME", self.dir().join("config-home"))
             .env_remove("WAYLAND_DISPLAY")
@@ -60,7 +60,18 @@ impl Vaulty {
 
     fn add(&self, name: &str, user: &str, password: &str) {
         self.cmd()
-            .args(["add", name, "--username", user, "--url", "https://example.org", "--tags", "work,test"])
+            .args([
+                "add",
+                name,
+                "--username",
+                user,
+                "--email",
+                "john@example.org",
+                "--url",
+                "https://example.org",
+                "--tags",
+                "work,test",
+            ])
             .write_stdin(format!("{PW}\n{password}\n"))
             .assert()
             .success();
@@ -116,7 +127,7 @@ fn add_get_and_show() {
     k.run(&["list", "--tag", "private"], &format!("{PW}\n")).success().stderr(contains("No items match"));
 
     // A duplicate name is rejected.
-    k.run(&["add", "github", "-u", "x", "--url", "", "-t", ""], &format!("{PW}\nx\n"))
+    k.run(&["add", "github", "-u", "x", "-e", "", "--url", "", "-t", ""], &format!("{PW}\nx\n"))
         .failure()
         .stderr(contains("already exists"));
 }
@@ -124,8 +135,8 @@ fn add_get_and_show() {
 #[test]
 fn interactive_add_with_generated_password() {
     let k = Vaulty::new().init();
-    // username, url, tags, notes, password (empty = generate)
-    k.run(&["add", "Mail"], &format!("{PW}\nme@mail.com\nhttps://mail.com\npriv\nsecret note\n\n"))
+    // username, e-mail, url, tags, notes, password (empty = generate)
+    k.run(&["add", "Mail"], &format!("{PW}\nmailuser\nme@mail.com\nhttps://mail.com\npriv\nsecret note\n\n"))
         .success()
         .stderr(contains("generated (24 characters"));
     let out = k.run(&["get", "mail", "--show"], &format!("{PW}\n")).success().get_output().stdout.clone();
@@ -197,7 +208,7 @@ fn backup_holds_previous_version() {
     k.add("One", "a", "pw-one-1234");
     k.add("Two", "b", "pw-two-1234");
     let bak = k.dir().join("vault.enc.bak");
-    let out = Command::new(env!("CARGO_BIN_EXE_kluis"))
+    let out = Command::new(env!("CARGO_BIN_EXE_cakepass"))
         .args(["--vault", bak.to_str().unwrap(), "list"])
         .env("NO_COLOR", "1")
         .write_stdin(format!("{PW}\n"))
@@ -215,7 +226,7 @@ fn change_master_password() {
     k.run(&["get", "github", "--show"], &format!("{PW2}\n")).success().stdout(contains(ITEM_PW));
     // The backup no longer opens with the old password either.
     let bak = k.dir().join("vault.enc.bak");
-    Command::new(env!("CARGO_BIN_EXE_kluis"))
+    Command::new(env!("CARGO_BIN_EXE_cakepass"))
         .args(["--vault", bak.to_str().unwrap(), "list"])
         .write_stdin(format!("{PW}\n"))
         .assert()
@@ -226,7 +237,7 @@ fn change_master_password() {
 fn export_and_import() {
     let a = Vaulty::new().init();
     a.add("GitHub", "john", ITEM_PW);
-    let export = a.dir().join("export.kluis");
+    let export = a.dir().join("export.cakepass");
     let export_s = export.to_str().unwrap();
     a.run(&["export", export_s], &format!("{PW}\n{PW2}\n{PW2}\n")).success();
     // An existing file is not overwritten.
@@ -291,14 +302,14 @@ fn info_works_without_password() {
             .and(contains("Permissions:      600"))
             .and(contains("Core dumps off:   yes"))
             .and(contains("Format version:   2"))
-            .and(contains("all item content encrypted separately")),
+            .and(contains("encrypted separately")),
     );
 }
 
 #[test]
 fn missing_vault_gives_hint() {
     let k = Vaulty::new();
-    k.run(&["list"], "").failure().stderr(contains("kluis setup"));
+    k.run(&["list"], "").failure().stderr(contains("cakepass setup"));
 }
 
 #[test]
@@ -326,12 +337,12 @@ fn shell_mode() {
     k.run(&["list"], &format!("{PW}\n")).success();
 }
 
-/// Start `kluis shell --timeout 1`, send `input` and leave stdin open.
+/// Start `cakepass shell --timeout 1`, send `input` and leave stdin open.
 /// Returns the stderr output as soon as the shell stops by itself.
 fn shell_until_locked(k: &Vaulty, input: &str) -> String {
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_kluis"))
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_cakepass"))
         .args(["shell", "--timeout", "1"])
-        .env("KLUIS_VAULT", &k.path)
+        .env("CAKEPASS_VAULT", &k.path)
         .env("NO_COLOR", "1")
         .env("XDG_CONFIG_HOME", k.dir().join("config-home"))
         .stdin(Stdio::piped())
@@ -392,7 +403,20 @@ fn store_and_get_api_keys() {
     let k = Vaulty::new().init();
     const KEY: &str = "sk-proj-Very-Secret-0042";
     k.run(
-        &["add", "OpenAI", "--type", "api", "-u", "project-1", "--url", "https://api.openai.com", "-t", "ai"],
+        &[
+            "add",
+            "OpenAI",
+            "--type",
+            "api",
+            "-u",
+            "project-1",
+            "-e",
+            "",
+            "--url",
+            "https://api.openai.com",
+            "-t",
+            "ai",
+        ],
         &format!("{PW}\n{KEY}\n"),
     )
     .success()
@@ -406,9 +430,12 @@ fn store_and_get_api_keys() {
         .success()
         .stdout(contains(format!("{:<16} {KEY}", "API key:")));
     // An empty key is rejected.
-    k.run(&["add", "Empty", "--type", "api", "-u", "", "--url", "", "-t", ""], &format!("{PW}\n\n"))
-        .failure()
-        .stderr(contains("must not be empty"));
+    k.run(
+        &["add", "Empty", "--type", "api", "-u", "", "-e", "", "--url", "", "-t", ""],
+        &format!("{PW}\n\n"),
+    )
+    .failure()
+    .stderr(contains("must not be empty"));
     // Replace the key.
     k.run(&["edit", "openai", "--password"], &format!("{PW}\nsk-new-1\n")).success();
     k.run(&["get", "openai", "--show"], &format!("{PW}\n"))
@@ -449,7 +476,7 @@ fn list_filters_by_type() {
     let k = Vaulty::new().init();
     k.add("GitHub", "john", ITEM_PW);
     k.run(
-        &["add", "Stripe", "--type", "api", "-u", "", "--url", "", "-t", ""],
+        &["add", "Stripe", "--type", "api", "-u", "", "-e", "", "--url", "", "-t", ""],
         &format!("{PW}\nsk_live_x\n"),
     )
     .success();
@@ -479,7 +506,7 @@ fn shell_joins_loose_words_into_a_name() {
 fn without_a_command() {
     let k = Vaulty::new();
     // No vault yet: a hint to create one.
-    k.run(&[], "").success().stderr(contains("kluis setup"));
+    k.run(&[], "").success().stderr(contains("cakepass setup"));
     // With a vault: login screen + interactive mode.
     let k = k.init();
     k.run(&[], &format!("{PW}\nlist\nexit\n")).success().stderr(contains("Vault unlocked"));
@@ -505,7 +532,7 @@ fn no_ansi_codes_outside_a_terminal() {
 // ───────────────────────── setup wizard and settings ─────────────────────────
 
 fn config_file(v: &Vaulty) -> std::path::PathBuf {
-    v.dir().join("config-home").join("kluis").join("config")
+    v.dir().join("config-home").join("cakepass").join("config")
 }
 
 #[test]
@@ -552,7 +579,7 @@ fn setup_keeps_an_existing_vault() {
     // No password questions when a vault already exists.
     v.run(&["setup"], "y\n3\n")
         .success()
-        .stderr(contains("keeping it as it is").and(contains("kluis passwd")));
+        .stderr(contains("keeping it as it is").and(contains("cakepass passwd")));
     assert_eq!(std::fs::read(&v.path).unwrap(), before, "vault untouched");
     let cfg = std::fs::read_to_string(config_file(&v)).unwrap();
     assert!(cfg.contains("animation=on") && cfg.contains("lock_timeout_minutes=3"), "{cfg}");
@@ -632,4 +659,201 @@ fn settings_and_flags_do_not_break_non_terminal_output() {
     // With the animation off, or the flag given, scripts still get clean output.
     v.run(&["--no-animation", "shell"], &format!("{PW}\nlist\nexit\n")).success().stdout(contains("GitHub"));
     v.run(&["shell"], &format!("{PW}\nlist\nexit\n")).success().stdout(contains("GitHub"));
+}
+
+// ───────────────────────── e-mail addresses ─────────────────────────
+
+#[test]
+fn email_addresses_are_stored_shown_and_searchable() {
+    let k = Vaulty::new().init();
+    k.add("GitHub", "john", ITEM_PW); // helper adds --email john@example.org
+
+    k.run(&["get", "github", "--no-copy"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains(format!("{:<16} john@example.org", "E-mail:")));
+    // Searchable, and copyable (no clipboard in the test → a clean error).
+    k.run(&["search", "john@example"], &format!("{PW}\n")).success().stdout(contains("GitHub"));
+    k.run(&["get", "github", "--copy-email"], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("no clipboard tool found"));
+    // Change it, then clear it.
+    k.run(&["edit", "github", "--email", "pete@example.net"], &format!("{PW}\n")).success();
+    k.run(&["get", "github", "--no-copy"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("pete@example.net").and(contains("john@example.org").not()));
+    k.run(&["edit", "github", "-e", ""], &format!("{PW}\n")).success();
+    k.run(&["get", "github", "--copy-email"], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("has no e-mail address"));
+    // A hint (not an error) when it does not look like an address.
+    k.run(&["edit", "github", "-e", "not-an-address"], &format!("{PW}\n"))
+        .success()
+        .stderr(contains("does not look like an e-mail address"));
+    // A note has no e-mail address.
+    k.run(&["add", "N", "--type", "note", "-e", "a@b.nl"], &format!("{PW}\n")).failure();
+}
+
+#[test]
+fn email_column_is_imported_from_csv() {
+    let k = Vaulty::new().init();
+    let csv = k.dir().join("export.csv");
+    std::fs::write(&csv, "name,url,username,email,password\nSite,https://s.nl,sam,sam@s.nl,pw-1\n").unwrap();
+    k.run(&["import-csv", csv.to_str().unwrap()], &format!("{PW}\nn\n")).success();
+    k.run(&["get", "site", "--show"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("sam@s.nl").and(contains("sam")).and(contains("pw-1")));
+}
+
+// ───────────────────────── generate + edit + save ─────────────────────────
+
+#[test]
+fn generate_and_save_in_one_step() {
+    let k = Vaulty::new().init();
+    // Master password first, then the same questions as `add`: username,
+    // e-mail, URL, tags, notes.
+    k.run(&["generate", "--save", "Mail", "-l", "30"], &format!("{PW}\nmailuser\nme@mail.com\n\n\n\n"))
+        .success()
+        .stderr(contains("Login 'Mail' saved (encrypted)"));
+    let out = k.run(&["get", "mail", "--show"], &format!("{PW}\n")).success().get_output().stdout.clone();
+    let text = String::from_utf8(out).unwrap();
+    assert!(text.contains("me@mail.com") && text.contains("mailuser"));
+    let pw_line = text.lines().find(|l| l.starts_with("Password:")).unwrap();
+    assert_eq!(pw_line.trim_start_matches("Password:").trim().chars().count(), 30);
+    // An existing name is refused before anything else happens.
+    k.run(&["generate", "--save", "MAIL"], &format!("{PW}\n")).failure().stderr(contains("already exists"));
+    // A wrong master password stops it before a password is even made.
+    k.run(&["generate", "--save", "Other"], "wrong-password\n")
+        .failure()
+        .stderr(contains("decryption failed"));
+}
+
+#[test]
+fn plain_generate_still_works_in_scripts() {
+    // Without a terminal there is no menu: same behavior as before.
+    let k = Vaulty::new();
+    let out = k.run(&["generate", "--show", "-l", "20"], "").success().get_output().clone();
+    assert_eq!(String::from_utf8(out.stdout).unwrap().trim().chars().count(), 20);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Strength:"));
+}
+
+// ───────────────────────── everything on disk is encrypted ─────────────────────────
+
+fn all_files(dir: &Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let p = entry.unwrap().path();
+        if p.is_dir() {
+            all_files(&p, out);
+        } else {
+            out.push((p.clone(), std::fs::read(&p).unwrap()));
+        }
+    }
+}
+
+#[test]
+fn nothing_readable_is_written_to_disk() {
+    use std::os::unix::fs::PermissionsExt;
+    let k = Vaulty::new().init();
+    // Distinctive markers for every kind of data the program can write.
+    let markers = [
+        "zq-name-4711",
+        "zq-user-4711",
+        "zq-mail-4711@example.org",
+        "zq-url-4711.example",
+        "zq-tag-4711",
+        "zq-pass-4711-Xv9",
+        "zq-note-4711",
+        "zq-api-name-4711",
+        "zq-api-id-4711",
+        "zq-api-mail-4711@example.org",
+        "zq-api-key-4711",
+        "zq-text-name-4711",
+        "zq-text-tag-4711",
+        "zq-text-body-4711",
+    ];
+    k.run(
+        &[
+            "add",
+            "zq-name-4711",
+            "-u",
+            "zq-user-4711",
+            "-e",
+            "zq-mail-4711@example.org",
+            "--url",
+            "https://zq-url-4711.example",
+            "-t",
+            "zq-tag-4711",
+        ],
+        &format!("{PW}\nzq-pass-4711-Xv9\n"),
+    )
+    .success();
+    k.run(&["edit", "zq-name-4711", "--notes"], &format!("{PW}\nzq-note-4711\n")).success();
+    k.run(
+        &[
+            "add",
+            "zq-api-name-4711",
+            "--type",
+            "api",
+            "-u",
+            "zq-api-id-4711",
+            "-e",
+            "zq-api-mail-4711@example.org",
+            "--url",
+            "",
+            "-t",
+            "",
+        ],
+        &format!("{PW}\nzq-api-key-4711\n"),
+    )
+    .success();
+    k.run(
+        &["add", "zq-text-name-4711", "--type", "note", "-t", "zq-text-tag-4711"],
+        &format!("{PW}\nzq-text-body-4711\n.\n"),
+    )
+    .success();
+    // A second save leaves an older version behind in the backup file too.
+    k.run(&["edit", "zq-name-4711", "-e", "zq-mail-4711@example.org"], &format!("{PW}\n")).success();
+    k.run(&["config", "set", "animation", "off"], "").success();
+    k.run(&["config", "set", "lock-timeout", "7"], "").success();
+    let export = k.dir().join("backup.cakepass");
+    k.run(&["export", export.to_str().unwrap()], &format!("{PW}\n{PW2}\n{PW2}\n")).success();
+
+    // Sanity check: the data really is there when you log in.
+    let shown = k.run(&["get", "zq-name-4711", "--show"], &format!("{PW}\n")).success();
+    let shown = String::from_utf8(shown.get_output().stdout.clone()).unwrap();
+    for m in ["zq-user-4711", "zq-mail-4711@example.org", "zq-pass-4711-Xv9", "zq-note-4711"] {
+        assert!(shown.contains(m), "{m} missing from `get --show`");
+    }
+
+    // Now read EVERY file the program wrote and look for any readable marker.
+    let mut files = Vec::new();
+    all_files(k.dir(), &mut files);
+    assert!(files.len() >= 4, "vault, backup, settings and export expected, got {}", files.len());
+    for (path, bytes) in &files {
+        for m in markers {
+            assert!(
+                !bytes.windows(m.len()).any(|w| w == m.as_bytes()),
+                "{m} is readable in {}",
+                path.display()
+            );
+        }
+        // Everything the program wrote is private to the user.
+        let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode & 0o077, 0, "{} is not private ({mode:o})", path.display());
+    }
+    // The settings file holds only the two settings, no user data.
+    let cfg = files.iter().find(|(p, _)| p.ends_with("cakepass/config")).expect("settings file");
+    let cfg = String::from_utf8(cfg.1.clone()).unwrap();
+    let data_lines: Vec<&str> = cfg.lines().filter(|l| !l.starts_with('#') && !l.is_empty()).collect();
+    assert_eq!(data_lines, ["animation=off", "lock_timeout_minutes=7"]);
+}
+
+#[test]
+fn old_kluis_folders_are_moved_to_cakepass() {
+    let k = Vaulty::new();
+    let cfg_home = k.dir().join("config-home");
+    std::fs::create_dir_all(cfg_home.join("kluis")).unwrap();
+    std::fs::write(cfg_home.join("kluis").join("config"), "animation=off\nlock_timeout_minutes=9\n").unwrap();
+    k.run(&["config"], "").success().stdout(contains("9 minute"));
+    assert!(cfg_home.join("cakepass").join("config").exists());
+    assert!(!cfg_home.join("kluis").exists());
 }
