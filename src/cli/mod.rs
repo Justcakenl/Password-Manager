@@ -7,3 +7,4 @@ pub mod logo;
 pub mod prompt;
 pub mod shell;
 pub mod ui;
+pub mod update;

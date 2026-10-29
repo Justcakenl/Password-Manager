@@ -1,7 +1,8 @@
 [package]
 name = "kluis"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+build = "build.rs"
 rust-version = "1.88"
 description = "Offline, versleutelde wachtwoordmanager voor de terminal"
 license = "MIT"

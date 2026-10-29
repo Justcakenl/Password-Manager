@@ -339,6 +339,50 @@ impl UnlockedVault {
     }
 }
 
+/// Hoeveel "voor-update"-kopieën we bewaren.
+const KEEP_UPDATE_BACKUPS: usize = 3;
+
+/// Maak een extra kopie van het kluisbestand vóór een update
+/// (`vault.enc.voor-update-<tijd>`, rechten 600) en gooi de oudste weg als er
+/// meer dan drie zijn. Geeft `None` terug als er (nog) geen kluis is.
+///
+/// De kopie is een gewoon, versleuteld kluisbestand en opent met je
+/// hoofdwachtwoord: `kluis --vault <kopie> list`.
+pub fn backup_before_update(paths: &VaultPaths) -> Result<Option<PathBuf>> {
+    let data = match read_file(&paths.file) {
+        Ok(d) => d,
+        Err(Error::VaultNotFound(_)) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let base = paths.file.file_name().ok_or_else(|| Error::InvalidInput("ongeldig pad".into()))?;
+    let prefix = format!("{}.voor-update-", base.to_string_lossy());
+    let stamps = |prefix: &str| -> Result<Vec<(u64, PathBuf)>> {
+        let mut found: Vec<(u64, PathBuf)> = fs::read_dir(paths.dir())?
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let stamp = name.strip_prefix(prefix)?.parse::<u64>().ok()?;
+                Some((stamp, e.path()))
+            })
+            .collect();
+        found.sort();
+        Ok(found)
+    };
+    // Het nummer is de tijd, maar altijd hoger dan van de bestaande kopieën,
+    // zodat de volgorde klopt en een weggegooide naam niet terugkomt.
+    let n = stamps(&prefix)?.last().map_or(0, |(s, _)| s + 1).max(crate::vault::now());
+    let target = paths.dir().join(format!("{prefix}{n}"));
+    write_new_file(&target, &data)?;
+
+    // Oude kopieën opruimen (alleen bestanden die precies zo heten).
+    let mut old = stamps(&prefix)?;
+    while old.len() > KEEP_UPDATE_BACKUPS {
+        let (_, path) = old.remove(0);
+        let _ = fs::remove_file(path);
+    }
+    Ok(Some(target))
+}
+
 /// Open een geëxporteerd (of ander) kluisbestand alleen om te lezen.
 /// Geeft ook de sleutel terug, nodig om de items te ontsleutelen.
 pub fn read_vault_file(path: &Path, password: &[u8]) -> Result<(Vault, VaultKey)> {
@@ -527,6 +571,32 @@ mod tests {
         assert_eq!(read_header(&p.file).unwrap().version, 2);
         let mut uv = UnlockedVault::open(p, PW).unwrap();
         assert!(!uv.take_warnings().iter().any(|w| w.contains("formaat 2")), "maar één keer migreren");
+    }
+
+    #[test]
+    fn backup_voor_update() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(&dir);
+        assert!(backup_before_update(&p).unwrap().is_none(), "geen kluis, geen kopie");
+        let mut uv = UnlockedVault::create(p.clone(), PW, P).unwrap();
+        add(&mut uv, "belangrijk");
+        uv.save().unwrap();
+        drop(uv);
+        let original = fs::read(&p.file).unwrap();
+        let mut made = Vec::new();
+        for _ in 0..5 {
+            made.push(backup_before_update(&p).unwrap().unwrap());
+        }
+        // De laatste kopie is identiek, heeft rechten 600 en opent normaal.
+        let last = made.last().unwrap();
+        assert_eq!(fs::read(last).unwrap(), original);
+        assert_eq!(fs::metadata(last).unwrap().mode() & 0o777, 0o600);
+        assert!(read_vault_file(last, PW).is_ok());
+        // Maar drie bewaard; de oudste zijn weg; de kluis zelf is onaangeroerd.
+        let left: Vec<_> = made.iter().filter(|m| m.exists()).collect();
+        assert_eq!(left.len(), 3);
+        assert!(!made[0].exists() && !made[1].exists());
+        assert_eq!(fs::read(&p.file).unwrap(), original);
     }
 
     #[test]

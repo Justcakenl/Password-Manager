@@ -24,7 +24,7 @@ use kluis::vault::{Entry, Kind, NewEntry, Vault};
 use kluis::{Error, Result, import};
 
 use super::args::{AddArgs, Cli, Cmd, EditArgs, GenArgs, GetArgs, KdfArgs, KdfChangeArgs};
-use super::{logo, prompt, shell, ui};
+use super::{logo, prompt, shell, ui, update};
 
 static HARDENING: OnceLock<Hardening> = OnceLock::new();
 const DEFAULT_SHELL_TIMEOUT: u64 = 300;
@@ -56,6 +56,16 @@ pub fn run(cli: Cli) -> Result<()> {
         Cmd::Generate { opts, show } => generate(&opts, show),
         Cmd::Info => info(&paths),
         Cmd::Logo => show_logo(),
+        Cmd::Update(u) => update::run(
+            &update::Options {
+                check_only: u.check,
+                yes: u.yes,
+                notify: u.notify,
+                source: u.source,
+                auto: u.auto,
+            },
+            &paths,
+        ),
         Cmd::Completions { shell } => completions(shell),
         Cmd::Shell { timeout } => shell::run(&paths, timeout),
         cmd => {
@@ -92,6 +102,9 @@ pub fn execute(uv: &mut UnlockedVault, cmd: Cmd, in_shell: bool) -> Result<()> {
         Cmd::Info => info(uv.paths()),
         Cmd::Logo => show_logo(),
         Cmd::Completions { shell } => completions(shell),
+        Cmd::Update(_) => Err(Error::InvalidInput(
+            "sluit eerst de kluis (exit) en typ daarna `kluis --update`; tijdens het updaten hoort je kluis dicht te zijn".into(),
+        )),
         Cmd::Init { .. } | Cmd::Shell { .. } => {
             Err(Error::InvalidInput("deze opdracht werkt niet binnen de interactieve modus".into()))
         }
@@ -119,6 +132,9 @@ fn warn_if_weak_kdf(p: &KdfParams) {
 fn after_unlock(uv: &mut UnlockedVault) {
     for w in uv.take_warnings() {
         ui::warn(&w);
+    }
+    if let Some(n) = update::pending_notice() {
+        ui::info(&n);
     }
     if secure_mem::mlock_failed() {
         ui::warn(
@@ -853,6 +869,15 @@ fn info(paths: &VaultPaths) -> Result<()> {
             ui::format_time(m.mtime().max(0) as u64)
         ),
         Err(_) => println!("  Back-up:          nog geen"),
+    }
+
+    println!("{}", ui::bold("Versie"));
+    println!("  Dit programma:    {} (commit {})", env!("CARGO_PKG_VERSION"), update::INSTALLED_COMMIT);
+    match update::pending_notice() {
+        Some(n) => println!("  Update:           {n}"),
+        None => println!(
+            "  Update:           geen bekende nieuwe versie (controleer met `kluis --update --check`)"
+        ),
     }
 
     println!("{}", ui::bold("Systeem"));

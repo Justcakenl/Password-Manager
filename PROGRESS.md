@@ -1,7 +1,7 @@
 # Voortgang `kluis`
 
-Laatst bijgewerkt: stap 6 (API-sleutels, notities, CakePass-inlogscherm in 3D).
-Branch: `claude/kluis-v1` (nog niet samengevoegd met `main`).
+Laatst bijgewerkt: stap 7 (update-systeem, privé GitHub, README).
+Branch: `main` op de privé-repo `Justcakenl/passcode-manager-cli-`.
 
 ## Wat ik vanavond op mijn computer moet doen
 
@@ -9,11 +9,13 @@ Branch: `claude/kluis-v1` (nog niet samengevoegd met `main`).
    ```bash
    sudo pacman -S --needed base-devel git rust wl-clipboard xclip
    ```
-2. **Code ophalen** (de juiste branch!)
+2. **Code ophalen** (de repo is privé; log eerst in bij GitHub)
    ```bash
-   git clone -b claude/kluis-v1 https://github.com/Justcakenl/passcode-manager-cli-.git kluis
-   cd kluis
+   git clone git@github.com:Justcakenl/passcode-manager-cli-.git ~/cakepass
+   # of: gh auth login && gh repo clone Justcakenl/passcode-manager-cli- ~/cakepass
+   cd ~/cakepass
    ```
+   Bewaar de map `~/cakepass`; `kluis --update` gebruikt hem later.
 3. **Bouwen, testen en installeren**
    ```bash
    cd packaging/arch
@@ -33,8 +35,8 @@ Branch: `claude/kluis-v1` (nog niet samengevoegd met `main`).
 5. **Loop de lijst "Testen op Arch" hieronder af** en vink af wat werkt.
 6. **Echte kluis maken**: `kluis init`, en maak meteen een eerste back-up
    (zie de README, kopje "Back-ups").
-7. Tevreden? Laat Claude de branch samenvoegen met `main` (via een pull
-   request), of doe het zelf op GitHub.
+7. Tevreden? Dan hoef je niets meer te doen: `kluis --update` houdt je
+   installatie bij.
 
 ## Klaar
 
@@ -77,10 +79,27 @@ Branch: `claude/kluis-v1` (nog niet samengevoegd met `main`).
     gebruikersnaam en URL staan er 0 keer leesbaar in, ook na `list` en
     `get --show`.
 
+- [x] **Stap 7 – Update-systeem en GitHub**:
+  - `kluis --update` (of `kluis update`): haalt de nieuwste versie uit je
+    privé-GitHub via `git`, laat zien wat er nieuw is, vraagt bevestiging,
+    maakt een extra kluisback-up (`vault.enc.voor-update-<tijd>`, laatste 3),
+    bouwt en test met `makepkg -si` en zet bij een fout alles terug. De kluis
+    wordt niet geopend en niet aangeraakt; oude formaten worden bij het
+    ontgrendelen automatisch omgezet.
+  - Het programma zelf heeft nog steeds geen netwerkcode; alleen `update`
+    start `git` (jouw eigen SSH-sleutel of inlog; er worden geen tokens bewaard).
+  - `kluis --update --auto on`: dagelijkse controle via een systemd-user-timer
+    met bureaubladmelding. Installeren doe je bewust zelf (zie README voor de reden).
+  - `kluis --version` toont nu ook de git-commit; `kluis info` toont of er een
+    update is (uit de cache, zonder netwerk).
+  - 15 + 12 nieuwe tests (nep-GitHub en nep-makepkg): update, back-up,
+    terugzetten bij een fout, lokale wijzigingen, afwijkende geschiedenis,
+    stuurtekens in commit-titels, niet binnen de shell.
+  - De repo is **privé** (gecontroleerd via GitHub).
+
 ## Nog te doen
 
 - [ ] De punten onder "Testen op Arch" op je eigen computer controleren.
-- [ ] Branch `claude/kluis-v1` samenvoegen met `main`.
 - [ ] Eventueel de licentie aanpassen (nu MIT, op naam van "Justcakenl").
 - [ ] Ideeën voor later: zie README, kopje "Voor later".
 
@@ -127,7 +146,7 @@ Zie `docs/ONTWERP.md` voor de uitleg. Kort samengevat:
 
 | Controle | Resultaat |
 |---|---|
-| `cargo test` | 108 geslaagd (71 bibliotheek, 12 CLI-unit, 25 integratie) |
+| `cargo test` | 124 geslaagd (72 bibliotheek, 15 CLI-unit, 25 integratie, 12 update) |
 | `cargo clippy --all-targets -- -D warnings` | geen meldingen |
 | `cargo audit` | geen kwetsbaarheden (140 crates gescand) |
 | `cargo build --release --locked` | gelukt (Ubuntu-container) |
@@ -167,6 +186,18 @@ Dit kon NIET getest worden in de cloud. Doe het zelf en vink af:
 - [ ] Kleuren: groen ✔ en gele waarschuwingen in je terminal; geen kleurcodes
       bij `kluis list | cat` of met `NO_COLOR=1`
 - [ ] `kluis shell`: na 5 min niets doen verschijnt "Automatisch vergrendeld"
+- [ ] **Update-systeem, echt**: kies in `~/cakepass` een kleine wijziging
+      (bijv. een tekst in `README.md` wijzigen, committen en pushen vanaf een
+      tweede kopie), en typ dan `kluis --update`. Controleer: de melding laat
+      de wijziging zien, `makepkg` bouwt en installeert, `kluis --version`
+      toont de nieuwe commit, en `kluis list` werkt nog met je kluis.
+- [ ] `kluis --update --check` toont "al de nieuwste versie" als je up-to-date bent
+- [ ] `kluis --update --auto on`, daarna `systemctl --user list-timers` toont
+      `kluis-update.timer`. Test direct: `systemctl --user start kluis-update.service`
+      en `journalctl --user -u kluis-update.service`.
+- [ ] Bureaubladmelding (installeer `libnotify`): verschijnt bij een nieuwe versie
+- [ ] Werkt `git -C ~/cakepass fetch` zonder wachtwoordvraag? Zo niet, dan
+      kan de dagelijkse controle niet draaien (handmatig updaten werkt wel)
 - [ ] **Inlogscherm**: typ `kluis`. Draait het 3D-logo soepel in je terminal
       (kitty, Alacritty, Konsole, GNOME Terminal)? Zie je roze letters met
       cakelagen? Lelijk of schokkerig? Probeer `kluis logo` in een breder

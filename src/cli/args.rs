@@ -9,6 +9,11 @@ use std::path::PathBuf;
 use clap::{ArgAction, Args, Parser, Subcommand};
 use kluis::vault::Kind;
 
+use super::update::AutoMode;
+
+/// Versie voor `kluis --version`: nummer + de git-commit waaruit het gebouwd is.
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (commit ", env!("KLUIS_GIT_COMMIT"), ")");
+
 /// Lees een soort item ("login", "api" of "notitie") voor clap.
 fn parse_kind(s: &str) -> Result<Kind, String> {
     Kind::parse(s).ok_or_else(|| format!("onbekende soort '{s}'; kies login, api of notitie"))
@@ -39,7 +44,7 @@ pub fn localize(cmd: clap::Command) -> clap::Command {
 #[derive(Parser, Debug)]
 #[command(
     name = "kluis",
-    version,
+    version = VERSION,
     about = "CakePass – offline, versleutelde kluis voor wachtwoorden, API-sleutels en notities\n(commando: kluis)",
     help_template = HELP_TEMPLATE,
     disable_help_flag = true,
@@ -55,7 +60,8 @@ pub fn localize(cmd: clap::Command) -> clap::Command {
         kluis add OpenAI --type api   API-sleutel opslaan\n  \
         kluis add Herstelcodes --type notitie   beveiligde notitie\n  \
         kluis get GitHub              wachtwoord naar klembord (20 s)\n  \
-        kluis generate --passphrase   passphrase maken\n\n\
+        kluis generate --passphrase   passphrase maken\n  \
+        kluis --update                CakePass bijwerken naar de nieuwste versie (kluis blijft heel)\n\n\
         Wachtwoorden worden nooit als argument meegegeven; je typt ze in een verborgen prompt."
 )]
 pub struct Cli {
@@ -191,6 +197,9 @@ pub enum Cmd {
     /// Toon het CakePass-logo (met animatie)
     Logo,
 
+    /// Werk CakePass bij naar de nieuwste versie op GitHub (je kluis blijft onaangeroerd)
+    Update(UpdateArgs),
+
     /// Interactieve modus: één keer ontgrendelen, vergrendelt bij inactiviteit
     Shell {
         /// Automatisch vergrendelen na zoveel seconden zonder invoer
@@ -203,6 +212,25 @@ pub enum Cmd {
         /// bash, zsh of fish
         shell: clap_complete::Shell,
     },
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct UpdateArgs {
+    /// Alleen controleren of er een nieuwe versie is; niets installeren
+    #[arg(long)]
+    pub check: bool,
+    /// Niet om bevestiging vragen (voor wie het zeker weet)
+    #[arg(short = 'y', long)]
+    pub yes: bool,
+    /// Bij --check: stuur een bureaubladmelding als er een update is
+    #[arg(long, requires = "check")]
+    pub notify: bool,
+    /// Map met de broncode [standaard: de map waaruit je CakePass installeerde]
+    #[arg(long, value_name = "MAP")]
+    pub source: Option<PathBuf>,
+    /// Elke dag automatisch controleren aan- of uitzetten (on, off of status)
+    #[arg(long, value_enum, value_name = "AAN/UIT", conflicts_with_all = ["check", "yes", "notify", "source"])]
+    pub auto: Option<AutoMode>,
 }
 
 #[derive(Args, Debug, Clone)]

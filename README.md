@@ -5,7 +5,16 @@
 Een **offline kluis voor de terminal** op Arch Linux, voor **wachtwoorden,
 API-sleutels en beveiligde notities**. Het commando heet `kluis`.
 Alles staat in één versleuteld bestand op je eigen computer.
-Geen cloud, geen account, geen telemetrie en geen enkele netwerkverbinding.
+Geen cloud, geen account en geen telemetrie. Het programma zelf maakt nooit een
+netwerkverbinding; alleen `kluis --update` laat `git` je nieuwste versie ophalen.
+
+> 🔒 Dit is een **privé-repository**. Alleen wie jij toegang geeft op GitHub
+> (Settings → Collaborators) kan de code zien en installeren. Je kluis zelf
+> staat nooit in deze repository: kluisbestanden worden door `.gitignore` buiten
+> git gehouden.
+
+**Snel starten:** [Installatie](#installatie) → `kluis init` → `kluis`.
+**Bijwerken:** `kluis --update` ([uitleg](#bijwerken)).
 
 ```text
 $ kluis get GitHub
@@ -32,6 +41,7 @@ Wachtwoord:      (verborgen; gebruik --show)
 6. [Inlogscherm, shell-modus en automatisch vergrendelen](#inlogscherm-shell-modus-en-automatisch-vergrendelen)
 7. [Overstappen van een andere wachtwoordmanager (CSV)](#overstappen-van-een-andere-wachtwoordmanager-csv)
 8. [Back-ups](#back-ups)
+   · [Bijwerken](#bijwerken)
 9. [Hoofdwachtwoord vergeten?](#hoofdwachtwoord-vergeten)
 10. [Hoe de beveiliging werkt](#hoe-de-beveiliging-werkt)
 11. [Security-review en resterende risico's](#security-review-en-resterende-risicos)
@@ -55,22 +65,38 @@ Weet je niet of je Wayland gebruikt? Typ `echo $XDG_SESSION_TYPE`.
 
 ### 2. Bouwen en installeren met makepkg (aanbevolen)
 
+De repository is privé, dus `git` heeft jouw GitHub-toegang nodig. De
+makkelijkste manieren (kies één):
+
 ```bash
-git clone https://github.com/Justcakenl/passcode-manager-cli-.git kluis
-cd kluis/packaging/arch
+# a) met een SSH-sleutel die bij je GitHub-account hoort
+git clone git@github.com:Justcakenl/passcode-manager-cli-.git ~/cakepass
+
+# b) met de GitHub-opdrachtregel (pacman -S github-cli)
+gh auth login
+gh repo clone Justcakenl/passcode-manager-cli- ~/cakepass
+```
+
+Daarna:
+
+```bash
+cd ~/cakepass/packaging/arch
 makepkg -si
 ```
+
+> **Bewaar de map `~/cakepass`.** `kluis --update` gebruikt hem om
+> nieuwe versies op te halen. Verplaats of verwijder hem niet.
 
 `makepkg` bouwt het programma, draait alle tests en installeert daarna:
 
 - `/usr/bin/kluis`
+- de dagelijkse update-controle (staat standaard uit, zie [Bijwerken](#bijwerken))
 - shell-completions voor bash, zsh en fish (tab-aanvulling werkt na het
   openen van een nieuwe terminal)
 - deze README in `/usr/share/doc/kluis/`
 
 Tests overslaan (sneller): `makepkg -si --nocheck`.
-Bijwerken na een `git pull`: verhoog `pkgrel` in de PKGBUILD, of gebruik
-`makepkg -si --force`.
+Bijwerken doe je later met `kluis --update`, niet opnieuw met de hand.
 
 ### 3. Alternatief: alleen bouwen met cargo
 
@@ -325,6 +351,80 @@ Goed om te weten:
 
 ---
 
+## Bijwerken
+
+Heb je (of heeft iemand met schrijfrechten) wijzigingen naar GitHub gepusht,
+dan werk je zo bij:
+
+```bash
+kluis --update
+```
+
+```text
+$ kluis --update
+Ik controleer GitHub via git (/home/jan/cakepass).
+┌──────────────────────────────────────────────────────────────┐
+│ Er is een nieuwe versie van CakePass.                        │
+│ Nieuw: 3 wijziging(en)  (branch main)                        │
+│ Van:   git@github.com:Justcakenl/passcode-manager-cli-.git   │
+└──────────────────────────────────────────────────────────────┘
+  • 4f2a9c1 Nieuwe soort item: bankpas
+  • 9be01d7 Logo sneller
+Nu bijwerken? [j/N] j
+✔ Extra back-up van je kluis: ~/.local/share/kluis/vault.enc.voor-update-1793284980
+✔ Nieuwe code binnengehaald.
+…bouwen, testen, installeren (je typt één keer je wachtwoord)…
+✔ CakePass is bijgewerkt. Start `kluis` opnieuw om de nieuwe versie te gebruiken.
+```
+
+**Je gegevens gaan niet verloren.**
+
+- Je kluis staat in `~/.local/share/kluis/`, buiten de installatie. Een
+  update raakt die map niet aan.
+- Vóór elke update maakt `kluis` een extra kopie
+  (`vault.enc.voor-update-<tijd>`; de laatste drie blijven bewaard). Die opent
+  gewoon met je hoofdwachtwoord: `kluis --vault <kopie> list`.
+- Nieuwe versies lezen je oude kluis en zetten hem bij het eerstvolgende
+  ontgrendelen automatisch om naar het nieuwste formaat. Een oudere versie
+  weigert een nieuwer formaat met een duidelijke melding, zodat er niets kapotgaat.
+- Mislukt het bouwen, een test of de installatie, dan wordt alles teruggezet
+  en blijft je huidige versie gewoon werken.
+
+**Wat `kluis --update` doet en niet doet:**
+
+- Het ontgrendelt je kluis niet; er is tijdens het updaten geen sleutel in het geheugen.
+- Het haalt alleen nieuwe commits binnen die je geschiedenis niet herschrijven
+  (`git merge --ff-only`). Heb je zelf iets gewijzigd in `~/cakepass`, dan stopt het.
+- Het bouwt met `makepkg` en draait daarbij alle tests; pas dan wordt geïnstalleerd.
+- Je ziet vooraf van waar de update komt en wat erin zit, en moet bevestigen.
+
+Opties: `kluis --update --check` (alleen kijken), `--yes` (niet om
+bevestiging vragen), `--source <map>` (andere bronmap).
+
+### Automatisch controleren
+
+```bash
+kluis --update --auto on       # elke dag controleren (uitzetten: off, kijken: status)
+```
+
+Eén keer per dag kijkt een kleine systemd-timer of er een nieuwe versie is. Is
+die er, dan krijg je een bureaubladmelding (met `libnotify`) en zie je een
+regel in `kluis` en `kluis info`. **Installeren doe je zelf** met `kluis --update`.
+
+> **Waarom niet volledig automatisch installeren?** Een wachtwoordmanager die
+> zichzelf zonder jouw oog vervangt, is riskant: kreeg iemand toegang tot je
+> GitHub-account, dan kon die zo code op je computer laten draaien die bij je
+> kluis kan. Bovendien moet de installatie met jouw wachtwoord (sudo). Zo zie je
+> eerst wat er verandert. Zet daarom **tweestapsverificatie** aan op je
+> GitHub-account.
+>
+> De automatische controle werkt alleen zonder wachtwoordvraag als je
+> GitHub-toegang vanzelf werkt (SSH-sleutel zonder wachtwoord of met
+> ssh-agent, of `gh auth setup-git`). Lukt dat niet, dan werkt handmatig
+> `kluis --update` nog steeds.
+
+---
+
 ## Hoofdwachtwoord vergeten?
 
 **Dan zijn je gegevens weg. Er is geen herstel mogelijk.**
@@ -392,7 +492,8 @@ In gewone taal:
    swap. Core dumps staan uit en andere programma's kunnen niet in het
    geheugen meekijken (`PR_SET_DUMPABLE=0`).
 8. Alle willekeur komt van het besturingssysteem (`getrandom`).
-9. `kluis` maakt nooit een netwerkverbinding.
+9. `kluis` zelf bevat geen netwerkcode. Alleen de opdracht `kluis --update`
+   start `git` om je repository op te halen, en dan staat je kluis niet open.
 
 De gebruikte crates (onder andere `argon2`, `chacha20poly1305`, `hkdf`, `sha2`, `blake2`,
 `zeroize` en `subtle`) komen van het RustCrypto-project. `kluis` implementeert
@@ -449,7 +550,13 @@ tegen beschermen):
 9. **Root en het besturingssysteem.** Root kan alles, ook `ptrace` en
    geheugen lezen. `PR_SET_DUMPABLE=0` beschermt alleen tegen andere processen
    van dezelfde gebruiker.
-10. **Deze code is niet extern geaudit.** De cryptografie komt uit
+10. **Updaten vanaf GitHub.** `kluis --update` installeert code uit je
+    repository. Wie schrijfrechten heeft op die repository (of je
+    GitHub-account overneemt), kan een kwaadaardige update klaarzetten. Je ziet
+    wat er wijzigt en moet bevestigen, maar de code zelf lees je waarschijnlijk
+    niet. Beperk wie schrijfrechten heeft, zet tweestapsverificatie aan, en
+    installeer alleen updates die je verwacht.
+11. **Deze code is niet extern geaudit.** De cryptografie komt uit
     geaudite crates, maar de lijm eromheen is door mij geschreven en alleen
     door mezelf gereviewd.
 
@@ -465,6 +572,9 @@ tegen beschermen):
 | `de kluis is intussen door een ander kluis-proces gewijzigd` | Je had twee terminals open. Voer de opdracht opnieuw uit. Je andere wijziging is bewaard. |
 | `is een symbolische link` | Geef het echte pad op met `--vault`. |
 | Na Ctrl+C zie je je getypte tekst niet meer | Typ `reset` en druk op Enter. |
+| `kluis --update`: `ik weet niet waar de broncode staat` | Je installeerde niet met `makepkg -si`, of de map is verplaatst. Geef hem op: `kluis --update --source ~/cakepass`. |
+| `kluis --update`: `git fetch mislukte` | Geen internet, of GitHub kent je niet. Test met `git -C ~/cakepass fetch` en log in (SSH-sleutel of `gh auth login`). |
+| `kluis --update`: `lokale wijzigingen` of `wijkt af` | Je hebt zelf iets in `~/cakepass` gewijzigd. Bekijk het met `git -C ~/cakepass status`; er wordt niets overschreven. |
 
 ---
 
@@ -503,10 +613,13 @@ src/
 ├── import.rs       CSV-import
 ├── clipboard.rs    klembord met automatisch wissen             ← kritiek
 ├── main.rs         start: allocator + procesbeveiliging
+build.rs            bewaart uit welke git-commit het gebouwd is
 └── cli/            argumenten, prompts, opdrachten, shell-modus,
                     logo.rs: het 3D-inlogscherm
+                    update.rs: kluis --update (via git en makepkg)
 tests/cli.rs        integratietests met het echte programma
-packaging/arch/     PKGBUILD
+tests/update.rs     tests voor kluis --update (nep-GitHub en nep-makepkg)
+packaging/arch/     PKGBUILD + systemd-timer voor de update-controle
 assets/             EFF-woordenlijst (CC BY 3.0 US)
 docs/ONTWERP.md     ontwerp en dreigingsanalyse
 PROGRESS.md         voortgang en wat nog op Arch getest moet worden

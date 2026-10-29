@@ -27,7 +27,11 @@ fn main() -> ExitCode {
         };
     }
 
-    let matches = cli::args::localize(cli::args::Cli::command()).get_matches();
+    // `kluis --update` is de bekende schrijfwijze; intern is het de opdracht `update`.
+    let argv: Vec<std::ffi::OsString> = std::env::args_os()
+        .map(|a| if a == "--update" { std::ffi::OsString::from("update") } else { a })
+        .collect();
+    let matches = cli::args::localize(cli::args::Cli::command()).get_matches_from(argv);
     let args = cli::args::Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     cli::ui::init(args.no_color);
     if args.no_animation {
