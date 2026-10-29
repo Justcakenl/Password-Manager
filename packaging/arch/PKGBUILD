@@ -1,0 +1,63 @@
+# PKGBUILD voor kluis – bouwt vanuit deze lokale git-checkout.
+#
+# Gebruik (in deze map):   makepkg -si
+# Tests overslaan:          makepkg -si --nocheck
+#
+# Deze PKGBUILD staat in packaging/arch/ en niet in de hoofdmap, omdat makepkg
+# zelf mappen "src/" en "pkg/" aanmaakt; die zouden botsen met de Rust-broncode.
+
+pkgname=kluis
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Offline, versleutelde wachtwoordmanager voor de terminal"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Justcakenl/passcode-manager-cli-"
+license=('MIT')
+depends=('glibc' 'gcc-libs')
+makedepends=('cargo')
+optdepends=('wl-clipboard: klembord onder Wayland'
+            'xclip: klembord onder X11')
+options=('!debug')
+source=()
+
+# De projectmap (twee niveaus boven deze PKGBUILD).
+_root="$(realpath "${startdir}/../..")"
+
+prepare() {
+  cd "$_root"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$_root"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR="$srcdir/target"
+  cargo build --frozen --release
+}
+
+check() {
+  cd "$_root"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR="$srcdir/target"
+  cargo test --frozen
+}
+
+package() {
+  cd "$_root"
+  local bin="$srcdir/target/release/kluis"
+  install -Dm0755 "$bin" "$pkgdir/usr/bin/kluis"
+
+  # Shell-completions
+  install -dm0755 "$pkgdir/usr/share/bash-completion/completions" \
+                  "$pkgdir/usr/share/zsh/site-functions" \
+                  "$pkgdir/usr/share/fish/vendor_completions.d"
+  "$bin" completions bash > "$pkgdir/usr/share/bash-completion/completions/kluis"
+  "$bin" completions zsh  > "$pkgdir/usr/share/zsh/site-functions/_kluis"
+  "$bin" completions fish > "$pkgdir/usr/share/fish/vendor_completions.d/kluis.fish"
+
+  install -Dm0644 README.md "$pkgdir/usr/share/doc/kluis/README.md"
+  install -Dm0644 docs/ONTWERP.md "$pkgdir/usr/share/doc/kluis/ONTWERP.md"
+  install -Dm0644 LICENSE "$pkgdir/usr/share/licenses/kluis/LICENSE"
+  install -Dm0644 assets/README.md "$pkgdir/usr/share/licenses/kluis/EFF-WORDLIST.md"
+}

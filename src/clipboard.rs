@@ -149,7 +149,16 @@ pub fn clear(tool: Tool) -> Result<()> {
 /// Kopieer `secret` en start het hulpproces dat het na 20 s wist.
 pub fn copy_with_auto_clear(tool: Tool, secret: &[u8]) -> Result<()> {
     copy(tool, secret)?;
-    let digest = hash(secret);
+    // Lukt het starten van het wis-hulpproces niet, dan wissen we meteen:
+    // een wachtwoord mag nooit onbeperkt op het klembord blijven staan.
+    if let Err(e) = spawn_clear_helper(tool, &hash(secret)) {
+        let _ = clear(tool);
+        return Err(e);
+    }
+    Ok(())
+}
+
+fn spawn_clear_helper(tool: Tool, digest: &[u8; HASH_LEN]) -> Result<()> {
     let exe = std::env::current_exe()?;
     let mut cmd = Command::new(exe);
     cmd.args([HELPER_ARG, tool.name()]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
@@ -163,8 +172,10 @@ pub fn copy_with_auto_clear(tool: Tool, secret: &[u8]) -> Result<()> {
         });
     }
     let mut child = cmd.spawn()?;
-    child.stdin.take().expect("stdin is piped").write_all(&digest)?;
-    // We wachten niet op het hulpproces; het draait zelfstandig verder.
+    child.stdin.take().expect("stdin is piped").write_all(digest)?;
+    // Het hulpproces draait zelfstandig verder. Een achtergrondthread ruimt
+    // het proces op als het eerder klaar is dan wij (bijv. in `kluis shell`).
+    std::thread::spawn(move || child.wait());
     Ok(())
 }
 

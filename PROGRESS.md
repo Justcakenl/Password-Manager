@@ -1,88 +1,141 @@
 # Voortgang `kluis`
 
-Laatst bijgewerkt: stap 3 (CLI).
-Branch: `claude/kluis-v1`
+Laatst bijgewerkt: stap 4 (packaging, README, security-review) – **versie 1 is af**.
+Branch: `claude/kluis-v1` (nog niet samengevoegd met `main`).
+
+## Wat ik vanavond op mijn computer moet doen
+
+1. **Pakketten installeren**
+   ```bash
+   sudo pacman -S --needed base-devel git rust wl-clipboard xclip
+   ```
+2. **Code ophalen** (de juiste branch!)
+   ```bash
+   git clone -b claude/kluis-v1 https://github.com/Justcakenl/passcode-manager-cli-.git kluis
+   cd kluis
+   ```
+3. **Bouwen, testen en installeren**
+   ```bash
+   cd packaging/arch
+   makepkg -si
+   ```
+   Dit duurt een paar minuten (bouwen + alle tests). Faalt het? Kopieer de
+   foutmelding en vraag Claude om hulp.
+4. **Uitproberen** met een testkluis, zodat je echte kluis schoon blijft:
+   ```bash
+   export KLUIS_VAULT=/tmp/testkluis.enc
+   kluis init
+   kluis add Test --generate
+   kluis get Test           # plak (Ctrl+V) ergens en wacht 20 s → leeg
+   kluis info
+   unset KLUIS_VAULT
+   ```
+5. **Loop de lijst "Testen op Arch" hieronder af** en vink af wat werkt.
+6. **Echte kluis maken**: `kluis init`, en maak meteen een eerste back-up
+   (zie de README, kopje "Back-ups").
+7. Tevreden? Laat Claude de branch samenvoegen met `main` (via een pull
+   request), of doe het zelf op GitHub.
 
 ## Klaar
 
-- [x] **Stap 1 – Crypto-kern**: `secure_mem` (wissende allocator, mlock-buffer,
-  core dumps uit), `crypto` (Argon2id + XChaCha20-Poly1305), `format`
-  (versioneerde header als associated data). 20 unit-tests, waaronder de
-  officiële Argon2id-testvector uit RFC 9106 en tests waarin elke bitflip en
-  elke afgekapte lengte moet falen.
+- [x] **Stap 1 – Crypto-kern**: `secure_mem` (wissende allocator,
+  mlock-buffer, core dumps uit), `crypto` (Argon2id + XChaCha20-Poly1305),
+  `format` (versioneerde header als associated data). Tests met de officiële
+  Argon2id-testvector uit RFC 9106 en tests waarin elke bitflip en elke
+  afgekapte lengte moet falen.
 - [x] **Stap 2 – Opslag en kluismodel**: `vault` (items met naam,
-  gebruikersnaam, wachtwoord, URL, notities, tags; zoeken, hernoemen,
-  samenvoegen) en `storage` (XDG-pad, map 700/bestand 600, atomisch schrijven
-  met fsync, automatische `.bak`, `flock` plus detectie van gelijktijdige
-  wijzigingen, symlinks geweigerd, wachtwoord wijzigen, versleutelde export).
-  40 tests.
+  gebruikersnaam, wachtwoord, URL, notities, tags) en `storage` (XDG-pad,
+  map 700/bestand 600, atomisch schrijven met fsync, automatische `.bak`,
+  `flock` plus detectie van gelijktijdige wijzigingen, symlinks geweigerd).
 - [x] **Stap 3 – CLI**: `init`, `add`, `get`, `edit`, `rm`, `list`, `search`,
-  `generate` (wachtwoord/passphrase), `passwd`, `export`, `import`,
-  `import-csv`, `info`, `shell` (auto-vergrendeling), `completions`.
-  Klembord via wl-copy/xclip met wissen na 20 s. Nederlandse hulpteksten.
-  82 tests, waarvan 18 integratietests die het echte programma aansturen
-  (verkeerd wachtwoord, gemanipuleerde bestanden, shell-timeout, enz.).
+  `generate`, `passwd`, `export`, `import`, `import-csv`, `info`, `shell`,
+  `completions`. Klembord via wl-copy/xclip, wissen na 20 s.
+- [x] **Stap 4 – Packaging en oplevering**: `packaging/arch/PKGBUILD`
+  (installeert binary, completions voor bash/zsh/fish, docs en licentie),
+  Nederlandse `README.md`, `LICENSE` (MIT), security-review met drie
+  gevonden en opgeloste problemen (zie README).
 
 ## Nog te doen
 
-- [ ] Stap 4 – Packaging (PKGBUILD), README, security-review
+- [ ] De punten onder "Testen op Arch" op je eigen computer controleren.
+- [ ] Branch `claude/kluis-v1` samenvoegen met `main`.
+- [ ] Eventueel de licentie aanpassen (nu MIT, op naam van "Justcakenl").
+- [ ] Ideeën voor later: zie README, kopje "Voor later".
 
 ## Gemaakte keuzes
 
 Zie `docs/ONTWERP.md` voor de uitleg. Kort samengevat:
 
-- Programmanaam `kluis`, kluis in `~/.local/share/kluis/vault.enc`.
+- Programmanaam `kluis`, kluis in `~/.local/share/kluis/vault.enc` (XDG).
 - Argon2id m=64 MiB, t=3, p=4 (instelbaar, minimaal 8 MiB), salt van 32 bytes.
+  Ontgrendelen kost met deze instellingen ongeveer 0,2 s.
 - XChaCha20-Poly1305 met een nieuwe nonce bij elke keer opslaan.
-- Na `kluis passwd` wordt ook de back-up met het NIEUWE wachtwoord
-  versleuteld, zodat een uitgelekt oud wachtwoord niets meer opent.
-- Itemnamen zijn uniek (hoofdletterongevoelig). Bij een conflict tijdens
-  import krijgt een item een volgnummer, bijvoorbeeld "GitHub (2)".
-- Een kluisbestand dat een symlink is, wordt geweigerd. Atomisch schrijven
-  zou de link anders stilletjes vervangen.
-- `rust-version` is 1.88, omdat oudere versies van de crate `time` een
-  bekende kwetsbaarheid hebben (RUSTSEC-2026-0009). Arch heeft altijd de
-  nieuwste Rust, dus dat is geen probleem.
-- Automatisch vergrendelen: elk los commando vraagt opnieuw het hoofdwachtwoord
-  (er draait geen achtergronddienst met de sleutel). `kluis shell` houdt de
-  kluis open en vergrendelt na 5 minuten zonder invoer (`--timeout`).
-  In de shell vragen `passwd` en `export` het hoofdwachtwoord opnieuw.
+- Automatisch vergrendelen: elk los commando vraagt opnieuw het
+  hoofdwachtwoord (er draait geen achtergronddienst met de sleutel).
+  `kluis shell` vergrendelt na 5 minuten zonder invoer, ook midden in een
+  vraag. In de shell vragen `passwd` en `export` het hoofdwachtwoord opnieuw.
 - Zonder klembord geeft `get` een foutmelding in plaats van het wachtwoord
   te tonen; tonen kan alleen met `--show`.
-- Itemwachtwoorden mag je zelf kiezen (geen sterktecontrole, want sites
-  stellen eigen eisen); leeg laten = sterk wachtwoord genereren.
-- Het hoofd- en exportwachtwoord moeten zxcvbn-score ≥ 3 halen.
-- EFF-diceware-woordenlijst opgenomen in `assets/` (gecontroleerd tegen twee
+- Hoofd- en exportwachtwoord moeten zxcvbn-score ≥ 3 halen. Itemwachtwoorden
+  mag je vrij kiezen (sites hebben eigen eisen); leeg = genereren.
+- Na `kluis passwd` wordt ook de `.bak` met het NIEUWE wachtwoord versleuteld.
+- Itemnamen zijn uniek (hoofdletterongevoelig). Bij een conflict tijdens
+  import krijgt een item een volgnummer ("GitHub (2)"); gelijke items worden
+  overgeslagen.
+- Kluisbestanden die een symlink zijn, worden geweigerd.
+- `rust-version` is 1.88, omdat oudere versies van de crate `time` een bekende
+  kwetsbaarheid hebben (RUSTSEC-2026-0009).
+- De PKGBUILD staat in `packaging/arch/`, omdat makepkg zelf een map `src/`
+  aanmaakt die anders botst met de Rust-broncode.
+- EFF-diceware-woordenlijst in `assets/` (gecontroleerd tegen twee
   onafhankelijke bronnen; sha256 `addd3553…996b903e`).
 
 ## Controles (laatste stap)
 
 | Controle | Resultaat |
 |---|---|
-| `cargo test` | 82 geslaagd (58 bibliotheek, 6 CLI-unit, 18 integratie) |
-| `cargo build --release --locked` | gelukt; ontgrendelen met standaardinstellingen ≈ 0,2 s |
+| `cargo test` | 85 geslaagd (59 bibliotheek, 7 CLI-unit, 19 integratie) |
 | `cargo clippy --all-targets -- -D warnings` | geen meldingen |
-| `cargo audit` | geen kwetsbaarheden |
+| `cargo audit` | geen kwetsbaarheden (140 crates gescand) |
+| `cargo build --release --locked` | gelukt (Ubuntu-container) |
+
+### Wél getest in een schone Arch Linux-container (als gewone gebruiker)
+
+Pacman kon in de cloudomgeving geen pakketten downloaden (de mirrors waren
+geblokkeerd). Daarom heb ik de op Ubuntu gebouwde binary in een officiële
+`archlinux:latest`-container (glibc 2.44, pacman 7.1) getest:
+
+- [x] `makepkg --printsrcinfo` leest de PKGBUILD zonder fouten
+- [x] Standaardpad `~/.local/share/kluis/vault.enc`; map 700, bestand 600
+- [x] `XDG_DATA_HOME=/tmp/xdg` → `/tmp/xdg/kluis/vault.enc`; relatief pad genegeerd
+- [x] `ulimit -l` = 8192 KiB, `kluis info` → "mlock werkt: ja"
+- [x] Core-dumplimiet 0; `/proc/<pid>/mem` onleesbaar voor dezelfde gebruiker
+- [x] `init`, `add --generate` en `list` met de standaard Argon2-instellingen
 
 ## Testen op Arch
 
-Dit kon in de cloudomgeving NIET getest worden. Doe dit zelf op je Arch-pc:
+Dit kon NIET getest worden in de cloud. Doe het zelf en vink af:
 
-- [ ] `cargo build --release` op een schone Arch-installatie
-- [ ] XDG-pad: standaard `~/.local/share/kluis/vault.enc`; met
-  `XDG_DATA_HOME=/ergens` moet het `/ergens/kluis/vault.enc` worden
-  (de tests draaiden als root in een container, met een tijdelijke map)
-- [ ] mlock-limiet: `ulimit -l` (verwacht 8192 KiB op een standaard Arch met
-  systemd) en `kluis info` → "mlock werkt: ja"
-- [ ] Klembord Wayland: `kluis get <naam>` → plakken werkt, en na 20 s is het
-  klembord leeg (`wl-paste` geeft niets). Vereist `wl-clipboard`.
-- [ ] Klembord X11: hetzelfde met `xclip`. Kopieer binnen 20 s iets anders;
-  dat mag NIET gewist worden.
-- [ ] Klembord en terminal sluiten: start `kluis get`, sluit direct het
-  terminalvenster; na 20 s moet het klembord toch leeg zijn.
+- [ ] `sudo pacman -S --needed base-devel git rust` en dan
+      `cargo build --release --locked` op je eigen Arch-installatie
+- [ ] `cd packaging/arch && makepkg -si` (bouwt, draait alle tests, installeert)
+- [ ] Na installatie: `kluis --version`, en tab-aanvulling in een nieuwe
+      terminal (`kluis <Tab><Tab>`) in bash, zsh of fish
+- [ ] **Klembord Wayland** (`wl-clipboard`): `kluis get <naam>` → plakken
+      werkt, en na 20 s geeft `wl-paste` niets meer
+- [ ] **Klembord X11** (`xclip`): hetzelfde. Kopieer binnen 20 s iets anders;
+      dat mag NIET gewist worden
+- [ ] Klembord en terminal sluiten: start `kluis get`, sluit meteen het
+      terminalvenster; na 20 s moet het klembord toch leeg zijn
+- [ ] Klembordgeschiedenis (Klipper/cliphist/CopyQ): kijk of het wachtwoord
+      daarin blijft staan. Zo ja: geschiedenis uitzetten of kluis uitsluiten
 - [ ] Verborgen prompt: tijdens het typen van het hoofdwachtwoord verschijnen
-  geen tekens, en Ctrl+C zet de terminal netjes terug.
+      geen tekens, en Ctrl+C zet de terminal netjes terug
 - [ ] Kleuren: groen ✔ en gele waarschuwingen in je terminal; geen kleurcodes
-  bij `kluis list | cat`.
-- [ ] `kluis shell`: na 5 min niets doen verschijnt "Automatisch vergrendeld".
-- [ ] Completions in bash, zsh en fish (na installatie met de PKGBUILD).
+      bij `kluis list | cat` of met `NO_COLOR=1`
+- [ ] `kluis shell`: na 5 min niets doen verschijnt "Automatisch vergrendeld"
+- [ ] Core dumps: open `kluis shell`, doe in een tweede terminal
+      `kill -SEGV $(pgrep -x kluis)` en daarna `coredumpctl list` → geen
+      dump van kluis
+- [ ] mlock-limiet op je echte systeem: `ulimit -l` en `kluis info`
+- [ ] Export naar een USB-stick (FAT/exFAT) en weer importeren

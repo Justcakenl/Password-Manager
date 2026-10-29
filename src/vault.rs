@@ -55,6 +55,12 @@ pub struct NewEntry {
     pub tags: Vec<String>,
 }
 
+impl NewEntry {
+    fn default_with_name(name: &str) -> NewEntry {
+        NewEntry { name: name.to_string(), ..Default::default() }
+    }
+}
+
 impl Entry {
     /// Maak een gecontroleerd item.
     pub fn new(fields: NewEntry) -> Result<Entry> {
@@ -137,6 +143,11 @@ impl Entry {
     pub fn set_notes(&mut self, v: &str) -> Result<()> {
         if v.len() > MAX_FIELD_LEN {
             return Err(Error::InvalidInput("notities zijn te lang".into()));
+        }
+        // Regeleinden en tabs mogen; andere stuurtekens (zoals ANSI-escapes
+        // die je terminal kunnen manipuleren) niet.
+        if v.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
+            return Err(Error::InvalidInput("notities bevatten ongeldige tekens".into()));
         }
         replace_secret(&mut self.notes, v);
         self.touch();
@@ -261,6 +272,23 @@ impl Vault {
         }
         // Migraties van oudere schema's zouden hier komen.
         v.schema = SCHEMA_VERSION;
+        // Controleer elk item, ook uit (mogelijk kwaadaardige) importbestanden:
+        // geldige velden en unieke namen.
+        for (i, e) in v.entries.iter().enumerate() {
+            let mut check =
+                Entry::new(NewEntry::default_with_name("x")).map_err(|_| Error::CorruptPayload)?;
+            let valid = check.set_name(&e.name).is_ok()
+                && check.set_username(&e.username).is_ok()
+                && check.set_password(&e.password).is_ok()
+                && check.set_url(&e.url).is_ok()
+                && check.set_notes(&e.notes).is_ok()
+                && check.set_tags(&e.tags).is_ok()
+                && check.name == e.name
+                && !v.entries[..i].iter().any(|other| same_name(&other.name, &e.name));
+            if !valid {
+                return Err(Error::CorruptPayload);
+            }
+        }
         v.sort();
         Ok(v)
     }
@@ -506,6 +534,17 @@ mod tests {
             Err(Error::UnsupportedVersion(99))
         ));
         assert!(Vault::from_json(br#"{"schema":1,"entries":[{"name":"x"}]}"#).is_ok());
+        // Ongeldige items uit een (kwaadaardig) bestand worden geweigerd.
+        for bad in [
+            &br#"{"schema":1,"entries":[{"name":""}]}"#[..],
+            br#"{"schema":1,"entries":[{"name":" x"}]}"#,
+            br#"{"schema":1,"entries":[{"name":"x"},{"name":"X"}]}"#,
+            br#"{"schema":1,"entries":[{"name":"x","notes":"[2J"}]}"#,
+            br#"{"schema":1,"entries":[{"name":"x[31m"}]}"#,
+        ] {
+            assert!(matches!(Vault::from_json(bad), Err(Error::CorruptPayload)));
+        }
+        assert!(Vault::from_json(br#"{"schema":1,"entries":[{"name":"x","notes":"a\nb\tc"}]}"#).is_ok());
     }
 
     #[test]

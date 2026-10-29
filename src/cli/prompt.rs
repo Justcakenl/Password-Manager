@@ -11,6 +11,7 @@
 //!   timer van `kluis shell` (poll) betrouwbaar.
 
 use std::io::{self, IsTerminal, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use secrecy::{ExposeSecret, SecretString};
 use subtle::ConstantTimeEq;
@@ -22,6 +23,24 @@ const MAX_LINE: usize = 1024 * 1024;
 const MAX_MASTER_LEN: usize = 1024;
 /// Minimale zxcvbn-score (0–4) voor een hoofd- of exportwachtwoord.
 pub const MIN_SCORE: u8 = 3;
+
+/// Tijdstip (seconden sinds 1970) van de laatste invoer; voor de
+/// inactiviteitswaakhond van `kluis shell`.
+static LAST_ACTIVITY: AtomicU64 = AtomicU64::new(0);
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// Registreer dat de gebruiker iets heeft ingevoerd.
+pub fn mark_activity() {
+    LAST_ACTIVITY.store(now_secs(), Ordering::Relaxed);
+}
+
+/// Seconden sinds de laatste invoer.
+pub fn idle_secs() -> u64 {
+    now_secs().saturating_sub(LAST_ACTIVITY.load(Ordering::Relaxed))
+}
 
 pub fn stdin_is_tty() -> bool {
     io::stdin().is_terminal()
@@ -55,6 +74,7 @@ pub fn read_raw_line() -> Result<Option<Zeroizing<String>>> {
         }
         buf.push(byte[0]);
     }
+    mark_activity();
     if buf.last() == Some(&b'\r') {
         buf.pop();
     }
@@ -89,7 +109,9 @@ pub fn confirm(prompt: &str) -> Result<bool> {
 /// Vraag om een geheim (verborgen invoer).
 pub fn secret(prompt: &str) -> Result<SecretString> {
     if stdin_is_tty() {
-        match rpassword::prompt_password(prompt) {
+        let result = rpassword::prompt_password(prompt);
+        mark_activity();
+        match result {
             Ok(s) => Ok(SecretString::from(s)),
             Err(e) if matches!(e.kind(), io::ErrorKind::Interrupted | io::ErrorKind::UnexpectedEof) => {
                 Err(Error::Cancelled)

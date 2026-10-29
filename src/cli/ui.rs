@@ -61,6 +61,21 @@ pub fn banner(lines: &[&str]) {
     eprintln!("{}", paint(false, "33;1", &format!("└{bar}┘")));
 }
 
+/// Maak tekst veilig om te tonen: stuurtekens (zoals ANSI-escapes die je
+/// terminal kunnen manipuleren) worden zichtbaar gemaakt als `\u{1b}`.
+/// Regeleinden en tabs blijven staan als `keep_newlines` waar is.
+pub fn safe(s: &str, keep_newlines: bool) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_control() && !(keep_newlines && (c == '\n' || c == '\t')) {
+                format!("\\u{{{:x}}}", c as u32)
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
+}
+
 /// Unix-tijd → "2026-10-29 14:03 UTC".
 pub fn format_time(secs: u64) -> String {
     if secs == 0 {
@@ -113,6 +128,14 @@ mod tests {
         assert_eq!(format_time(86_400), "1970-01-02 00:00 UTC");
         assert_eq!(format_time(951_782_400), "2000-02-29 00:00 UTC");
         assert_eq!(format_time(1_793_284_980), "2026-10-29 14:43 UTC");
+    }
+
+    #[test]
+    fn stuurtekens_onschadelijk() {
+        assert_eq!(safe("a\u{1b}[2Jb", false), "a\\u{1b}[2Jb");
+        assert_eq!(safe("r1\nr2", true), "r1\nr2");
+        assert_eq!(safe("r1\nr2", false), "r1\\u{a}r2");
+        assert_eq!(safe("p@ss wörd", false), "p@ss wörd");
     }
 
     #[test]

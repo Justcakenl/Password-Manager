@@ -325,9 +325,9 @@ fn shell_modus() {
     k.run(&["list"], &format!("{PW}\n")).success();
 }
 
-#[test]
-fn shell_vergrendelt_automatisch_bij_inactiviteit() {
-    let k = Kluis::new().init();
+/// Start `kluis shell --timeout 1`, stuur `input` en laat stdin open.
+/// Geeft de stderr-uitvoer terug zodra de shell uit zichzelf stopt.
+fn shell_until_locked(k: &Kluis, input: &str) -> String {
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_kluis"))
         .args(["shell", "--timeout", "1"])
         .env("KLUIS_VAULT", &k.path)
@@ -338,7 +338,7 @@ fn shell_vergrendelt_automatisch_bij_inactiviteit() {
         .spawn()
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
-    stdin.write_all(format!("{PW}\n").as_bytes()).unwrap();
+    stdin.write_all(input.as_bytes()).unwrap();
     // stdin blijft open: er komt gewoon geen invoer meer.
     let start = Instant::now();
     let out = loop {
@@ -350,7 +350,25 @@ fn shell_vergrendelt_automatisch_bij_inactiviteit() {
     };
     drop(stdin);
     assert!(out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("Automatisch vergrendeld"));
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+#[test]
+fn shell_vergrendelt_automatisch_bij_inactiviteit() {
+    let k = Kluis::new().init();
+    let err = shell_until_locked(&k, &format!("{PW}\n"));
+    assert!(err.contains("Automatisch vergrendeld"));
+    assert!(err.contains("sleutel is uit het geheugen gewist"));
+}
+
+#[test]
+fn shell_vergrendelt_ook_midden_in_een_vraag() {
+    let k = Kluis::new().init();
+    // `add` vraagt om een gebruikersnaam; daar komt nooit antwoord op.
+    let err = shell_until_locked(&k, &format!("{PW}\nadd Wegloper\n"));
+    assert!(err.contains("Gebruikersnaam"));
+    assert!(err.contains("Automatisch vergrendeld"));
+    k.run(&["list"], &format!("{PW}\n")).success().stdout(contains("Wegloper").not());
 }
 
 #[test]

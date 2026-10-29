@@ -42,6 +42,37 @@ fn wait_for_input(secs: u64) -> Result<Wait> {
     }
 }
 
+/// Waakhond: vergrendelt ook als je midden in een vraag (bijv. "Gebruikersnaam:"
+/// of een verborgen wachtwoordprompt) wegloopt. Het proces stopt dan direct;
+/// het besturingssysteem geeft al het geheugen vrij (en wist pagina's voordat
+/// een ander proces ze krijgt). De terminalinstellingen worden eerst hersteld.
+fn start_watchdog(timeout: u64, human: String) {
+    // SAFETY: termios is een gewone C-struct; tcgetattr vult hem in.
+    let saved = unsafe {
+        let mut t: libc::termios = std::mem::zeroed();
+        (libc::isatty(0) == 1 && libc::tcgetattr(0, &mut t) == 0).then_some(t)
+    };
+    prompt::mark_activity();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            // Iets ruimer dan de timeout, zodat bij de gewone `kluis>`-prompt de
+            // nette route (met expliciet wissen) eerst aan de beurt is.
+            if prompt::idle_secs() > timeout + 2 {
+                if let Some(t) = saved {
+                    // SAFETY: geldige termios die we eerder zelf hebben gelezen.
+                    unsafe {
+                        libc::tcsetattr(0, libc::TCSANOW, &t);
+                    }
+                }
+                eprintln!();
+                ui::info(&format!("Automatisch vergrendeld na {human} zonder invoer."));
+                std::process::exit(0);
+            }
+        }
+    });
+}
+
 fn print_help() {
     let help = localize(ShellLine::command()).render_help();
     eprintln!("{help}");
@@ -61,6 +92,7 @@ pub fn run(paths: &VaultPaths, timeout: u64) -> Result<()> {
          Na {human} zonder invoer vergrendelt de kluis vanzelf."
     ));
 
+    start_watchdog(timeout, human.clone());
     loop {
         eprint!("kluis> ");
         io::stderr().flush()?;

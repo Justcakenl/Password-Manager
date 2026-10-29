@@ -283,8 +283,8 @@ fn get(uv: &UnlockedVault, g: &GetArgs) -> Result<()> {
     println!("{}  {}", ui::bold("Tags:          "), or_dash(&e.tags().join(", ")));
     println!("{}  {}", ui::bold("Gewijzigd:     "), ui::format_time(e.modified()));
     if g.show {
-        println!("{}  {}", ui::bold("Notities:      "), or_dash(e.notes()));
-        println!("{}  {}", ui::bold("Wachtwoord:    "), or_dash(e.password()));
+        println!("{}  {}", ui::bold("Notities:      "), or_dash(&ui::safe(e.notes(), true)));
+        println!("{}  {}", ui::bold("Wachtwoord:    "), or_dash(&ui::safe(e.password(), false)));
         return Ok(());
     }
     println!(

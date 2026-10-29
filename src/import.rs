@@ -120,6 +120,9 @@ pub fn parse_csv(reader: impl Read) -> Result<CsvImport> {
         }
         fields.name = vault.unique_name(&fields.name.replace(char::is_control, " "));
         fields.username = fields.username.replace(char::is_control, " ");
+        fields.url = fields.url.replace(char::is_control, " ");
+        fields.notes = fields.notes.replace(|c: char| c.is_control() && c != '\n' && c != '\t', " ");
+        fields.tags = fields.tags.iter().map(|t| t.replace(char::is_control, " ")).collect();
         match Entry::new(fields) {
             Ok(e) => vault.add(e)?,
             Err(_) => skipped += 1,
@@ -206,6 +209,17 @@ mod tests {
         let csv = "name,url,username,password,note\nsite,https://a.b,u, spatie pw ,n\n";
         let r = parse_csv(csv.as_bytes()).unwrap();
         assert_eq!(r.vault.get("site").unwrap().password(), " spatie pw ", "wachtwoord niet trimmen");
+    }
+
+    #[test]
+    fn stuurtekens_worden_onschadelijk() {
+        let csv =
+            "name,username,password,url,notes\nx,\"u\u{1b}[31m\",pw,\"https://a\u{7}\",\"r1\nr2\u{1b}[2J\"\n";
+        let r = parse_csv(csv.as_bytes()).unwrap();
+        let e = r.vault.get("x").unwrap();
+        assert!(!e.username().contains('\u{1b}'));
+        assert!(!e.url().contains('\u{7}'));
+        assert_eq!(e.notes(), "r1\nr2 [2J");
     }
 
     #[test]
