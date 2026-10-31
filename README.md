@@ -78,20 +78,6 @@ Options go after `bash -s --`, e.g. `... | bash -s -- --yes --no-setup`:
 `--yes` (no confirmations), `--no-setup`, `--dir DIR`, `--branch B`,
 `--uninstall` (removes the program, keeps your vault), `--help`.
 
-<details>
-<summary>The repository (or your fork) is private? Use your GitHub login</summary>
-
-A plain `curl` link gives "404 Not Found" for a private repository, because the
-download has no login. Log in once with the GitHub CLI
-(`sudo pacman -S github-cli && gh auth login`), then run:
-
-```bash
-gh api repos/Justcakenl/Password-Manager/contents/install.sh \
-  -H "Accept: application/vnd.github.raw" | bash
-```
-
-</details>
-
 When it is done, type `cakepass`. That is all. Skip to
 [Check that it works](#check-that-it-works).
 
@@ -187,9 +173,6 @@ rustc --version
 git clone https://github.com/Justcakenl/Password-Manager.git ~/Passcode-Manager
 cd ~/Passcode-Manager
 ```
-
-(Behind a private repository or fork? Log in first with `gh auth login` and use
-`gh repo clone Justcakenl/Password-Manager ~/Passcode-Manager`.)
 
 > **Keep this folder.** You will use it to update later.
 
@@ -1204,7 +1187,7 @@ no known vulnerabilities.
 | "Terminal too small" | Make the window at least 60 columns by 16 rows, or use `cakepass shell`. |
 | The arrow-key screen does not appear | `cakepass` falls back to the line mode when input or output is not a terminal, with `TERM=dumb`, or in a tiny window. |
 | The logo looks wrong or choppy | Try a wider/other terminal, or turn the animation off: `cakepass config set animation off`. |
-| Installer: `could not download the code` | Check your internet connection. For a private repository or fork: log in with `gh auth login` (or set up an SSH key), then run the installer again. |
+| Installer: `could not download the code` | Check your internet connection, then run the installer again. |
 | `cakepass --update`: `I do not know where the source code is` | You did not install with `makepkg -si`/the installer, or the folder was moved. Give it: `cakepass --update --source ~/cakepass`. |
 | `cakepass --update`: `git fetch failed` | No internet, or GitHub does not know you. Test with `git -C ~/cakepass fetch` and log in (SSH key or `gh auth login`). |
 | `cakepass --update`: `local changes` or `differs from GitHub` | You changed something in `~/cakepass`. Look with `git -C ~/cakepass status`; nothing is overwritten. |

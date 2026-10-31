@@ -175,8 +175,8 @@ main() {
   printf '\n'
 }
 
-# Download the repository. A public repository needs no login at all; for a
-# private one (or a private fork) this uses YOUR GitHub access.
+# Download the repository. No login is needed; if anonymous HTTPS fails (for
+# example behind a fork), this falls back to YOUR GitHub access.
 # Order: explicit URL (forks/tests) → anonymous HTTPS → gh (logged in) → SSH key
 # → HTTPS login prompt.
 clone_repo() {
@@ -207,8 +207,8 @@ clone_repo() {
   say "Cloning over HTTPS (git may ask for your GitHub username and a personal access token)"
   if tty_run git clone --quiet --branch "$branch" "https://github.com/$repo.git" "$dir"; then return 0; fi
   rm -rf "$dir"
-  die "could not download the code. Check your internet connection. If the repository is
-  private, git needs your GitHub login. Easiest fixes (pick one, then run this installer again):
+  die "could not download the code. Check your internet connection. If you use a fork
+  that needs a login, easiest fixes (pick one, then run this installer again):
     • sudo pacman -S github-cli && gh auth login
     • add an SSH key to your GitHub account (ssh-keygen, then github.com/settings/keys)
     • create a personal access token and use it as the password when git asks"

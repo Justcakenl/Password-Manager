@@ -1,7 +1,7 @@
 # Progress: `cakepass` (CakePass)
 
 Last updated: step 11 (security levels, key files, passphrase offer, version 0.4.0).
-Repository: `Justcakenl/Password-Manager`, branch `main` (private until it is made public).
+Repository: `Justcakenl/Password-Manager`, branch `main`.
 
 ## Maintainer checklist: manual testing on a real Arch machine
 
@@ -18,23 +18,17 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
 
 **First time?** Follow these steps:
 
-1. **Log in to GitHub** (only needed while the repository is private):
+1. **Run the one-line installer**:
    ```bash
-   sudo pacman -S --needed github-cli
-   gh auth login
-   ```
-2. **Run the one-line installer**:
-   ```bash
-   gh api repos/Justcakenl/Password-Manager/contents/install.sh \
-     -H "Accept: application/vnd.github.raw" | bash
+   curl -fsSL https://raw.githubusercontent.com/Justcakenl/Password-Manager/main/install.sh | bash
    ```
    It installs the build tools, downloads the code into `~/cakepass`, builds,
    tests and installs CakePass, and then starts the setup wizard. If something
    fails, copy the error message and open an issue on GitHub. **Keep `~/cakepass`**:
    `cakepass --update` uses it.
-3. **In the wizard** choose: animation on or off, the auto-lock minutes, and a
+2. **In the wizard** choose: animation on or off, the auto-lock minutes, and a
    strong master password (write it on paper too).
-4. **Try it** with a throw-away vault first, so the real one stays clean:
+3. **Try it** with a throw-away vault first, so the real one stays clean:
    ```bash
    export CAKEPASS_VAULT=/tmp/testvault.enc
    cakepass setup              # answer "Open CakePass now?" with Enter
@@ -45,7 +39,7 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
    cakepass info
    unset CAKEPASS_VAULT
    ```
-5. **Go through the "Testing on Arch" list below** and tick what works.
+4. **Go through the "Testing on Arch" list below** and tick what works.
 6. Make a first backup of the real vault (README, "Backups").
 7. When happy there is nothing left to do: `cakepass --update` keeps the
    installation current.
@@ -71,13 +65,12 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   screen and scrollback on locking.
 - [x] **Step 7 – Update system**: `cakepass --update` (git + makepkg, extra
   backup, restore on failure, never opens the vault), daily check with a
-  systemd timer, `cakepass --version` shows the commit. Repository is private
-  (checked).
+  systemd timer, `cakepass --version` shows the commit.
 - [x] **Step 8 – Installer, setup wizard, English**:
   - `install.sh`: the one-line installer (works with the script on stdin, as
     `curl | bash` does). It checks the system, installs tools with pacman,
-    clones the private repository with *your* GitHub access (gh, SSH or login
-    prompt), runs `makepkg -si`, and starts `cakepass setup`. Options `--yes`,
+    clones the repository (anonymous HTTPS first, then gh, SSH or login
+    prompt as fallbacks), runs `makepkg -si`, and starts `cakepass setup`. Options `--yes`,
     `--no-setup`, `--dir`, `--branch`, `--uninstall`. Wrapped in `main()` so a
     truncated download never runs half a script.
   - `cakepass setup`: first-time wizard – animation on/off, auto-lock minutes,
@@ -226,9 +219,7 @@ See `docs/DESIGN.md` for the explanation. In short:
   vulnerability (RUSTSEC-2026-0009).
 - The PKGBUILD lives in `packaging/arch/` because makepkg makes its own `src/`
   folder, which would clash with the Rust source.
-- The one-line installer for a **private** repository needs a GitHub login
-  (`gh api …` or `curl` with `gh auth token`); a plain raw.githubusercontent.com
-  link only works if the repository or the script is public.
+- The one-line installer uses a plain raw.githubusercontent.com link.
 - Updates are never installed unattended: the daily check only notifies (see
   the README for why).
 - EFF diceware word list in `assets/` (checked against two independent sources;
@@ -324,10 +315,8 @@ Could NOT be tested in the cloud environment. Do this yourself and tick:
 - [ ] `cakepass --update` with a key-file vault: the update never asks for the
       key file; afterwards `cakepass list` works as before
 
-- [ ] **The one-line installer on a clean Arch install**, both commands from the
-      README (`gh api … | bash` and the `curl … $(gh auth token)` variant).
-      These were not run against the real private repository here (no GitHub
-      login in the sandbox). Check: tools installed, `~/cakepass` cloned,
+- [ ] **The one-line installer on a clean Arch install**, the command from the
+      README. Check: tools installed, `~/cakepass` cloned,
       `makepkg` builds and runs the tests, `cakepass --version` works, the wizard starts.
 - [ ] The wizard in your own terminal: answer the animation question both ways;
       `cakepass config` shows what you chose
