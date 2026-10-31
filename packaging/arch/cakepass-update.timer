@@ -1,0 +1,10 @@
+[Unit]
+Description=CakePass: check for a new version every day
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=2h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

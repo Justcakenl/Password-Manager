@@ -1,0 +1,85 @@
+# PKGBUILD for cakepass (CakePass) – builds from this local git checkout.
+#
+# Usage (in this folder):   makepkg -si
+# Skip the tests:            makepkg -si --nocheck
+#
+# This PKGBUILD lives in packaging/arch/ and not in the project root, because
+# makepkg creates its own "src/" and "pkg/" folders, which would clash with the
+# Rust source code.
+
+# The project folder (two levels above this PKGBUILD).
+_root="$(realpath "${startdir}/../..")"
+
+# Version = number from Cargo.toml + commit count, so every update is a newer
+# version for pacman. This sits up here (and not in a pkgver() function)
+# because otherwise makepkg would edit the PKGBUILD itself and the git folder
+# would become "dirty".
+pkgname=cakepass
+pkgver="$(sed -n 's/^version = "\(.*\)"/\1/p' "$_root/Cargo.toml" | head -n1).r$(git -C "$_root" rev-list --count HEAD 2>/dev/null || echo 0)"
+pkgrel=1
+pkgdesc="Offline, encrypted password manager for the terminal (CakePass)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Justcakenl/Passcode-Manager"
+license=('MIT')
+depends=('glibc' 'gcc-libs')
+makedepends=('cargo' 'git')
+optdepends=('wl-clipboard: clipboard on Wayland'
+            'xclip: clipboard on X11'
+            'git: cakepass --update (update from GitHub)'
+            'base-devel: cakepass --update (build with makepkg)'
+            'libnotify: desktop notification for a new version')
+# The program used to be called "kluis"; installing cakepass replaces it.
+conflicts=('kluis')
+replaces=('kluis')
+options=('!debug')
+source=()
+
+prepare() {
+  cd "$_root"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$_root"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR="$srcdir/target"
+  # This tells the program which version it was built from (for cakepass --update).
+  export CAKEPASS_GIT_COMMIT="$(git -C "$_root" rev-parse --short=12 HEAD 2>/dev/null || true)"
+  cargo build --frozen --release
+}
+
+check() {
+  cd "$_root"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR="$srcdir/target"
+  export CAKEPASS_GIT_COMMIT="$(git -C "$_root" rev-parse --short=12 HEAD 2>/dev/null || true)"
+  cargo test --frozen
+}
+
+package() {
+  cd "$_root"
+  local bin="$srcdir/target/release/cakepass"
+  install -Dm0755 "$bin" "$pkgdir/usr/bin/cakepass"
+
+  # Shell completions
+  install -dm0755 "$pkgdir/usr/share/bash-completion/completions" \
+                  "$pkgdir/usr/share/zsh/site-functions" \
+                  "$pkgdir/usr/share/fish/vendor_completions.d"
+  "$bin" completions bash > "$pkgdir/usr/share/bash-completion/completions/cakepass"
+  "$bin" completions zsh  > "$pkgdir/usr/share/zsh/site-functions/_cakepass"
+  "$bin" completions fish > "$pkgdir/usr/share/fish/vendor_completions.d/cakepass.fish"
+
+  # Where the source code is, for `cakepass --update`.
+  install -dm0755 "$pkgdir/usr/share/cakepass"
+  printf '%s\n' "$_root" > "$pkgdir/usr/share/cakepass/source-dir"
+
+  # Daily check for a new version (turn on: cakepass --update --auto on)
+  install -Dm0644 packaging/arch/cakepass-update.service "$pkgdir/usr/lib/systemd/user/cakepass-update.service"
+  install -Dm0644 packaging/arch/cakepass-update.timer "$pkgdir/usr/lib/systemd/user/cakepass-update.timer"
+
+  install -Dm0644 README.md "$pkgdir/usr/share/doc/cakepass/README.md"
+  install -Dm0644 docs/DESIGN.md "$pkgdir/usr/share/doc/cakepass/DESIGN.md"
+  install -Dm0644 LICENSE "$pkgdir/usr/share/licenses/cakepass/LICENSE"
+  install -Dm0644 assets/README.md "$pkgdir/usr/share/licenses/cakepass/EFF-WORDLIST.md"
+}

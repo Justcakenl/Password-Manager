@@ -1,0 +1,12 @@
+[Unit]
+Description=CakePass: check for a new version
+Documentation=https://github.com/Justcakenl/Passcode-Manager
+# Only checks and reports; nothing is installed and your vault is not opened.
+ConditionPathExists=/usr/share/cakepass/source-dir
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/cakepass update --check --notify
+Nice=10
+NoNewPrivileges=yes
+PrivateTmp=yes
