@@ -1,6 +1,6 @@
 [Unit]
 Description=CakePass: check for a new version
-Documentation=https://github.com/Justcakenl/Passcode-Manager
+Documentation=https://github.com/Justcakenl/Password-Manager
 # Only checks and reports; nothing is installed and your vault is not opened.
 ConditionPathExists=/usr/share/cakepass/source-dir
 

@@ -1,7 +1,7 @@
 # Progress: `cakepass` (CakePass)
 
 Last updated: step 11 (security levels, key files, passphrase offer, version 0.4.0).
-Repository: `Justcakenl/Passcode-Manager`, branch `main` (private until it is made public).
+Repository: `Justcakenl/Password-Manager`, branch `main` (private until it is made public).
 
 ## Maintainer checklist: manual testing on a real Arch machine
 
@@ -25,7 +25,7 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
    ```
 2. **Run the one-line installer**:
    ```bash
-   gh api repos/Justcakenl/Passcode-Manager/contents/install.sh \
+   gh api repos/Justcakenl/Password-Manager/contents/install.sh \
      -H "Accept: application/vnd.github.raw" | bash
    ```
    It installs the build tools, downloads the code into `~/cakepass`, builds,

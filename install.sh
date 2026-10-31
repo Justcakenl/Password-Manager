@@ -24,7 +24,7 @@
 #       --uninstall  remove the CakePass program (your vault is kept)
 #   -h, --help       show this help
 #
-# Environment: CAKEPASS_REPO (owner/name, default Justcakenl/Passcode-Manager),
+# Environment: CAKEPASS_REPO (owner/name, default Justcakenl/Password-Manager),
 #              CAKEPASS_DIR, CAKEPASS_BRANCH.
 #
 # The whole script is wrapped in main() and only runs on the very last line, so
@@ -52,7 +52,7 @@ USAGE
 main() {
   set -euo pipefail
 
-  local REPO="${CAKEPASS_REPO:-Justcakenl/Passcode-Manager}"
+  local REPO="${CAKEPASS_REPO:-Justcakenl/Password-Manager}"
   local DIR="${CAKEPASS_DIR:-$HOME/cakepass}"
   local BRANCH="${CAKEPASS_BRANCH:-main}"
   local YES=0 SETUP=1 UNINSTALL=0

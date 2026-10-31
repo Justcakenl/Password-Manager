@@ -58,7 +58,7 @@ Pick the line that fits you:
 You need a user that may use `sudo`. Open a terminal and run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Justcakenl/Passcode-Manager/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Justcakenl/Password-Manager/main/install.sh | bash
 ```
 
 The installer is a short, readable script ([`install.sh`](install.sh)); read it
@@ -86,7 +86,7 @@ download has no login. Log in once with the GitHub CLI
 (`sudo pacman -S github-cli && gh auth login`), then run:
 
 ```bash
-gh api repos/Justcakenl/Passcode-Manager/contents/install.sh \
+gh api repos/Justcakenl/Password-Manager/contents/install.sh \
   -H "Accept: application/vnd.github.raw" | bash
 ```
 
@@ -184,12 +184,12 @@ rustc --version
 #### Step 3: download CakePass
 
 ```bash
-git clone https://github.com/Justcakenl/Passcode-Manager.git ~/Passcode-Manager
+git clone https://github.com/Justcakenl/Password-Manager.git ~/Passcode-Manager
 cd ~/Passcode-Manager
 ```
 
 (Behind a private repository or fork? Log in first with `gh auth login` and use
-`gh repo clone Justcakenl/Passcode-Manager ~/Passcode-Manager`.)
+`gh repo clone Justcakenl/Password-Manager ~/Passcode-Manager`.)
 
 > **Keep this folder.** You will use it to update later.
 
@@ -865,7 +865,7 @@ Checking GitHub via git (/home/john/cakepass).
 ┌───────────────────────────────────────────────────────────────┐
 │ There is a new version of CakePass.                           │
 │ New:  3 change(s)  (branch main)                              │
-│ From: https://github.com/Justcakenl/Passcode-Manager.git      │
+│ From: https://github.com/Justcakenl/Password-Manager.git      │
 └───────────────────────────────────────────────────────────────┘
   • 4f2a9c1 New item type: bank card
   • 9be01d7 Faster logo

@@ -19,7 +19,7 @@ pkgver="$(sed -n 's/^version = "\(.*\)"/\1/p' "$_root/Cargo.toml" | head -n1).r$
 pkgrel=1
 pkgdesc="Offline, encrypted password manager for the terminal (CakePass)"
 arch=('x86_64' 'aarch64')
-url="https://github.com/Justcakenl/Passcode-Manager"
+url="https://github.com/Justcakenl/Password-Manager"
 license=('MIT')
 depends=('glibc' 'gcc-libs')
 makedepends=('cargo' 'git')
