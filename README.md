@@ -1,6 +1,6 @@
 # CakePass 🍰
 
-**An offline, encrypted vault for your terminal. Passwords, API keys and secure notes, all on your own computer.**
+**CakePass is a small, offline password manager for the Linux terminal. It keeps your passwords, API keys and secure notes in one strongly encrypted file on your own computer, and you use it with the arrow keys.**
 
 ![License: MIT](https://img.shields.io/badge/license-MIT-pink)
 ![Platform: Linux](https://img.shields.io/badge/platform-Linux-informational)
@@ -14,7 +14,6 @@ cloud, no account, no telemetry: the program itself never makes a network
 connection. You use it with the **arrow keys** (no commands to remember), or with
 single commands in scripts.
 
-**Made by the [cake-cli](https://github.com/Justcakenl/Passcode-Manager) project.**
 Free and open source under the [MIT license](LICENSE).
 
 ## What you get
@@ -1279,6 +1278,6 @@ security problem? Do **not** open a public issue; follow [SECURITY.md](SECURITY.
 
 ## License
 
-CakePass is made by the **cake-cli** project and released under the MIT license,
+CakePass is released under the MIT license,
 see [`LICENSE`](LICENSE). The EFF word list is under CC BY 3.0 US,
 see [`assets/README.md`](assets/README.md).
