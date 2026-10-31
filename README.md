@@ -1,15 +1,37 @@
 # CakePass 🍰
 
+**An offline, encrypted vault for your terminal. Passwords, API keys and secure notes, all on your own computer.**
+
+![License: MIT](https://img.shields.io/badge/license-MIT-pink)
+![Platform: Linux](https://img.shields.io/badge/platform-Linux-informational)
+![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange)
+![Status: beta](https://img.shields.io/badge/status-beta-yellow)
+
 ![CakePass login screen](docs/cakepass-login.gif)
 
-An **offline vault for the terminal** on Arch Linux, for **passwords, API keys
-and secure notes**. The command is called `cakepass`.
-Everything lives in one encrypted file on your own computer.
-No cloud, no account, no telemetry. The program itself never makes a network
-connection; only `cakepass --update` lets `git` fetch your newest version.
+CakePass keeps everything in **one encrypted file** on your own machine. No
+cloud, no account, no telemetry: the program itself never makes a network
+connection. You use it with the **arrow keys** (no commands to remember), or with
+single commands in scripts.
 
 **Made by the [cake-cli](https://github.com/Justcakenl/Passcode-Manager) project.**
 Free and open source under the [MIT license](LICENSE).
+
+## What you get
+
+- 🔐 **Strong encryption.** Argon2id + XChaCha20-Poly1305, plus a second layer
+  that encrypts every field (username, e-mail, URL, password, notes) on its own.
+  An optional **key file** (for example on a USB stick) makes a stolen vault
+  useless on its own. [How strong is this, really?](#how-strong-is-this-really)
+- ⌨️ **Arrow-key screen.** Tabs, live search, add/edit forms, a password
+  generator and settings: no typing of commands. [See it](#using-the-screen-arrow-keys).
+- 🗝️ **Logins, API keys and notes** in one place, with e-mail addresses and tags.
+- 📋 **Clipboard that cleans up.** Copied secrets are wiped after 20 seconds.
+- 🧹 **Careful with memory.** Secrets are wiped after use; core dumps are off;
+  the screen and scrollback are cleared when you lock.
+- ⏲️ **Auto-lock** after the idle time you choose.
+- 🪶 **Small and light.** One static-ish binary (about 5 MB), no runtime, no
+  background service.
 
 > ⚠️ **Status: beta.** The cryptography comes from well-known, audited
 > RustCrypto crates, but CakePass itself has **not been audited by an outside
@@ -18,13 +40,44 @@ Free and open source under the [MIT license](LICENSE).
 > before you trust it with everything. Found a security problem? See
 > [SECURITY.md](SECURITY.md).
 
-## Install in one line
+## Install
 
-You need an **Arch Linux** computer (and a user that may use `sudo`):
+CakePass runs on **Linux** (tested on Arch Linux and Ubuntu 24.04, x86_64).
+Pick the line that fits you:
+
+| You use… | Go to |
+|---|---|
+| Arch Linux, Manjaro, EndeavourOS, CachyOS | [**Arch family: one line**](#arch-family-one-line) |
+| Ubuntu, Debian, Linux Mint, Pop!_OS, Zorin, Raspberry Pi OS | [**Any other Linux, step by step**](#any-other-linux-step-by-step) → Debian family |
+| Fedora, RHEL, AlmaLinux, Rocky Linux | [step by step](#any-other-linux-step-by-step) → Fedora family |
+| openSUSE | [step by step](#any-other-linux-step-by-step) → openSUSE |
+| Alpine, Void, Gentoo, NixOS, anything else | [step by step](#any-other-linux-step-by-step) → Other |
+| Windows (WSL), ChromeOS (Linux), Android (Termux), macOS | see [Other devices](#other-devices-wsl-chromebook-raspberry-pi-mac) |
+
+### Arch family: one line
+
+You need a user that may use `sudo`. Open a terminal and run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Justcakenl/Passcode-Manager/main/install.sh | bash
 ```
+
+The installer is a short, readable script ([`install.sh`](install.sh)); read it
+first, as you should with any script you pipe into `bash`. It:
+
+1. Checks that you are on Arch Linux and not root.
+2. Installs what it needs with `pacman` (`base-devel`, `git`, `rust`, and a
+   clipboard tool for your session). Asks for your sudo password.
+3. Downloads the source code with `git` into `~/cakepass`.
+4. Builds, **tests** and installs the package with `makepkg`.
+5. Starts the **first-time setup**: intro animation yes/no, auto-lock minutes,
+   **security level**, your **master password** (it offers to make a strong
+   passphrase for you) and optionally a **key file**.
+
+Your vault is never touched by the installer. Run it again any time to update.
+Options go after `bash -s --`, e.g. `... | bash -s -- --yes --no-setup`:
+`--yes` (no confirmations), `--no-setup`, `--dir DIR`, `--branch B`,
+`--uninstall` (removes the program, keeps your vault), `--help`.
 
 <details>
 <summary>The repository (or your fork) is private? Use your GitHub login</summary>
@@ -38,44 +91,235 @@ gh api repos/Justcakenl/Passcode-Manager/contents/install.sh \
   -H "Accept: application/vnd.github.raw" | bash
 ```
 
-or the same thing with `curl`:
-
-```bash
-curl -fsSL -H "Authorization: Bearer $(gh auth token)" \
-  -H "Accept: application/vnd.github.raw" \
-  https://api.github.com/repos/Justcakenl/Passcode-Manager/contents/install.sh | bash
-```
-
 </details>
 
-Add options after `bash -s --`, for example `... | bash -s -- --yes --no-setup`.
-
-**What the installer does** (it is a short, readable script; look at
-[`install.sh`](install.sh) before you run it, as you should with any script you pipe into `bash`):
-
-1. Checks that you are on Arch Linux, not as root.
-2. Installs the tools it needs with `pacman` (`base-devel`, `git`, `rust`, and a
-   clipboard tool for your session). Asks for your sudo password.
-3. Downloads the source code with `git` into `~/cakepass` (a public repository
-   needs no login; for a private one it uses `gh`, an SSH key, or a login prompt).
-4. Builds, **tests** and installs the package with `makepkg`.
-5. Starts the **first-time setup**: do you want the intro animation, after how
-   many minutes should it auto-lock, the **security level**, your **master
-   password** (it offers to make a strong passphrase for you), and optionally a
-   **key file**.
-
-Your vault is never touched by the installer. Run it again any time to update.
-Options: `--yes` (no confirmations), `--no-setup`, `--dir DIR`, `--branch B`,
-`--uninstall` (removes the program, keeps your vault), `--help`.
-
-Prefer to do it by hand? See [Manual install](#manual-install).
+When it is done, type `cakepass`. That is all. Skip to
+[Check that it works](#check-that-it-works).
 
 > **Used an early version?** The command used to be called `kluis`. Run the
 > installer again: the old package is replaced and your old `kluis` folders are
 > moved to `cakepass` automatically, so your vault is kept.
 
+### Any other Linux, step by step
+
+Seven small steps. You need about **1 GB of free RAM** and a few minutes for the
+first build. Everything is installed in your own home folder, so only step 1
+needs `sudo`.
+
+#### Step 1: install a compiler, git and curl
+
+Choose your family and paste the line:
+
+<details open>
+<summary><b>Debian family</b>: Ubuntu, Debian, Linux Mint, Pop!_OS, Zorin, Raspberry Pi OS</summary>
+
+```bash
+sudo apt update
+sudo apt install -y build-essential git curl
+```
+
+</details>
+
+<details>
+<summary><b>Fedora family</b>: Fedora, RHEL, AlmaLinux, Rocky Linux</summary>
+
+```bash
+sudo dnf install -y gcc git curl
+```
+
+</details>
+
+<details>
+<summary><b>openSUSE</b></summary>
+
+```bash
+sudo zypper install -y gcc git curl
+```
+
+</details>
+
+<details>
+<summary><b>Other</b>: Alpine, Void, Gentoo, NixOS, …</summary>
+
+Install a C compiler (`gcc` or `clang`), `git` and `curl` with your package
+manager. For example, Alpine: `sudo apk add build-base git curl`; Void:
+`sudo xbps-install -S base-devel git curl`. (Alpine and the others are not
+tested; see [Other devices](#other-devices-wsl-chromebook-raspberry-pi-mac).)
+
+</details>
+
+Want to copy passwords to the clipboard? Add **one** clipboard tool, depending
+on your desktop (not sure? type `echo $XDG_SESSION_TYPE`):
+
+| Session | Package | Debian family | Fedora family | openSUSE |
+|---|---|---|---|---|
+| Wayland (GNOME, KDE Plasma 6, Sway, Hyprland) | `wl-clipboard` | `sudo apt install -y wl-clipboard` | `sudo dnf install -y wl-clipboard` | `sudo zypper install -y wl-clipboard` |
+| X11 (i3, Xfce, older sessions) | `xclip` | `sudo apt install -y xclip` | `sudo dnf install -y xclip` | `sudo zypper install -y xclip` |
+
+No clipboard tool (a server, SSH)? CakePass still works: `--show` prints a
+password on screen instead of copying it.
+
+#### Step 2: install Rust (version 1.88 or newer)
+
+First look whether you already have a new enough Rust:
+
+```bash
+rustc --version
+```
+
+If it prints **1.88 or higher**, skip to step 3. If the command is not found, or
+the version is lower (Ubuntu and Debian ship old versions), install the official
+toolchain with `rustup`. Press Enter to accept the default choice:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Then make it available in this terminal and check:
+
+```bash
+. "$HOME/.cargo/env"
+rustc --version
+```
+
+#### Step 3: download CakePass
+
+```bash
+git clone https://github.com/Justcakenl/Passcode-Manager.git ~/Passcode-Manager
+cd ~/Passcode-Manager
+```
+
+(Behind a private repository or fork? Log in first with `gh auth login` and use
+`gh repo clone Justcakenl/Passcode-Manager ~/Passcode-Manager`.)
+
+> **Keep this folder.** You will use it to update later.
+
+#### Step 4: build it
+
+```bash
+cargo build --release --locked
+```
+
+The first build takes **1 to 5 minutes** (about 80 seconds on a normal laptop).
+On a small board such as a Raspberry Pi, limit the parallel jobs so it does not
+run out of memory: `cargo build --release --locked -j 2`.
+
+Want to run the tests too? `cargo test --locked` (a couple of minutes more).
+
+#### Step 5: install the program
+
+For just you (no `sudo`):
+
+```bash
+install -Dm755 target/release/cakepass ~/.local/bin/cakepass
+```
+
+Check that `~/.local/bin` is in your `PATH`:
+
+```bash
+echo "$PATH" | tr ':' '\n' | grep -x "$HOME/.local/bin" || echo "NOT in PATH"
+```
+
+If it says `NOT in PATH`, add it and open a new terminal:
+
+```bash
+# bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+# zsh
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+# fish
+fish_add_path ~/.local/bin
+```
+
+Prefer a system-wide install for all users? Use
+`sudo install -Dm755 target/release/cakepass /usr/local/bin/cakepass` instead.
+
+#### Step 6 (optional): tab completion
+
+Press Tab to complete commands. Run the line for your shell:
+
+```bash
+# bash
+mkdir -p ~/.local/share/bash-completion/completions
+cakepass completions bash > ~/.local/share/bash-completion/completions/cakepass
+
+# zsh (and add  fpath=(~/.zfunc $fpath)  before "compinit" in ~/.zshrc)
+mkdir -p ~/.zfunc && cakepass completions zsh > ~/.zfunc/_cakepass
+
+# fish
+mkdir -p ~/.config/fish/completions
+cakepass completions fish > ~/.config/fish/completions/cakepass.fish
+```
+
+#### Step 7: first run
+
+```bash
+cakepass
+```
+
+With no vault yet, the [first-time setup](#first-time-setup) starts by itself.
+
+### Check that it works
+
+```bash
+cakepass --version     # prints a version, e.g. "cakepass 0.4.0 (commit …)"
+cakepass info          # shows your vault and system checks; needs no password
+```
+
+If `cakepass` is "command not found", your `PATH` is missing the folder you
+installed to (step 5). More help: [Troubleshooting](#troubleshooting).
+
+### Update to a newer version
+
+- **Arch family** (installed with the one-liner): `cakepass --update`, or run
+  the installer again. See [Updating](#updating).
+- **Everyone else** (installed step by step), from your `~/Passcode-Manager` folder:
+
+  ```bash
+  cd ~/Passcode-Manager
+  git pull --ff-only
+  cargo build --release --locked
+  install -Dm755 target/release/cakepass ~/.local/bin/cakepass
+  cakepass --version
+  ```
+
+  Your vault is never touched by an update, but a new version may upgrade the
+  vault format the next time it **saves**. Make a [backup](#backups) first.
+  (`cakepass --update` and the daily update check need Arch's `makepkg`, so on
+  other systems they say they cannot run. The four lines above are the update.)
+
+### Uninstall
+
+```bash
+rm -f ~/.local/bin/cakepass                          # the program
+rm -f ~/.local/share/bash-completion/completions/cakepass ~/.zfunc/_cakepass \
+      ~/.config/fish/completions/cakepass.fish       # completions, if you added them
+rm -rf ~/Passcode-Manager                            # the source folder
+```
+
+On Arch family: `sudo pacman -R cakepass` (or the installer with `--uninstall`).
+**Your vault is not removed**: it stays in `~/.local/share/cakepass/` and your
+settings in `~/.config/cakepass/`. Delete those yourself only if you are sure you
+no longer need your passwords (see [Backups](#backups)).
+
+### Other devices (WSL, Chromebook, Raspberry Pi, Mac)
+
+| Device | Works? | Notes |
+|---|---|---|
+| Normal Linux PC or laptop (x86_64) | ✅ tested | Arch and Ubuntu 24.04 |
+| Raspberry Pi, other ARM64 (aarch64) boards | 🟡 should work, not tested | Use a 64-bit OS. Build with `-j 2`. On boards with 1 GB of RAM choose the *Standard* [security level](#security-levels-and-key-files); CakePass refuses a level that does not fit in free memory |
+| 32-bit systems (i686, armv7) | ❔ not tested | Argon2 needs a lot of memory; use the Standard level |
+| Windows with WSL 2 (Ubuntu) | 🟡 should work | Install it in the Linux side with the Debian steps. There is no Linux clipboard tool by default, so use `--show` |
+| ChromeOS "Linux development environment" | 🟡 should work | It is Debian: use the Debian steps. Clipboard: `--show` |
+| Android (Termux) | ❔ not tested | |
+| macOS, BSD, native Windows | ❌ not supported | CakePass uses Linux features (`/proc`, `prctl`, `mlock` rules) |
+| Alpine (musl), Void, Gentoo, NixOS | 🟡 should work, not tested | Follow the steps with your package manager |
+
+Got it running somewhere that is not marked ✅? Please tell us in an issue.
+
 ## Contents
 
+0. [Install](#install)
 1. [First-time setup](#first-time-setup)
 2. [Using the screen (arrow keys)](#using-the-screen-arrow-keys)
 3. [Daily use (commands)](#daily-use-commands)
@@ -91,8 +335,7 @@ Prefer to do it by hand? See [Manual install](#manual-install).
 13. [How strong is this, really?](#how-strong-is-this-really)
 14. [Security review and remaining risks](#security-review-and-remaining-risks)
 15. [Troubleshooting](#troubleshooting)
-16. [Manual install](#manual-install)
-17. [For later](#for-later)
+16. [For later](#for-later)
 
 ---
 
@@ -607,6 +850,10 @@ Good to know:
 
 ## Updating
 
+> **Arch family only.** `cakepass --update` and the daily check build with
+> `makepkg`. On other Linux systems update with the four lines in
+> [Update to a newer version](#update-to-a-newer-version).
+
 When new changes are on GitHub, update with:
 
 ```bash
@@ -619,7 +866,7 @@ Checking GitHub via git (/home/john/cakepass).
 ┌───────────────────────────────────────────────────────────────┐
 │ There is a new version of CakePass.                           │
 │ New:  3 change(s)  (branch main)                              │
-│ From: https://github.com/Justcakenl/Passcode-Manager.git │
+│ From: https://github.com/Justcakenl/Passcode-Manager.git      │
 └───────────────────────────────────────────────────────────────┘
   • 4f2a9c1 New item type: bank card
   • 9be01d7 Faster logo
@@ -939,6 +1186,11 @@ no known vulnerabilities.
 
 | Message | Fix |
 |---|---|
+| `command not found: cakepass` | The folder you installed to is not in your `PATH`. Do step 5 of the [install](#step-5-install-the-program) and open a new terminal. |
+| `error: linker \`cc\` not found` while building | Install a compiler: `sudo apt install build-essential` (Debian family), `sudo dnf install gcc` (Fedora), `sudo zypper install gcc` (openSUSE). |
+| `requires rustc 1.88` or `edition2024 is required` while building | Your Rust is too old. Install a current one with `rustup` ([step 2](#step-2-install-rust-version-188-or-newer)) and open a new terminal. |
+| The build is killed or `out of memory` | Build with fewer jobs: `cargo build --release --locked -j 1`, or close other programs. A small board may need swap space. |
+| `CakePass needs about … MiB of free memory` | The security level does not fit in free memory right now. Close programs, or use the Standard level (`cakepass security --level standard`). |
 | `no clipboard tool found` | Install `wl-clipboard` (Wayland) or `xclip` (X11), or use `--show`. Check with `cakepass info`. |
 | `Memory could not be locked (mlock)` | Your limit is too low. See it with `ulimit -l` (Arch default: 8192 KiB, plenty). You can raise it in `/etc/security/limits.conf`. |
 | `wrong master password, or the file is damaged` | Check Caps Lock and your keyboard layout. Is the file damaged? Try `--vault …/vault.enc.bak` or a backup. With a key file: also check that it is the right key file (the message names the one used). |
@@ -957,46 +1209,6 @@ no known vulnerabilities.
 | `cakepass --update`: `I do not know where the source code is` | You did not install with `makepkg -si`/the installer, or the folder was moved. Give it: `cakepass --update --source ~/cakepass`. |
 | `cakepass --update`: `git fetch failed` | No internet, or GitHub does not know you. Test with `git -C ~/cakepass fetch` and log in (SSH key or `gh auth login`). |
 | `cakepass --update`: `local changes` or `differs from GitHub` | You changed something in `~/cakepass`. Look with `git -C ~/cakepass status`; nothing is overwritten. |
-
----
-
-## Manual install
-
-```bash
-sudo pacman -S --needed base-devel git rust
-sudo pacman -S wl-clipboard   # Wayland (GNOME, KDE Plasma 6, Sway, Hyprland)
-sudo pacman -S xclip          # X11 (i3, Xfce, older sessions)
-```
-
-Wondering whether you use Wayland? Type `echo $XDG_SESSION_TYPE`.
-
-```bash
-git clone https://github.com/Justcakenl/Passcode-Manager.git ~/cakepass
-```
-
-(For a private fork, clone with an SSH key or the GitHub CLI instead:
-`gh auth login && gh repo clone <you>/<fork> ~/cakepass`.)
-
-Then:
-
-```bash
-cd ~/cakepass/packaging/arch
-makepkg -si
-cakepass setup
-```
-
-> **Keep the folder `~/cakepass`.** `cakepass --update` uses it to fetch new versions.
-
-`makepkg` builds the program, runs all tests and then installs `/usr/bin/cakepass`,
-shell completions for bash, zsh and fish, and the daily update check (off by
-default). Skip the tests (faster): `makepkg -si --nocheck`.
-
-Only build, without installing:
-
-```bash
-cargo build --release --locked
-./target/release/cakepass --help
-```
 
 ---
 
