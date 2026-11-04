@@ -696,6 +696,18 @@ fn field_block(label: &str, text: &str) -> Result<()> {
     Ok(())
 }
 
+/// Show a multi-line field with the label on its own line and every line of
+/// the value as it is, without indentation: a private key copied from the
+/// terminal must be byte-for-byte the key (indented lines would break it).
+fn field_verbatim(label: &str, text: &str) -> Result<()> {
+    let safe = Zeroizing::new(ui::safe(text, true));
+    ui::print_secret_line(&ui::bold(&format!("{label}:")), "")?;
+    for line in safe.lines() {
+        ui::print_secret_line("", line)?;
+    }
+    Ok(())
+}
+
 // ───────────────────────── commands ─────────────────────────
 
 fn show_logo() -> Result<()> {
@@ -1015,7 +1027,7 @@ fn get(uv: &UnlockedVault, g: &GetArgs) -> Result<()> {
                     if private.is_empty() {
                         field(&secret_label, &empty)?
                     } else {
-                        field_block(&secret_label, &private)?
+                        field_verbatim(&secret_label, &private)?
                     }
                 }
                 _ => field(&secret_label, &value(&e.password(key)?))?,

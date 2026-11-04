@@ -1416,11 +1416,13 @@ fn store_get_and_edit_ssh_keys() {
     assert!(text.contains(&format!("{:<16} ssh-ed25519 AAAAC3Nza me@laptop", "Public key:")), "{text}");
     assert!(text.contains(&format!("{:<16} (hidden; use --show)", "Private key:")), "{text}");
     assert!(!text.contains("b3BlbnNzaC1rZXkt") && !text.contains("key passphrase"), "{text}");
-    // --show reveals every line of the private key and the passphrase.
+    // --show reveals the private key exactly as entered: the label on its own
+    // line, then every line unindented (a copy from the terminal must work).
     let out = k.run(&["get", "server", "--show"], &format!("{PW}\n")).success();
     let text = stdout_of(&out);
+    assert!(text.contains(&format!("Private key:\n{key_text}\n")), "not verbatim: {text:?}");
     for line in PRIVATE_KEY {
-        assert!(text.contains(line), "{line} missing: {text}");
+        assert!(text.lines().any(|l| l == line), "{line} is not on a line of its own: {text:?}");
     }
     assert!(text.contains(&format!("{:<16} key passphrase", "Passphrase:")), "{text}");
     // The private key is the secret that is copied; --copy-public copies the public key.
@@ -1444,9 +1446,7 @@ fn store_get_and_edit_ssh_keys() {
     )
     .success();
     let text = stdout_of(&k.run(&["get", "server", "--show"], &format!("{PW}\n")).success());
-    assert!(
-        text.contains("NEW KEY LINE 1") && text.contains("NEW KEY LINE 2") && !text.contains("b3BlbnNzaC1")
-    );
+    assert!(text.contains("Private key:\nNEW KEY LINE 1\nNEW KEY LINE 2\n") && !text.contains("b3BlbnNzaC1"));
     assert!(text.contains("ssh-ed25519 BBBB new@laptop") && text.contains("backup.example"), "{text}");
     assert!(text.contains(&format!("{:<16}   spaced pass ", "Passphrase:")), "kept exactly: {text}");
     // Options that do not fit an SSH key are refused; an empty private key too.
