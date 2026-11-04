@@ -245,6 +245,39 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
 - [ ] GitHub repository description still says "Beta-test"; change it in the
   repository settings.
 - [ ] Ideas for later: see the README, "For later".
+- [ ] **Decide whether/when to merge `feature/card-totp-sshkey` into `main`.**
+  It is finished, reviewed and tested (see "Checks" below for step 12) but
+  deliberately left unmerged until the maintainer says so.
+- [ ] **Step 13 (queued, not started) — agreed scope for the next round:**
+  - **Password health check**: an offline report of weak (reuse the
+    existing `zxcvbn` dependency), reused (compare decrypted secrets across
+    items, same technique `Vault::merge`'s duplicate detection already
+    uses) and old/stale (based on `modified()`, already stored) passwords.
+    No new dependency, no network use.
+  - **`Kind::Identity`**: personal documents — passport/ID number, bank
+    account (IBAN), membership numbers. Design the field mapping the same
+    way `Card`/`SshKey` were designed (reuse the generic sealed fields
+    where the meaning transfers; add new sealed fields only where it
+    genuinely doesn't, exactly like `expiry_sealed`/`cvv_sealed` were
+    added for `Card`) before implementing.
+  - **Polish bundle** (all agreed, low effort, no architecture change):
+    favorites/pinning on an item, a configurable clipboard-clear time
+    (`--clip-time` / a setting, replacing the hard-coded 20 s), a man page
+    (`clap_mangen`).
+  - **Explicitly not now**: hardware key (FIDO2/YubiKey `hmac-secret`) —
+    agreed to revisit after the above; it touches `crypto.rs`'s key
+    derivation itself and needs a new HID dependency, unlike the
+    additions above.
+  - **Process used for step 12, repeat for step 13**: a coder profile
+    implements on a feature branch and runs `cargo test` +
+    `cargo clippy --all-targets -- -D warnings` + `cargo fmt --check`
+    itself before handing off; an independent reviewer profile (different
+    model family than the coder) reviews the diff and re-runs the same
+    checks; an independent tester profile builds it and drives the CLI by
+    hand against a throwaway vault. Step 12 caught one real bug this way
+    (a private key displayed with corrupting indentation) that neither the
+    coder's own tests nor a first pass of review had caught — repeat the
+    same split for step 13 rather than skipping the independent passes.
 
 ## Decisions made
 
