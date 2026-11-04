@@ -1461,6 +1461,25 @@ fn store_get_and_edit_ssh_keys() {
 }
 
 #[test]
+fn an_ssh_private_key_is_shown_byte_for_byte() {
+    // Regression: `get --show` used to indent every line after the first by
+    // the label width (like a note), so a key copied from the terminal was
+    // broken. Lines of OpenSSH width (70), leading spaces and an empty line
+    // must all come back exactly.
+    let k = Vaulty::new().init();
+    let b64 = "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW";
+    let key = format!("{}\n{b64}\n  two leading spaces\n\n{b64}\n{}", PRIVATE_KEY[0], PRIVATE_KEY[2]);
+    k.run(&["add", "TestKey", "--type", "ssh-key"], &format!("{PW}\n{key}\n.\n\n\n\n\n\n")).success();
+    let text = stdout_of(&k.run(&["get", "TestKey", "--show"], &format!("{PW}\n")).success());
+    // The private key is the last field: everything after its label is the key.
+    let (_, printed) = text.split_once("Private key:\n").unwrap_or_else(|| panic!("no key block: {text:?}"));
+    assert_eq!(printed, format!("{key}\n"), "the private key is not printed exactly as entered");
+    // The line mode (`cakepass shell`) goes through the same path.
+    let text = stdout_of(&k.run(&["shell"], &format!("{PW}\nget TestKey --show\nexit\n")).success());
+    assert!(text.contains(&format!("Private key:\n{key}\n")), "line mode: {text:?}");
+}
+
+#[test]
 fn totp_codes_for_two_factor_authentication() {
     let k = Vaulty::new().init();
     // `--totp` asks for the secret in a hidden prompt (spaces and case do not matter).

@@ -1012,3 +1012,25 @@ fn new_types_render_at_the_minimum_size() {
     let s = t.screen_at(60, 16);
     assert!(s.contains("SSH key") && s.contains("note"), "all five types fit:\n{s}");
 }
+
+#[test]
+fn a_revealed_private_key_is_a_preview_and_c_copies_it_exactly() {
+    // The details pane is a framed column next to the list, so a revealed
+    // private key is a preview: lines wider than the pane end in an ellipsis
+    // and do not survive a mouse copy. The exact key is what `c` copies.
+    let b64 = "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW";
+    let key = format!("-----BEGIN KEY-----\n{b64}\n  two leading spaces\n\n{b64}\n-----END KEY-----");
+    let stored = key.clone();
+    let mut t = T::with(move |uv| {
+        let fields =
+            NewEntry { name: "TestKey".into(), kind: Kind::SshKey, password: stored, ..Default::default() };
+        commands::add_entry(uv, fields).unwrap();
+    });
+    t.key(Key::Enter);
+    let s = t.screen();
+    assert!(s.contains("-----BEGIN KEY-----") && s.contains("two leading spaces"), "{s}");
+    assert!(!s.contains(b64), "a 70-column line cannot fit in the details pane at 80x24:\n{s}");
+    assert!(s.contains("…"), "a clipped line is marked as clipped:\n{s}");
+    t.key(Key::Char('c'));
+    assert_eq!(t.clip.borrow().as_slice(), [key.as_str()], "c copies the key byte for byte");
+}
