@@ -21,7 +21,8 @@ src/
 ├── keyfile.rs      key files: reading (strict rules) and creating
 ├── format.rs       versioned file header (v3: key-file flag), key derivation (HKDF),
 │                   migration v1 → v3, v2 → v3
-├── vault.rs        items (login/api/note); all content encrypted per field
+├── vault.rs        items (login/api/card/ssh-key/note); all content encrypted per field
+├── totp.rs         two-factor codes: TOTP (RFC 6238) over HOTP (RFC 4226), base32
 ├── storage.rs      XDG path, atomic writes, backup, file lock
 ├── generator.rs    passwords and diceware passphrases
 ├── import.rs       CSV import from other managers
@@ -58,8 +59,9 @@ The CLI is a thin layer. All security logic lives in the library.
 | Encryption | XChaCha20-Poly1305, a new random 24-byte nonce on every save | Authenticated encryption; a random 24-byte nonce is safe |
 | Header | The complete header is the AEAD "associated data" | Any change, also to the parameters, is noticed |
 | Key separation | HKDF-SHA256 derives a file key and an item key from the Argon2 key | Every key serves one purpose |
-| Second layer | All content of every item (username, e-mail address, URL, password/API key, notes) is encrypted per field (XChaCha20-Poly1305, own nonce, field name as associated data) | Even in an open vault the content is only encrypted in memory; decryption happens per field, at the moment it is needed |
-| Item types | login, api, note (content schema 4, with the encrypted e-mail field) | One vault for passwords, API keys and secure notes |
+| Second layer | All content of every item (username, e-mail address, URL, password/API key/card number/private key, notes, expiry date, CVV, public key, key passphrase, TOTP secret) is encrypted per field (XChaCha20-Poly1305, own nonce, field name as associated data) | Even in an open vault the content is only encrypted in memory; decryption happens per field, at the moment it is needed |
+| Item types | login, api, card, ssh-key, note (content schema 5). A card and an SSH key reuse the generic fields where they fit (cardholder = username, card number / private key = the password field, host = URL) and add only what has no place yet: expiry date + CVV, public key + key passphrase. Every item has every field (unused ones hold an encrypted empty string) | One vault for passwords, API keys, bank cards, SSH keys and secure notes; one shape for every item keeps validate/re-seal/merge free of per-type special cases, and the main secret of every type goes through the same copy/show path |
+| TOTP | An optional encrypted field on any item (not a type), holding the secret as the user gave it (base32 or an `otpauth://totp` link). Codes per RFC 6238 over RFC 4226 with the RustCrypto `hmac` + `sha1`/`sha2` crates; base32 decoding is our own (an encoding, not a primitive). The secret is parsed when it is stored, codes are computed fresh on every request and never stored; `hotp` and Steam are refused | Like Bitwarden, 1Password and KeePassXC: a 2FA code belongs to one account. Tested against the RFC 6238 Appendix B vectors (SHA-1/256/512) and RFC 4648 base32 vectors. Honest trade-off, documented in the README: secret and password in one vault means one vault holds both factors |
 | Login screen | 3D-rendered logo (own small renderer, no extra crates), only in a color terminal | Pretty, but never in scripts or pipes; clears the screen when locking |
 | Screen mode (TUI) | `cakepass` opens a full-screen view driven by arrow keys, Enter, Esc and visible letter shortcuts (list + details, form, generator, settings, dialogs, a key-hint line and `?` help). The line mode stays as `cakepass shell` / `--no-tui`, and is used automatically for pipes, `TERM=dumb` and windows under 60×16 | Usable without knowing any command; scripts and power users keep the old interface |
 | No TUI library | Written on `libc` (termios raw mode, `poll`, `ioctl(TIOCGWINSZ)`, `read`/`write`, `sigaction`) and plain ANSI/VT escape codes; no ratatui, crossterm or ncurses | No new dependency to audit or to keep secrets in buffers we do not control; small binary (+4 % on the release build); every byte that reaches the terminal goes through our own wiped buffer |
@@ -67,7 +69,7 @@ The CLI is a thin layer. All security logic lives in the library.
 | Screen-mode safety nets | Alternate screen (secrets never reach the scrollback), screen + scrollback cleared on exit, bracketed paste (pasted text is never a shortcut), terminal restored on exit, error, panic hook and SIGINT/SIGTERM/SIGHUP/SIGQUIT (handlers only set a flag), idle lock by monotonic and wall-clock time plus a watchdog | A crash or a signal never leaves a broken terminal or an open vault; a sleeping laptop still locks |
 | Settings | `~/.config/cakepass/config`, plain `key=value`, forgiving parser | Preferences only (animation, lock timeout); a damaged file can never stop the program |
 | Setup wizard | `cakepass setup` asks animation, lock timeout, security level, master password (passphrase offered), optional key file; works from stdin too | An easy start for new users, scriptable and testable |
-| Migration | Format 1 and content schema 1/2 are converted automatically on opening (schema 3 only gains an empty encrypted e-mail field); format 2 is read as is and written as format 3 on the next save | Existing vaults keep working; merely reading a vault never makes it unreadable for an older binary |
+| Migration | Format 1 and content schema 1/2 are converted automatically on opening (schema 3 only gains an empty encrypted e-mail field; schema 4 gains five empty encrypted fields: expiry date, CVV, TOTP secret, public key and key passphrase); format 2 is read as is and written as format 3 on the next save | Existing vaults keep working; merely reading a vault never makes it unreadable for an older binary |
 | Names on disk | The vault file keeps the stable magic `KLUISVLT` and the HKDF labels of the first release (Dutch text) | They are part of the cryptographic format; changing them would lock existing vaults. The folder names did change (`kluis` → `cakepass`) and old folders are moved automatically |
 | Generated passwords | A menu in terminals (view / edit / regenerate / copy / save); none in scripts | You can fix a password that a website rejects before it is saved, scripts keep working |
 | Randomness | Only `getrandom` (OS CSPRNG) | No own or weak RNG |
@@ -116,6 +118,10 @@ The CLI is a thin layer. All security logic lives in the library.
   disk or backup): then only the master password protects it.
 - **Clipboard managers** (KDE Klipper, cliphist, etc.) may keep a history.
   `cakepass` clears the clipboard, but not their history.
+- **Two-factor authentication, when its TOTP secret is stored here.** The
+  secret is as well protected as the password next to it, but someone who
+  opens the vault then has both factors of that account. That is the user's
+  choice per account; the README says so.
 - **Terminal scrollback** when you use `--show` yourself. Locking the
   line mode clears the screen and scrollback. The screen mode draws on the
   alternate screen (not in the scrollback) and clears the screen on exit, but a

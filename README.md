@@ -19,12 +19,16 @@ Free and open source under the [MIT license](LICENSE).
 ## What you get
 
 - 🔐 **Strong encryption.** Argon2id + XChaCha20-Poly1305, plus a second layer
-  that encrypts every field (username, e-mail, URL, password, notes) on its own.
+  that encrypts every field (username, e-mail, URL, password, notes, card and
+  SSH-key fields, TOTP secret) on its own.
   An optional **key file** (for example on a USB stick) makes a stolen vault
   useless on its own. [How strong is this, really?](#how-strong-is-this-really)
 - ⌨️ **Arrow-key screen.** Tabs, live search, add/edit forms, a password
   generator and settings: no typing of commands. [See it](#using-the-screen-arrow-keys).
-- 🗝️ **Logins, API keys and notes** in one place, with e-mail addresses and tags.
+- 🗝️ **Logins, API keys, bank cards, SSH keys and notes** in one place, with
+  e-mail addresses and tags.
+- 🔢 **Two-factor codes (TOTP)** on any item: the six-digit code of your
+  authenticator app, computed offline from the stored secret.
 - 📋 **Clipboard that cleans up.** Copied secrets are wiped after 20 seconds.
 - 🧹 **Careful with memory.** Secrets are wiped after use; core dumps are off;
   the screen and scrollback are cleared when you lock.
@@ -322,7 +326,7 @@ Got it running somewhere that is not marked ✅? Please tell us in an issue.
 1. [First-time setup](#first-time-setup)
 2. [Using the screen (arrow keys)](#using-the-screen-arrow-keys)
 3. [Daily use (commands)](#daily-use-commands)
-4. [Item types: logins, API keys and notes](#item-types-logins-api-keys-and-notes)
+4. [Item types: logins, API keys, cards, SSH keys and notes](#item-types-logins-api-keys-cards-ssh-keys-and-notes)
 5. [Generating passwords](#generating-passwords)
 6. [Login screen, settings and auto-lock](#login-screen-settings-and-auto-lock)
 7. [Security levels and key files](#security-levels-and-key-files)
@@ -411,7 +415,7 @@ and **`?`** shows them all.
 
 ```text
  CakePass  vault.enc                                              locks in 4:59
- All 3   Logins 1   API keys 1   Notes 1                               / search
+ All 3   Logins 1   API keys 1   Cards 0   SSH 0   Notes 1             / search
 ┌─ Items ───────────────────────────────────┬─ Details ────────────────────────┐
 │▌ login  GitHub               john         │ Name        GitHub               │
 │  api    OpenAI               proj-1       │ Type        login                │
@@ -433,11 +437,13 @@ and **`?`** shows them all.
 | Key | What it does |
 |---|---|
 | ↑ ↓, PgUp PgDn, Home End | choose an item |
-| ← → (or Tab) | switch between All · Logins · API keys · Notes |
+| ← → (or Tab) | switch between All · Logins · API keys · Cards · SSH (keys) · Notes |
 | `/` | search in name, type, tags, username, e-mail and URL (never in passwords or notes). Any key that is not a shortcut (a capital letter, a digit) starts the search too. Esc clears it |
-| Enter or `v` | show / hide the password, API key and notes. They hide themselves after **10 seconds**, and when you choose another item or open another screen |
-| `c` | copy the password, API key or note to the clipboard; it is **cleared after 20 seconds** |
-| `u` / `m` | copy the username / the e-mail address |
+| Enter or `v` | show / hide the password, API key, card number and CVV, private key and passphrase, and notes. They hide themselves after **10 seconds**, and when you choose another item or open another screen |
+| `c` | copy the password, API key, card number, private key or note to the clipboard; it is **cleared after 20 seconds** |
+| `u` / `m` | copy the username (cardholder) / the e-mail address |
+| `t` | show the current two-factor (TOTP) code with its seconds left, and copy it (cleared after 20 seconds) |
+| `p` | copy the public key of an SSH key |
 | `a` or `n` | add an item |
 | `e` | edit the selected item |
 | `d` or Delete | delete it (asks first; the answer is "no" unless you choose "Delete") |
@@ -449,19 +455,24 @@ and **`?`** shows them all.
 
 **Adding and editing** (`a`, `e`): a form with the fields Name, Type, Username
 (for an API key: Account/ID), E-mail, URL, Tags, Password (or API key) and Notes.
+A card has Cardholder, Expiry date, Card number and CVV instead; an SSH key has
+Host, Public key, Private key (several lines; paste it) and Passphrase. A TOTP
+secret is added with `cakepass add/edit … --totp` (see
+[Two-factor codes](#two-factor-codes-totp)).
 
 | Key | What it does |
 |---|---|
 | ↑ ↓, Tab, Shift+Tab | move between the fields (Enter goes to the next field) |
 | ← → Home End, Backspace Delete | edit the text; Ctrl+U clears the field |
-| ← → on *Type* | login, API key or note (a note has only a name, tags and its text) |
-| Ctrl+R | show / hide the password while you type |
-| Ctrl+G | open the generator; Enter puts the password in the field |
-| Enter in *Notes* | a new line |
+| ← → on *Type* | login, API key, card, SSH key or note (a note has only a name, tags and its text) |
+| Ctrl+R | show / hide the password (and the other hidden fields) while you type |
+| Ctrl+G | open the generator; Enter puts the password in the field (logins and API keys) |
+| Enter in *Notes* or a private key | a new line |
 | Ctrl+S (or the Save button) | save |
 | Esc | cancel (asks first when you changed something) |
 
-When you edit an item, the password field shows `•••••••• (unchanged)`. Leave it
+When you edit an item, the password field shows `•••••••• (unchanged)` (so do a
+stored CVV and passphrase). Leave it
 and the password stays as it is; type and you replace it; Ctrl+R shows it.
 Pasting (Ctrl+Shift+V) works in every field, also for long API keys: pasted text
 is always just text, it never triggers a shortcut.
@@ -508,6 +519,8 @@ password in a hidden prompt (you see nothing while typing, that is on purpose).
 | Copy the password to the clipboard (20 s) | `cakepass get GitHub` |
 | Copy the username / the e-mail address instead | `cakepass get GitHub --copy-username` / `--copy-email` |
 | Show password and notes on screen | `cakepass get GitHub --show` |
+| The current two-factor (TOTP) code, copied | `cakepass get GitHub --totp` |
+| Add or replace / remove the TOTP secret | `cakepass edit GitHub --totp` / `--no-totp` |
 | List all items (no secrets) | `cakepass list` |
 | Only items with a tag / of a type | `cakepass list --tag work` / `cakepass list --type api` |
 | Search name, type, tags, username, e-mail, URL | `cakepass search git` |
@@ -540,16 +553,21 @@ Tips:
 
 ---
 
-## Item types: logins, API keys and notes
+## Item types: logins, API keys, cards, SSH keys and notes
 
-You can store three kinds of things. All of them are encrypted equally strongly
-(see [How the security works](#how-the-security-works)).
+You can store five kinds of things. All of them are encrypted equally strongly,
+field by field (see [How the security works](#how-the-security-works)).
 
 | Type | What | Add it with |
 |---|---|---|
 | **login** | username, e-mail address, URL, password, notes | `cakepass add GitHub` |
 | **api** | account/key ID, e-mail address, service, the API key or token, notes | `cakepass add OpenAI --type api` |
+| **card** | cardholder name, card number, expiry date, security code (CVV), notes | `cakepass add Visa --type card` |
+| **ssh-key** | private key (several lines), public key, passphrase, host, notes | `cakepass add "GitHub key" --type ssh-key` |
 | **note** | multi-line text, e.g. recovery codes, PINs, Wi-Fi | `cakepass add "Recovery codes" --type note` |
+
+Any item can also carry a **TOTP secret** for two-factor codes; see
+[Two-factor codes (TOTP)](#two-factor-codes-totp) below.
 
 ```text
 $ cakepass add OpenAI --type api
@@ -574,10 +592,106 @@ Type or paste the text of your note (it is stored encrypted):
 ```
 
 - `cakepass get OpenAI` copies the API key to the clipboard (20 s); `cakepass get "Recovery codes"` copies the note text. With `--show` you see it on screen.
-- `cakepass list --type api` or `--type note` shows only that type.
+- `cakepass list --type api` or `--type note` (`card`, `ssh-key`) shows only that type.
 - Replace a key: `cakepass edit OpenAI --password`. Change a note: `cakepass edit "Recovery codes" --notes`.
 - An API key is typed in a hidden prompt (pasting with Ctrl+Shift+V works); it
   never ends up in your shell history.
+
+### Bank cards
+
+```text
+$ cakepass add Visa --type card
+Master password:
+Cardholder name (optional): J. Doe
+Card number (hidden input; pasting is fine):
+Expiry date, e.g. 08/29 (optional): 08/29
+Security code / CVV (hidden input, optional):
+Notes (optional, one line): PIN in the safe
+Tags, separated by commas (optional): bank
+✔ Card 'Visa' saved (encrypted).
+
+$ cakepass get Visa --no-copy
+Name:            Visa
+Type:            card
+Cardholder:      J. Doe
+Expiry date:     08/29
+Tags:            bank
+Modified:        2026-11-04 16:32 UTC
+Notes:           (hidden; use --show)
+Card number:     (hidden; use --show)
+Security code:   (hidden; use --show)
+```
+
+- The card number is the secret of a card: `cakepass get Visa` copies it, `--show`
+  shows it together with the security code.
+- Change parts: `cakepass edit Visa --password` (a new card number), `--expiry`,
+  `--cvv`. Each asks in a prompt; the number and the CVV are hidden.
+- There is no PIN field on purpose: put it in the notes if you must keep it
+  here. The brand (Visa, Mastercard) can be a tag.
+
+### SSH keys
+
+```text
+$ cakepass add "GitHub key" --type ssh-key
+Master password:
+Paste the private key (PEM or OpenSSH format; it is stored encrypted):
+  Finish with a line containing only a dot (.) or press Ctrl+D.
+│ -----BEGIN OPENSSH PRIVATE KEY-----
+│ …
+│ -----END OPENSSH PRIVATE KEY-----
+│ .
+Public key (optional, one line, e.g. ssh-ed25519 AAAA… me@laptop): ssh-ed25519 AAAAC3Nza me@laptop
+Passphrase of the private key (hidden input, optional):
+Host (optional, e.g. git@github.com): git@github.com
+Notes (optional, one line):
+Tags, separated by commas (optional): work
+✔ SSH key 'GitHub key' saved (encrypted).
+```
+
+- `cakepass get "GitHub key"` copies the private key; `--copy-public` copies the
+  public key instead; `--show` shows the private key and the passphrase.
+- Change parts: `cakepass edit "GitHub key" --password` (a new private key),
+  `--public-key`, `--key-passphrase` (hidden), `--url` (the host).
+- CakePass only *stores* the key. It does not talk to `ssh-agent`; to use the
+  key, write it to a file with `chmod 600` yourself (or keep using your normal
+  `~/.ssh` and store a copy here as a backup).
+
+### Two-factor codes (TOTP)
+
+Most sites offer two-factor login with an authenticator app: you scan a QR
+code, and the app shows a six-digit code that changes every 30 seconds. Under
+the QR code the site also shows the **secret** (a text like `JBSW Y3DP EHPK
+3PXP`, sometimes a link starting with `otpauth://`). Give that to CakePass and
+it computes the codes itself, offline:
+
+```text
+$ cakepass edit GitHub --totp
+Master password:
+TOTP secret or otpauth:// link (hidden input; pasting is fine):
+✔ Item 'GitHub' updated.
+
+$ cakepass get GitHub --totp
+Master password:
+Name:            GitHub
+TOTP code:       511320
+Valid for:       8 more second(s)
+✔ The TOTP code was copied to the clipboard (via wl-copy); it will be cleared in 20 seconds.
+```
+
+- `cakepass add GitHub --totp` asks for the secret while adding; `cakepass edit
+  GitHub --no-totp` removes it. In the screen, `t` shows and copies the code.
+- The secret is checked before it is saved (spaces and lower case are fine; a
+  typo is refused). An `otpauth://totp/…` link may set other digits, a period
+  or SHA-256/SHA-512; without them it is the standard 6 digits, 30 s, SHA-1.
+- Only the secret is stored (encrypted like a password); every code is
+  computed fresh when you ask for it and never saved.
+- Your computer's clock must be right (within about 30 seconds), as with any
+  authenticator app.
+- ⚠️ With the TOTP secret in the same vault as the password, someone who opens
+  your vault has both factors. Many people accept that for convenience; for
+  your most important accounts (e-mail, bank) you may prefer to keep the second
+  factor on your phone.
+- Steam Guard codes and counter-based (HOTP) secrets are not supported.
 
 ---
 
@@ -787,6 +901,11 @@ cakepass import-csv ~/Downloads/bitwarden_export.csv
 Items with a name that already exists get a sequence number, for example
 "GitHub (2)". Identical items are skipped, so importing twice makes no duplicates.
 
+A TOTP column (Bitwarden's `login_totp`, KeePassXC's `TOTP`, `otpauth`) is
+imported as the item's TOTP secret. A value CakePass cannot use (for example a
+Steam Guard `steam://` secret) is left out with a warning; the item itself is
+still imported.
+
 ### Encrypted export and import (between your own computers)
 
 ```bash
@@ -965,7 +1084,9 @@ In plain language:
 2. **Two layers of encryption.** From that key, HKDF-SHA256 makes two separate keys:
    - the **file key** encrypts the whole vault on disk;
    - the **item key** additionally encrypts **all the content of every item
-     separately**: username, e-mail address, URL, password or API key, and notes.
+     separately**: username, e-mail address, URL, password or API key, notes, the
+     card number, expiry date and CVV, the private key, public key and passphrase
+     of an SSH key, and a TOTP secret.
      Every field has its own random nonce.
 
    Even while your vault is open (for example on the screen or in the line mode), that
@@ -1216,12 +1337,12 @@ no known vulnerabilities.
 Deliberately not in this version (fewer features that work well beats many):
 
 - Mouse support and themes for the screen (arrow keys); an export button there.
-- **TOTP** (two-factor codes, like Google Authenticator).
 - A hardware key (YubiKey/FIDO2 `hmac-secret`) as a second factor, next to the key file.
 - Turning a key file on or off from the screen (arrow keys); for now that is
   `cakepass security`.
 - **Browser integration** (auto-fill).
-- More item types (bank card, SSH keys, file attachments).
+- File attachments.
+- Using a stored SSH key directly (an `ssh-agent`), and Steam Guard / HOTP codes.
 - Editing notes in `$EDITOR`. Not in yet on purpose: an editor writes temporary
   files unencrypted to disk.
 - A translated interface and a non-English diceware word list.
@@ -1245,6 +1366,7 @@ src/
 ├── format.rs       file format with version header              ← critical
 ├── storage.rs      XDG path, atomic write, backup, lock         ← critical
 ├── vault.rs        items and operations; content encrypted      ← critical
+├── totp.rs         two-factor codes (RFC 6238) and base32       ← critical
 ├── generator.rs    passwords and passphrases                    ← critical
 ├── import.rs       CSV import
 ├── clipboard.rs    clipboard with automatic clearing            ← critical

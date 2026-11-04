@@ -1,6 +1,6 @@
 # Progress: `cakepass` (CakePass)
 
-Last updated: step 11 (security levels, key files, passphrase offer, version 0.4.0).
+Last updated: step 12 (bank cards, SSH keys and two-factor codes; content schema 5).
 Repository: `Justcakenl/Password-Manager`, branch `main` (private until it is made public).
 
 ## Maintainer checklist: manual testing on a real Arch machine
@@ -197,6 +197,48 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
     the wizard via pipes (passphrase typed back, key file); pseudo-terminal
     tests for the settings row and logging in with a key file.
 
+- [x] **Step 12 – Bank cards, SSH keys and two-factor codes (TOTP)**:
+  - **Bank cards** (`--type card`): cardholder name, card number (the secret:
+    hidden prompt, copied by `get`, shown by `--show`), expiry date, security
+    code (CVV, hidden), notes and tags. `edit --expiry`, `--cvv`, `--password`
+    (a new card number); the interactive edit asks per field.
+  - **SSH keys** (`--type ssh-key`): private key (multi-line, pasted; the
+    secret), public key, passphrase (hidden), host, notes and tags.
+    `get --copy-public` copies the public key; `edit --public-key`,
+    `--key-passphrase`, `--password` (a new private key), `--url` (the host).
+  - **TOTP** on any item: `add --totp` / `edit --totp` ask (hidden) for the
+    base32 secret or an `otpauth://totp/…` link (algorithm SHA1/SHA256/SHA512,
+    digits and period from the link; RFC 6238 defaults otherwise); `edit
+    --no-totp` removes it. `get --totp` computes the current code, shows the
+    seconds left and copies it (cleared after 20 s). The secret is checked when
+    it is stored; codes are never stored. New module `src/totp.rs`.
+  - **CSV import** reads a TOTP column (`login_totp`, `TOTP`, `otpauth`, …);
+    an unusable value (Steam, `hotp`) is left out with a warning, the item is
+    still imported.
+  - **Screen mode**: Cards and SSH tabs; the form has the per-type fields (CVV
+    and passphrase masked like the password, "(unchanged)" when editing, the
+    private key is a multi-line field); details show the new fields; `t`
+    shows and copies the TOTP code (computed per frame, hidden after 10 s or
+    when the selection changes), `p` copies a public key. A multi-line masked
+    field now puts the cursor on the right column.
+  - **Content schema 5**: five new encrypted fields (expiry, CVV, TOTP secret,
+    public key, key passphrase), each through `ItemKey::seal`/`open`, in
+    `validate()`, `reseal()` and `merge()`'s duplicate check. Schema 1–4
+    vaults upgrade automatically when opened (schema 4 gains five encrypted
+    empty fields); the file format (3) is unchanged.
+  - **New dependencies**: `hmac` 0.13 and `sha1` 0.11 (RustCrypto, with their
+    `zeroize` feature; `sha2` got its `zeroize` feature too). Base32 is our own
+    (about 35 lines, an encoding, not a primitive).
+  - Tests: the RFC 6238 Appendix B vectors (SHA-1, SHA-256 and SHA-512, 8
+    digits, all six timestamps), the RFC 4226 Appendix D HOTP values, the
+    RFC 4648 base32 vectors, otpauth parsing and refusals, `Debug` never
+    shows a secret; encryption round trip per new type, re-sealing, merge,
+    validation of tampered content, migration 3 → 5 and 4 → 5 (also through
+    a real schema-4 vault file of 0.4); CLI add/get/edit for cards, SSH keys and
+    TOTP, the CSV TOTP column, and no readable card/key/TOTP data in any file
+    written; screen-mode unit tests and a pseudo-terminal test (add a card and
+    an SSH key with the arrow keys, read the TOTP code, check with `get`).
+
 ## Still to do
 
 - [ ] Check the "Testing on Arch" list below on your own computer.
@@ -255,12 +297,45 @@ See `docs/DESIGN.md` for the explanation. In short:
   format 3 on its next save.
 - The free memory needed is shown honestly with the 75 % rule (High needs
   ~342 MiB free, Maximum ~1.4 GB), not as the bare Argon2 size.
+- Step 12: a card and an SSH key reuse the generic fields (cardholder =
+  username, card number / private key = the password field, host = URL), so
+  `secret()`, copying and `--show` need no per-type code. Every item has all
+  ten encrypted fields (unused ones hold an encrypted empty string): one shape
+  for validate/re-seal/merge. `merge()` compares all decrypted fields in
+  constant time instead of a fixed tuple, so a future field cannot be
+  forgotten there.
+- TOTP is a field, not a type, and any type may carry one. The secret is
+  stored as given (base32 or the `otpauth://` link, so its digits, period and
+  algorithm are kept) and parsed when it is stored, so a typo is refused at
+  once instead of when you need a code. Only `otpauth://totp` is accepted:
+  `hotp` (a counter that must be saved after every use) and Steam Guard
+  (another alphabet) would be silently wrong codes.
+- The new CLI options (`--totp`, `--cvv`, `--key-passphrase`, `--public-key`,
+  `--expiry`) are flags that ask in a prompt; none takes a value (a test checks
+  this for every one of them). `edit --key-passphrase` and not `--passphrase`:
+  `--passphrase` already exists on `edit` through the generator options (it
+  makes a diceware passphrase for a new password).
+- A card number, CVV, TOTP secret and key passphrase are asked once, not
+  twice: they are copied from somewhere, not invented, and the TOTP secret is
+  validated. Card numbers are free text like a password (no Luhn check):
+  spaces, dashes and test numbers are the user's business.
+- Card numbers, CVVs and private keys are not searchable (like passwords);
+  the cardholder name and the host are (like the username and URL).
+- The screen mode keeps the generator (Ctrl+G) for logins and API keys only;
+  a card number or private key cannot be generated.
+- A TOTP code is computed for every frame from the decrypted secret and wiped
+  right after; only the item's name and a deadline are kept to know what to
+  show. Copying a code does not reveal the password.
+- CSV import: an unusable TOTP value drops only the TOTP secret (with a
+  warning that counts them), never the item. The ambiguous headers `otp` and
+  `2fa` are not read as TOTP columns.
 
 ## Checks (latest step)
 
 | Check | Result |
 |---|---|
-| `cargo test` | 256 passed (97 library, 76 CLI/screen unit, 50 CLI integration, 8 screen in a pseudo-terminal, 12 update, 13 installer) |
+| `cargo test` | 281 passed (111 library, 81 CLI/screen unit, 55 CLI integration, 9 screen in a pseudo-terminal, 12 update, 13 installer) |
+| Known-answer tests (step 12) | TOTP: RFC 6238 Appendix B (SHA-1, SHA-256, SHA-512, all six times) and RFC 4226 Appendix D; base32: RFC 4648 section 10; cross-checked with an independent Python implementation (`hmac`/`hashlib`/`base64`) |
 | Known-answer tests (step 11) | Argon2id with a secret: vectors from the reference C implementation (libargon2 via argon2-cffi; the harness reproduces RFC 9106 first); key-file pepper: vectors from Python's `hashlib.blake2b(digest_size=32)` |
 | Unlock times (release, 4-core 2.1 GHz Xeon VM, step 11) | Standard ≈ 0.18–0.21 s, High ≈ 0.8–0.9 s, Maximum ≈ 3.6–3.8 s (first run once 5.9 s); wiping Argon2's freed memory is ~5–10 % of that |
 | Memory scan with a key-file vault (release, step 11) | idle and unlocked, line mode and screen mode, also after re-keying and measuring levels: master password (UTF-8/UTF-32), key file (64 bytes or any 16-byte window) and pepper (32 bytes or any 16-byte window) 0 times; a control (an item name) is found. Memory back to ~8.9 MB after a 256 MiB Argon2 run; no large mapping left. The same scan with the stack scrub and the `blake2` `zeroize` feature both switched off also found 0, so these two are defense in depth |
@@ -285,6 +360,28 @@ See `docs/DESIGN.md` for the explanation. In short:
 ## Testing on Arch
 
 Could NOT be tested in the cloud environment. Do this yourself and tick:
+
+### Cards, SSH keys and TOTP – new in step 12
+
+- [ ] Your existing vault opens after the update and everything is still there
+      (it is upgraded to content schema 5 on the next save)
+- [ ] **TOTP against your phone**: add the TOTP secret of a real account
+      (`cakepass edit <site> --totp`; most sites show the secret under the QR
+      code, "can't scan it?"). `cakepass get <site> --totp` shows the same code
+      as your authenticator app, and logging in with it works
+- [ ] In the screen: `t` on that item shows the code and the seconds left,
+      Ctrl+Shift+V pastes it, and after 20 s the clipboard is empty
+- [ ] **SSH key**: paste a real (test) private key in the screen form
+      (`a` → Type: SSH key → Private key, Ctrl+Shift+V); `cakepass get <name>
+      --show` prints it exactly, `cakepass get <name>` copies it (paste it into
+      a file and `ssh-keygen -y -f` on that file works), and `--copy-public`
+      copies the public key
+- [ ] **Card**: add one in the screen; number and CVV are dots until Enter;
+      `cakepass list` and the list in the screen show the cardholder, never the
+      number
+- [ ] Import a Bitwarden CSV export that has 2FA codes: the codes work, and a
+      Steam account (if you have one) gives the "WITHOUT their TOTP secret"
+      warning
 
 ### Security levels and key files – new in step 11
 
