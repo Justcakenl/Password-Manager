@@ -294,7 +294,26 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
 - [ ] Ideas for later: see the README, "For later".
 - [ ] **Decide whether/when to merge `feature/card-totp-sshkey` into `main`.**
   It is finished, reviewed and tested (see "Checks" below for step 12) but
-  deliberately left unmerged until the maintainer says so.
+  deliberately left unmerged until the maintainer says so. Same decision
+  will apply to `feature/identity-favorites-audit` once step 13 clears
+  review and test.
+- [ ] **Step 14 (queued, after step 13 is merged) — agreed scope:**
+  - **Editable TUI tabs**: the screen mode's tab bar (All/Logins/API
+    keys/Notes/Cards/SSH/IDs — 7 already, and counts had to be narrowed to
+    fit 80 columns for step 13) should be user-configurable: let someone
+    hide a tab they don't use (e.g. the API tab) rather than always
+    showing all of them. Hiding a tab does not hide its items — they stay
+    visible under "All" and in `list`/`search`; it only removes that one
+    filtered view. Suggested design: a setting (same settings file as
+    `clip-time`/`lock-timeout`), e.g. `hidden_tabs` as a comma list of
+    kind names, defaulting to empty (nothing hidden); a CLI command to
+    toggle it (`cakepass config set hide-tab api` / `show-tab api`) and/or
+    a row in the screen's own settings page (`s`) to tick/untick each
+    kind, consistent with how animation and auto-lock are already toggled
+    there. "All" itself should probably stay un-hideable. Work out the
+    exact design the same way `Card`/`Identity` were designed (check for
+    reuse before adding anything new) once this is picked up — this is a
+    scope note, not a finished spec.
 - [ ] **Step 13 is implemented on `feature/identity-favorites-audit`** (see
   "Done" above), branched from `feature/card-totp-sshkey`, and waits for the
   independent review and test pass. The agreed scope was:
