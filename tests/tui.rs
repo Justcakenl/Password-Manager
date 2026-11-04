@@ -521,6 +521,34 @@ fn a_favorite_and_an_identity_in_the_screen() {
 }
 
 #[test]
+fn hidden_tabs_from_the_settings_file() {
+    let v = Vault::new();
+    v.cmd().args(["config", "set", "hidden-tabs", "api,card,identity,ssh-key"]).assert().success();
+    v.cmd()
+        .args(["add", "Cloud", "--type", "api", "-u", "", "-e", "", "--url", "", "-t", ""])
+        .write_stdin(format!("{PW}\nsk-cloud-1\n"))
+        .assert()
+        .success();
+    let mut t = v.pty(&[], &[], 80, 24);
+    t.login();
+    t.wait_for("All 1   Logins 0   Notes 0");
+    let bar = t.screen().lines().nth(1).unwrap_or_default().to_string();
+    assert!(!bar.contains("API") && !bar.contains("Cards") && !bar.contains("SSH"), "{bar}");
+    // The hidden type's item is still in the list under All.
+    assert!(t.screen().contains("Cloud"), "{}", t.screen());
+    // → skips the hidden tabs: Logins, Notes, and round to All again (without
+    // skipping, the third → would be on the empty Cards tab).
+    t.send("\x1b[C");
+    t.wait_for("Nothing of this type yet");
+    assert!(!t.screen().contains("Cloud"), "{}", t.screen());
+    t.send("\x1b[C\x1b[C");
+    t.wait_for("Cloud");
+    t.send("q");
+    assert_eq!(t.wait_exit(), 0);
+    assert_restored(&t.output());
+}
+
+#[test]
 fn locks_itself_when_idle() {
     let v = Vault::new();
     let mut t = v.pty(&[], &[("CAKEPASS_TEST_LOCK_SECS", "2")], 80, 24);
@@ -611,6 +639,7 @@ fn the_settings_row_switches_the_security_level() {
     t.wait_for("Startup animation");
     t.send(DOWN);
     t.send(DOWN);
+    t.send(DOWN); // past the Tabs row
     assert!(!t.screen().contains("Unlock here"), "nothing measured yet");
     t.send(DOWN);
     // The High level is measured for real on this computer (256 MiB).
@@ -720,7 +749,7 @@ fn first_run_wizard_in_a_terminal_then_the_screen() {
     // The key file recorded by the wizard is used at once (re-check in settings).
     t.send("s");
     t.wait_for("Startup animation");
-    t.send(&format!("{DOWN}{DOWN}\r"));
+    t.send(&format!("{DOWN}{DOWN}{DOWN}\r")); // past the Tabs row
     t.wait_for("current master password");
     t.send(&format!("{phrase}\r"));
     t.wait_for("Choose a new master password");

@@ -449,7 +449,7 @@ and **`?`** shows them all.
 | Key | What it does |
 |---|---|
 | ↑ ↓, PgUp PgDn, Home End | choose an item |
-| ← → (or Tab) | switch between All · Logins · API keys · Cards · IDs (identities) · SSH (keys) · Notes |
+| ← → (or Tab) | switch between All · Logins · API keys · Cards · IDs (identities) · SSH (keys) · Notes; tabs you do not use can be hidden (see Settings below) |
 | `/` | search in name, type, tags, username, e-mail and URL (never in passwords or notes). Any key that is not a shortcut (a capital letter, a digit) starts the search too. Esc clears it |
 | Enter or `v` | show / hide the password, API key, card number and CVV, private key and passphrase, and notes. They hide themselves after **10 seconds**, and when you choose another item or open another screen |
 | `c` | copy the password, API key, card number, private key, document number or note to the clipboard; it is **cleared after 20 seconds** (or your `clip-time`) |
@@ -498,12 +498,21 @@ your own (twice), `c` copies it, Enter uses it, Esc cancels. Opened from the lis
 Enter asks for a name and saves it as a new login (like `cakepass generate --save`).
 
 **Settings** (`s`): the startup animation (on/off), the auto-lock time (← → one
-minute, PgUp/PgDn ten), **Change master password** (asks for the current one
+minute, PgUp/PgDn ten), the **Tabs** (← → choose a type, Enter or Space shows
+or hides its tab), **Change master password** (asks for the current one
 first, then a new strong one twice), the **Security level** (← → choose a
 level; the first time a level is shown CakePass measures how long unlocking
 takes on this computer; Enter switches after you type your master password),
 and information about your vault (level, key file), the version and the
 clipboard tool. Changes are saved at once.
+
+**Hiding tabs.** Never store SSH keys or API keys? Hide those tabs, so ← →
+only goes through the ones you use. The Tabs row in the settings shows every
+type with ✔ (shown) or ✖ (hidden); the same setting is
+`cakepass config set hidden-tabs api,ssh-key` (`none` shows them all again).
+Hiding a tab hides **no items**: they stay in the **All** tab (which cannot be
+hidden), and `list`, `search` and `get` show them as always. It only changes
+which tabs the screen offers.
 
 Good to know:
 
@@ -855,6 +864,7 @@ cakepass config                           # show the settings
 cakepass config set animation off         # on / off
 cakepass config set lock-timeout 10       # minutes of inactivity before auto-lock
 cakepass config set clip-time 45          # clear the clipboard after 45 s (5 to 300; default 20)
+cakepass config set hidden-tabs api,ssh-key   # tabs the screen leaves out (or: none); items stay under All
 cakepass config set keyfile /run/media/$USER/USB/cakepass.key   # where your key file is (or: none)
 ```
 

@@ -27,6 +27,7 @@ use cakepass::crypto::{self, KdfParams, MemoryUse, SecurityLevel};
 use cakepass::generator::{self, PassphraseOptions};
 use cakepass::keyfile::{self, LoadedKeyFile};
 use cakepass::storage::{UnlockedVault, VaultPaths};
+use cakepass::vault::Kind;
 use cakepass::{Error, Result};
 
 use super::args::{ConfigAction, ConfigKey, KdfArgs};
@@ -328,6 +329,7 @@ pub fn config_command(action: Option<ConfigAction>) -> Result<()> {
                         ))
                     })?;
                 }
+                ConfigKey::HiddenTabs => cfg.hidden_tabs = hidden_tabs_setting(&value)?,
                 ConfigKey::Keyfile => cfg.keyfile = keyfile_setting(&value)?,
             }
             config::save(&cfg)?;
@@ -340,6 +342,23 @@ pub fn config_command(action: Option<ConfigAction>) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// The value of `config set hidden-tabs`: type names separated by commas,
+/// or `none` / an empty value to show every tab again.
+fn hidden_tabs_setting(value: &str) -> Result<Vec<Kind>> {
+    if value.split(',').any(|n| n.trim().eq_ignore_ascii_case("all")) {
+        return Err(Error::InvalidInput(
+            "the All tab cannot be hidden (it is where every item stays visible)".into(),
+        ));
+    }
+    config::parse_hidden_tabs(value).ok_or_else(|| {
+        let names: Vec<&str> = Kind::ALL.into_iter().map(config::type_name).collect();
+        Error::InvalidInput(format!(
+            "hidden-tabs takes types separated by commas ({}), or none",
+            names.join(", ")
+        ))
+    })
 }
 
 /// The value of `config set keyfile`: a path (made absolute) or `none`.
@@ -369,11 +388,16 @@ fn show(cfg: &Config) {
     println!("  lock-timeout:  {} minute(s)", cfg.lock_timeout_minutes);
     println!("  clip-time:     {} second(s)", cfg.clip_time_secs);
     println!(
+        "  hidden-tabs:   {}",
+        if cfg.hidden_tabs.is_empty() { "none".to_string() } else { cfg.hidden_tabs_text(", ") }
+    );
+    println!(
         "  keyfile:       {}",
         cfg.keyfile.as_ref().map_or("none".to_string(), |p| p.display().to_string())
     );
     println!("  file:          {}", config::path().map_or("-".to_string(), |p| p.display().to_string()));
     ui::info("Change with: cakepass config set animation off   |   cakepass config set lock-timeout 10");
     ui::info("             cakepass config set clip-time 45   (seconds, 5 to 300)");
+    ui::info("             cakepass config set hidden-tabs api,ssh-key   (tabs of the screen; or: none)");
     ui::info("             cakepass config set keyfile /path/to/cakepass.key   (or: none)");
 }

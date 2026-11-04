@@ -238,7 +238,7 @@ impl HelpPage {
                 "Keys: the list",
                 &[
                     ("↑ ↓  PgUp PgDn  Home End", "choose an item"),
-                    ("← →  Tab", "All · Logins · API keys · Cards · IDs · SSH · Notes"),
+                    ("← →  Tab", "All · Logins · API keys · Cards · IDs · SSH · Notes (hide some: s)"),
                     ("/", "search (name, type, tags, username, e-mail, URL)"),
                     ("", "any key that is not a shortcut (a capital, a digit) starts the search too"),
                     ("Esc", "clear the search"),
@@ -256,7 +256,7 @@ impl HelpPage {
                     ("e", "edit the selected item"),
                     ("d  Del", "delete it (asks first)"),
                     ("g", "password generator"),
-                    ("s", "settings: animation, auto-lock, master password"),
+                    ("s", "settings: animation, auto-lock, tabs, master password"),
                     ("l", "lock: wipe the key from memory and close"),
                     ("q  Ctrl+C", "quit (locks too)"),
                 ],
@@ -293,9 +293,13 @@ impl HelpPage {
                 "Keys: settings",
                 &[
                     ("↑ ↓", "choose a setting"),
-                    ("← →", "change it (saved right away); on Security level: choose a level"),
+                    (
+                        "← →",
+                        "change it (saved right away); on Tabs: choose a type; on Security level: a level",
+                    ),
                     ("PgUp PgDn", "auto-lock +10 / -10 minutes"),
                     ("Enter", "switch / change the master password / apply the chosen security level"),
+                    ("Enter  Space", "on Tabs: show or hide the tab of that type (its items stay under All)"),
                     ("", "the unlock time of a level is measured on this computer when you choose it"),
                     ("Esc", "back to the list"),
                 ],

@@ -294,7 +294,8 @@ pub enum ConfigAction {
         #[arg(value_enum)]
         key: ConfigKey,
         /// The new value (animation: on/off; lock-timeout: minutes; clip-time:
-        /// seconds, 5 to 300; keyfile: a path, or none)
+        /// seconds, 5 to 300; hidden-tabs: types separated by commas, or none;
+        /// keyfile: a path, or none)
         value: String,
     },
 }
@@ -308,6 +309,8 @@ pub enum ConfigKey {
     LockTimeout,
     /// Clear the clipboard this many seconds after copying a secret (5 to 300; default 20)
     ClipTime,
+    /// Leave these type tabs out of the screen mode, e.g. "api,ssh-key" ("none" shows all; the items stay under All)
+    HiddenTabs,
     /// Where your key file is, for a vault that needs one (only the path is stored)
     Keyfile,
 }

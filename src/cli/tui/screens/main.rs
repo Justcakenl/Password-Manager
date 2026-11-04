@@ -107,8 +107,8 @@ impl App {
                 Key::Down => self.move_sel(1),
                 Key::PageUp => self.move_sel(-page),
                 Key::PageDown => self.move_sel(page),
-                Key::Tab => self.set_tab(self.tab.step(1)),
-                Key::BackTab => self.set_tab(self.tab.step(-1)),
+                Key::Tab => self.set_tab(self.next_tab(1)),
+                Key::BackTab => self.set_tab(self.next_tab(-1)),
                 Key::F(1) => self.modals.push(Modal::Help(Help::new(HelpPage::Main))),
                 k => {
                     if self.search.edit(k) {
@@ -126,8 +126,8 @@ impl App {
             Key::PageDown => self.move_sel(page),
             Key::Home => self.move_sel(isize::MIN / 2),
             Key::End => self.move_sel(isize::MAX / 2),
-            Key::Left | Key::BackTab => self.set_tab(self.tab.step(-1)),
-            Key::Right | Key::Tab => self.set_tab(self.tab.step(1)),
+            Key::Left | Key::BackTab => self.set_tab(self.next_tab(-1)),
+            Key::Right | Key::Tab => self.set_tab(self.next_tab(1)),
             Key::Enter | Key::Char('v') => self.toggle_reveal(),
             Key::Char('c') => self.copy_field(CopyWhat::Secret),
             Key::Char('u') => self.copy_field(CopyWhat::Username),
@@ -261,7 +261,9 @@ impl App {
     fn draw_tabs(&self, g: &mut Grid) {
         let w = g.width();
         let count = |t: Tab| self.entries().iter().filter(|e| t.kind().is_none_or(|k| e.kind() == k)).count();
-        let labels: Vec<String> = Tab::ALL.iter().map(|&t| format!("{} {}", t.label(), count(t))).collect();
+        // Only the tabs that are not hidden (and always "All").
+        let tabs: Vec<Tab> = Tab::ALL.into_iter().filter(|&t| self.tab_shown(t)).collect();
+        let labels: Vec<String> = tabs.iter().map(|&t| format!("{} {}", t.label(), count(t))).collect();
         // With counts if they fit (with a narrower gap when needed), else without.
         let needed = |gap: usize| labels.iter().map(|l| str_width(l) + gap).sum::<usize>() + 18;
         let (with_counts, gap) = match (needed(3) <= w as usize, needed(2) <= w as usize) {
@@ -270,7 +272,7 @@ impl App {
             (false, false) => (false, 3),
         };
         let mut x = 1;
-        for (i, &t) in Tab::ALL.iter().enumerate() {
+        for (i, &t) in tabs.iter().enumerate() {
             let label = if with_counts { labels[i].as_str() } else { t.label() };
             let style = if t == self.tab { Style::ACTIVE_TAB } else { Style::DIM };
             x += g.print(x, 1, w.saturating_sub(x), label, style) + gap;

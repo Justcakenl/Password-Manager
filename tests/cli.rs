@@ -1840,3 +1840,47 @@ fn the_man_page_is_generated_from_the_commands() {
     }
     assert!(!v.path.exists(), "no vault needed or created");
 }
+
+#[test]
+fn hidden_tabs_are_a_screen_setting_only() {
+    let k = Vaulty::new().init();
+    k.add("GitHub", "john", ITEM_PW);
+    k.run(
+        &["add", "Cloud", "--type", "api", "-u", "", "-e", "", "--url", "", "-t", ""],
+        &format!("{PW}\n{ITEM_PW}-api\n"),
+    )
+    .success();
+    k.run(&["config", "show"], "").success().stdout(contains("hidden-tabs:   none"));
+    // A list of types, any name `--type` takes; stored by their plain names.
+    k.run(&["config", "set", "hidden-tabs", "ssh, API,api"], "")
+        .success()
+        .stdout(contains("hidden-tabs:   api, ssh-key"));
+    let file = || std::fs::read_to_string(config_file(&k)).unwrap();
+    assert!(file().contains("\nhidden_tabs=api,ssh-key\n"), "{}", file());
+    // "All" cannot be hidden; a typo is refused. Neither changes the file.
+    for bad in ["all", "api,All"] {
+        k.run(&["config", "set", "hidden-tabs", bad], "")
+            .failure()
+            .stderr(contains("the All tab cannot be hidden"));
+    }
+    k.run(&["config", "set", "hidden-tabs", "api,cardz"], "").failure().stderr(contains(
+        "hidden-tabs takes types separated by commas (login, api, card, identity, ssh-key, note), or none",
+    ));
+    assert!(file().contains("\nhidden_tabs=api,ssh-key\n"));
+
+    // The setting hides no item anywhere outside the screen: list, search,
+    // get and the line mode see the API key exactly as before.
+    let pw = format!("{PW}\n");
+    k.run(&["list"], &pw).success().stdout(contains("Cloud").and(contains("GitHub")));
+    k.run(&["list", "--type", "api"], &pw).success().stdout(contains("Cloud"));
+    k.run(&["search", "cloud"], &pw).success().stdout(contains("Cloud"));
+    k.run(&["get", "cloud", "--show"], &pw).success().stdout(contains(format!("{ITEM_PW}-api")));
+    k.run(&["shell"], &format!("{PW}\nlist\nexit\n")).success().stdout(contains("Cloud"));
+    k.run(&["audit"], &pw).success().stdout(contains("2 logins and API keys"));
+
+    // Empty or "none" shows every tab again (and drops the line).
+    k.run(&["config", "set", "hidden-tabs", ""], "").success().stdout(contains("hidden-tabs:   none"));
+    assert!(!file().contains("hidden_tabs"), "{}", file());
+    k.run(&["config", "set", "hidden-tabs", "note"], "").success();
+    k.run(&["config", "set", "hidden-tabs", "none"], "").success().stdout(contains("hidden-tabs:   none"));
+}

@@ -107,9 +107,31 @@ impl Tab {
         }
     }
 
-    pub fn step(self, delta: isize) -> Tab {
-        let i = Tab::ALL.iter().position(|&t| t == self).unwrap_or(0) as isize;
-        Tab::ALL[(i + delta).rem_euclid(Tab::ALL.len() as isize) as usize]
+    /// The tab of a type.
+    pub fn of(kind: Kind) -> Tab {
+        match kind {
+            Kind::Login => Tab::Logins,
+            Kind::Api => Tab::Api,
+            Kind::Card => Tab::Cards,
+            Kind::Identity => Tab::Identities,
+            Kind::SshKey => Tab::SshKeys,
+            Kind::Note => Tab::Notes,
+        }
+    }
+
+    /// The next (`delta` > 0) or previous tab that `shown` lets through,
+    /// going round. "All" is always shown, so there always is one.
+    pub fn step(self, delta: isize, shown: impl Fn(Tab) -> bool) -> Tab {
+        let n = Tab::ALL.len() as isize;
+        let mut i = Tab::ALL.iter().position(|&t| t == self).unwrap_or(0) as isize;
+        for _ in 0..n {
+            i = (i + delta.signum()).rem_euclid(n);
+            let t = Tab::ALL[i as usize];
+            if t == Tab::All || shown(t) {
+                return t;
+            }
+        }
+        Tab::All
     }
 }
 
@@ -363,6 +385,17 @@ impl App {
 
     pub fn entries(&self) -> &[Entry] {
         self.uv.vault.entries()
+    }
+
+    /// Whether the tab bar shows this tab (`config set hidden-tabs`, or the
+    /// Tabs row in the settings). Only the tab: its items stay under "All".
+    pub fn tab_shown(&self, tab: Tab) -> bool {
+        tab.kind().is_none_or(|k| self.cfg.shows_tab(k))
+    }
+
+    /// The tab ← → (or Tab, Shift+Tab) moves to, skipping hidden ones.
+    pub fn next_tab(&self, delta: isize) -> Tab {
+        self.tab.step(delta, |t| self.tab_shown(t))
     }
 
     pub fn selected(&self) -> Option<&Entry> {

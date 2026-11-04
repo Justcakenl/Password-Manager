@@ -8,6 +8,7 @@
 //! animation=on
 //! lock_timeout_minutes=5
 //! clip_time_seconds=20
+//! hidden_tabs=api,ssh-key
 //! keyfile=/run/media/you/USB/cakepass.key
 //! ```
 //!
@@ -20,6 +21,7 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::{Component, Path, PathBuf};
 
 use cakepass::clipboard::{DEFAULT_CLEAR_SECS, parse_clear_secs};
+use cakepass::vault::Kind;
 use cakepass::{Error, Result, storage};
 
 /// Default idle time before the screen mode and the line mode lock, in minutes.
@@ -37,6 +39,10 @@ pub struct Config {
     /// Clear the clipboard this many seconds after copying a secret (inside
     /// `cakepass::clipboard::CLEAR_SECS_RANGE`).
     pub clip_time_secs: u64,
+    /// The types whose tab the screen mode leaves out (in the order of
+    /// [`Kind::ALL`], no repeats). Only navigation: the items stay under
+    /// "All", and `list`, `search` and `get` never look at this.
+    pub hidden_tabs: Vec<Kind>,
     /// Where the key file is, for a vault that needs one (only the path).
     pub keyfile: Option<PathBuf>,
 }
@@ -47,9 +53,38 @@ impl Default for Config {
             animation: true,
             lock_timeout_minutes: DEFAULT_LOCK_MINUTES,
             clip_time_secs: DEFAULT_CLEAR_SECS,
+            hidden_tabs: Vec::new(),
             keyfile: None,
         }
     }
+}
+
+/// The name of a type in the settings file and on the command line: the
+/// same names `--type` accepts.
+pub fn type_name(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Login => "login",
+        Kind::Api => "api",
+        Kind::Card => "card",
+        Kind::Identity => "identity",
+        Kind::SshKey => "ssh-key",
+        Kind::Note => "note",
+    }
+}
+
+/// Parse a list of hidden tabs: type names separated by commas ("api,
+/// ssh-key"; any name `--type` accepts), or nothing / "none" for none. The
+/// result is in the order of the tabs, without repeats. `None` if a name is
+/// not a type, which includes "all": the All tab cannot be hidden.
+pub fn parse_hidden_tabs(s: &str) -> Option<Vec<Kind>> {
+    let s = s.trim();
+    let mut kinds = Vec::new();
+    if !s.eq_ignore_ascii_case("none") {
+        for name in s.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+            kinds.push(Kind::parse(name)?);
+        }
+    }
+    Some(Kind::ALL.into_iter().filter(|k| kinds.contains(k)).collect())
 }
 
 /// Parse an on/off value ("on", "off", "true", "false", "yes", "no", "1", "0").
@@ -103,6 +138,11 @@ impl Config {
                         cfg.clip_time_secs = s;
                     }
                 }
+                "hidden_tabs" => {
+                    if let Some(kinds) = parse_hidden_tabs(value) {
+                        cfg.hidden_tabs = kinds;
+                    }
+                }
                 "keyfile" => cfg.keyfile = parse_keyfile_path(value),
                 _ => {}
             }
@@ -118,6 +158,10 @@ impl Config {
             self.lock_timeout_minutes,
             self.clip_time_secs
         );
+        // Like the key file: no line while nothing is hidden.
+        if !self.hidden_tabs.is_empty() {
+            text.push_str(&format!("hidden_tabs={}\n", self.hidden_tabs_text(",")));
+        }
         // Only a path that reads back the same is written (see `parse_keyfile_path`).
         if let Some(p) =
             self.keyfile.as_ref().and_then(|p| p.to_str()).filter(|p| parse_keyfile_path(p).is_some())
@@ -125,6 +169,16 @@ impl Config {
             text.push_str(&format!("keyfile={p}\n"));
         }
         text
+    }
+
+    /// The hidden tabs as type names joined by `sep` (empty if none).
+    pub fn hidden_tabs_text(&self, sep: &str) -> String {
+        self.hidden_tabs.iter().map(|&k| type_name(k)).collect::<Vec<_>>().join(sep)
+    }
+
+    /// Whether the screen mode shows the tab of this type.
+    pub fn shows_tab(&self, kind: Kind) -> bool {
+        !self.hidden_tabs.contains(&kind)
     }
 
     /// The lock timeout in seconds.
@@ -202,6 +256,11 @@ mod tests {
             "clip_time_seconds=4",
             "clip_time_seconds=301",
             "clip_time_seconds=never",
+            "hidden_tabs=all",
+            "hidden_tabs=api,all",
+            "hidden_tabs=api,nonsense",
+            "hidden_tabs=none",
+            "hidden_tabs=",
             "unknown=1\n\x1b[2J\nnonsense",
         ] {
             assert_eq!(Config::parse(text), Config::default(), "{text:?}");
@@ -209,6 +268,32 @@ mod tests {
         // A bad value does not spoil the good ones around it.
         let c = Config::parse("animation=off\nlock_timeout_minutes=oops\n");
         assert!(!c.animation && c.lock_timeout_minutes == 5);
+    }
+
+    #[test]
+    fn hidden_tab_lists() {
+        use Kind::*;
+        assert_eq!(parse_hidden_tabs("api,ssh-key"), Some(vec![Api, SshKey]));
+        // Any name `--type` takes; spaces, case, order and repeats do not matter.
+        assert_eq!(parse_hidden_tabs(" Note , SSH, api-key,note,"), Some(vec![Api, SshKey, Note]));
+        assert_eq!(parse_hidden_tabs("passport,card"), Some(vec![Card, Identity]));
+        for none in ["", "  ", "none", "NONE", ","] {
+            assert_eq!(parse_hidden_tabs(none), Some(vec![]), "{none:?}");
+        }
+        // "All" is not a type, so it can never be hidden.
+        for bad in ["all", "api,all", "api;card", "logins2"] {
+            assert_eq!(parse_hidden_tabs(bad), None, "{bad:?}");
+        }
+        // Every type name reads back as itself.
+        for k in Kind::ALL {
+            assert_eq!(parse_hidden_tabs(type_name(k)), Some(vec![k]));
+        }
+        let c = Config::parse("hidden_tabs=note,api\n");
+        assert_eq!(c.hidden_tabs, [Api, Note]);
+        assert!(!c.shows_tab(Api) && c.shows_tab(Login));
+        assert_eq!(c.hidden_tabs_text(", "), "api, note");
+        // Nothing hidden: no line in the file.
+        assert!(!Config::default().to_text().contains("hidden_tabs"));
     }
 
     #[test]
@@ -230,9 +315,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sub").join("config");
         assert_eq!(load_from(&path), Config::default(), "missing file gives defaults");
-        let cfg = Config { animation: false, lock_timeout_minutes: 42, clip_time_secs: 90, keyfile: None };
+        let cfg = Config {
+            animation: false,
+            lock_timeout_minutes: 42,
+            clip_time_secs: 90,
+            hidden_tabs: vec![Kind::Api, Kind::SshKey],
+            keyfile: None,
+        };
         save_to(&path, &cfg).unwrap();
         assert_eq!(load_from(&path), cfg);
+        assert!(fs::read_to_string(&path).unwrap().contains("\nhidden_tabs=api,ssh-key\n"));
         assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
         assert_eq!(fs::metadata(path.parent().unwrap()).unwrap().mode() & 0o777, 0o700);
         assert!(fs::read_to_string(&path).unwrap().starts_with("# CakePass settings"));

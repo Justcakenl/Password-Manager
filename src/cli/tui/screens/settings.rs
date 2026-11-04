@@ -1,7 +1,7 @@
-//! The settings screen: the startup animation, the auto-lock time, changing
-//! the master password, the security level, and information about the vault
-//! and this version (like `cakepass info`). Changes are saved right away
-//! with `config`.
+//! The settings screen: the startup animation, the auto-lock time, which type
+//! tabs the list shows, changing the master password, the security level, and
+//! information about the vault and this version (like `cakepass info`).
+//! Changes are saved right away with `config`.
 //!
 //! SECURITY: changing the master password first asks for the current one
 //! again (as `passwd` in `cakepass shell` does), then a new one that passes
@@ -15,11 +15,12 @@ use std::time::{Duration, Instant};
 
 use cakepass::Error;
 use cakepass::crypto::{KdfParams, SecurityLevel};
+use cakepass::vault::Kind;
 
 use super::super::super::commands;
 use super::super::super::config::{self, Config, LOCK_MINUTES_RANGE};
 use super::super::super::update;
-use super::super::app::{App, Modal, Screen, error_text, level_index};
+use super::super::app::{App, Modal, Screen, Tab, error_text, level_index};
 use super::super::grid::{Grid, Rect, str_width};
 use super::super::keys::{Event, Key};
 use super::super::theme::Style;
@@ -28,6 +29,9 @@ use super::{Hint, field_row, title_bar};
 
 pub struct Settings {
     pub row: usize,
+    /// The type chosen on the Tabs row (an index in `Kind::ALL`); Enter or
+    /// Space shows or hides its tab.
+    pub tab_kind: usize,
     /// The level chosen on the security row (applied only with Enter).
     pub level: SecurityLevel,
     /// Looked up once when the screen opens (no need to search PATH every frame).
@@ -35,9 +39,11 @@ pub struct Settings {
     update: Option<String>,
 }
 
-const ROWS: usize = 4;
+const ROWS: usize = 5;
+/// The row that shows or hides the type tabs.
+pub const TABS_ROW: usize = 2;
 /// The row of the security level.
-pub const LEVEL_ROW: usize = 3;
+pub const LEVEL_ROW: usize = 4;
 
 impl Settings {
     /// The screen as it opens (the cursor on the first setting). The level
@@ -45,6 +51,7 @@ impl Settings {
     pub fn load(current: KdfParams) -> Settings {
         Settings {
             row: 0,
+            tab_kind: 0,
             level: SecurityLevel::of(&current).unwrap_or(SecurityLevel::DEFAULT),
             clipboard: cakepass::clipboard::detect().map(|t| t.name()),
             update: update::pending_notice(),
@@ -103,6 +110,19 @@ impl App {
                     self.ok(format!("CakePass now locks after {minutes} minute(s) without input."));
                 }
             }
+            TABS_ROW => {
+                let Screen::Settings(s) = &mut self.screen else { return };
+                let last = Kind::ALL.len() - 1;
+                match key {
+                    Key::Left | Key::PageDown => s.tab_kind = s.tab_kind.saturating_sub(1),
+                    Key::Right | Key::PageUp => s.tab_kind = (s.tab_kind + 1).min(last),
+                    Key::Enter | Key::Char(' ') => {
+                        let kind = Kind::ALL[s.tab_kind.min(last)];
+                        self.toggle_tab(kind);
+                    }
+                    _ => {}
+                }
+            }
             LEVEL_ROW => {
                 let Screen::Settings(s) = &mut self.screen else { return };
                 match key {
@@ -126,6 +146,61 @@ impl App {
                     )));
                 }
             }
+        }
+    }
+
+    /// Show or hide the tab of a type, and save that. Only the tab: the items
+    /// stay under "All" (and `list`/`search` never look at this setting).
+    fn toggle_tab(&mut self, kind: Kind) {
+        let mut cfg = self.cfg.clone();
+        let hide = cfg.shows_tab(kind);
+        if hide {
+            cfg.hidden_tabs.push(kind);
+        } else {
+            cfg.hidden_tabs.retain(|&k| k != kind);
+        }
+        // Keep the order of the tabs (as `config set hidden-tabs` does).
+        cfg.hidden_tabs = Kind::ALL.into_iter().filter(|k| cfg.hidden_tabs.contains(k)).collect();
+        if !self.save_config(cfg) {
+            return;
+        }
+        let label = Tab::of(kind).label();
+        if hide {
+            self.ok(format!("The {label} tab is hidden; its items stay under All."));
+        } else {
+            self.ok(format!("The {label} tab is shown again."));
+        }
+        // The list was on the tab that just went away.
+        if !self.tab_shown(self.tab) {
+            self.tab = Tab::All;
+            self.refilter();
+        }
+    }
+
+    /// The Tabs row: every type with ✔ (shown) or ✖ (hidden), the chosen one
+    /// highlighted. Too narrow for all six: only the chosen one, ‹ › style.
+    fn draw_tabs_row(&self, g: &mut Grid, x: u16, y: u16, w: u16, s: &Settings, focused: bool) {
+        let mark = |k: Kind| if self.cfg.shows_tab(k) { g.g.check } else { g.g.cross };
+        let items: Vec<(Kind, String)> =
+            Kind::ALL.into_iter().map(|k| (k, format!("{}{}", mark(k), Tab::of(k).label()))).collect();
+        let full: usize = items.iter().map(|(_, t)| str_width(t) + 2).sum();
+        if full <= w as usize + 2 {
+            let (mut x, end) = (x, x + w);
+            for (j, (k, text)) in items.iter().enumerate() {
+                let style = if focused && j == s.tab_kind {
+                    Style::SELECTED
+                } else if self.cfg.shows_tab(*k) {
+                    Style::PLAIN
+                } else {
+                    Style::DIM
+                };
+                x += g.print(x, y, end.saturating_sub(x), text, style) + 2;
+            }
+        } else {
+            let k = Kind::ALL[s.tab_kind.min(Kind::ALL.len() - 1)];
+            let state = if self.cfg.shows_tab(k) { "shown" } else { "hidden" };
+            let text = format!("{} {}: {state} {}", g.g.left, Tab::of(k).label(), g.g.right);
+            g.print(x, y, w, &text, if focused { Style::SELECTED } else { Style::PLAIN });
         }
     }
 
@@ -178,6 +253,7 @@ impl App {
         let rows = [
             ("Startup animation", format!("{l} {} {rt}", if self.cfg.animation { "on" } else { "off" })),
             ("Auto-lock after", format!("{l} {} min {rt}", self.cfg.lock_timeout_minutes)),
+            ("Tabs", String::new()), // drawn below, one type at a time
             ("Master password", "[ Change… ]".to_string()),
             (
                 "Security level",
@@ -195,6 +271,10 @@ impl App {
                 g.set(inner.x, y, g.g.marker, Style::ACCENT_BOLD);
             }
             g.print(r.x, y, LW, label, if focused { Style::ACCENT_BOLD } else { Style::BOLD });
+            if i == TABS_ROW {
+                self.draw_tabs_row(g, r.x + LW + 1, y, r.w.saturating_sub(LW + 1), s, focused);
+                continue;
+            }
             g.print(
                 r.x + LW + 1,
                 y,
@@ -253,6 +333,9 @@ impl App {
         let help = match s.row {
             0 => "← → or Enter: an animated or a still logo at startup.".to_string(),
             1 => "← → (PgUp PgDn: ±10): minutes until CakePass locks itself.".to_string(),
+            TABS_ROW => {
+                "← →: choose a type · Enter: show or hide its tab (its items stay under All).".to_string()
+            }
             LEVEL_ROW => self.level_line(s.level),
             _ => "Enter: change it (asks for the current one first).".to_string(),
         };

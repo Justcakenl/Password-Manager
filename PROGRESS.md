@@ -1,6 +1,6 @@
 # Progress: `cakepass` (CakePass)
 
-Last updated: step 13 (password health check, identity documents, favorites, clipboard time, man page; content schema still 5).
+Last updated: step 14 (editable screen tabs; content schema still 5).
 Repository: `Justcakenl/Password-Manager`, branch `main` (private until it is made public).
 
 ## Maintainer checklist: manual testing on a real Arch machine
@@ -286,6 +286,29 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
     vault JSON, which random base64 ciphertext can contain (about 0.6 % of
     runs); short values are now matched as whole JSON strings.
 
+- [x] **Step 14 – Editable screen tabs** (no vault change; content schema
+  still 5):
+  - **Hide the tabs you do not use**: a Tabs row in the screen's settings
+    (`s`): ← → choose a type, Enter or Space shows or hides its tab (✔ / ✖,
+    `+` / `x` without UTF-8; one type at a time in a narrow window). The
+    same setting from the command line:
+    `cakepass config set hidden-tabs api,ssh-key` (any name `--type`
+    takes), `none` or an empty value shows them all again.
+  - Stored as `hidden_tabs=api,ssh-key` in the settings file, next to
+    `clip_time_seconds`; no line while nothing is hidden. A bad value in the
+    file means nothing hidden.
+  - **All** cannot be hidden (`config set` refuses it with a clear
+    message). Hiding a tab hides no item: they stay under All, and `list`,
+    `search`, `get`, `audit` and the line mode never read this setting.
+    ← → and Tab skip hidden tabs; when the tab you were on is hidden, the
+    list goes to All.
+  - Tests: parsing (names, aliases, order, repeats, `all`, typos), the
+    settings file; a CLI test that `list`/`search`/`get`/`shell`/`audit`
+    still show an item of a hidden type; screen-mode tests (the Tabs row,
+    skipping, every tab hidden, ASCII and 60 columns); a pseudo-terminal
+    test that reads the setting at start. Four existing settings-screen
+    tests now step past the new row.
+
 ## Still to do
 
 - [ ] Check the "Testing on Arch" list below on your own computer.
@@ -317,7 +340,9 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   deliberately left unmerged until the maintainer says so. Same decision
   will apply to `feature/identity-favorites-audit` once step 13 clears
   review and test.
-- [ ] **Step 14 (queued, after step 13 is merged) — agreed scope:**
+- [ ] **Step 14 is implemented on `feature/tabs-and-icon`** (see "Done"
+  above), branched from `feature/identity-favorites-audit`, and waits for
+  the independent review and test pass. The agreed scope was:
   - **Editable TUI tabs**: the screen mode's tab bar (All/Logins/API
     keys/Notes/Cards/SSH/IDs — 7 already, and counts had to be narrowed to
     fit 80 columns for step 13) should be user-configurable: let someone
@@ -482,12 +507,23 @@ See `docs/DESIGN.md` for the explanation. In short:
   import: a pinned copy of an item is still the same item.
 - `f` in the screen's list is now a shortcut, so typing `f` no longer starts
   a search with that letter (a capital F still does).
+- Step 14: hidden tabs are one `hidden-tabs` setting holding the whole list
+  (like every other setting: one key, one line), not a `hide-tab` /
+  `show-tab` pair. Toggling one type at a time is what the Tabs row in the
+  screen is for; on the command line `config` shows the current list, so
+  setting the whole list is just as easy and keeps `config set` uniform.
+- "All" in the list is refused with a message rather than ignored, so a
+  command never silently does less than it was asked to. In the settings
+  file (which is forgiving everywhere) any bad value means "nothing hidden".
+- The Tabs row sits right after Auto-lock (with the other preferences,
+  before the master password and security level), so those two rows moved
+  down by one.
 
 ## Checks (latest step)
 
 | Check | Result |
 |---|---|
-| `cargo test` | 300 passed (119 library, 85 CLI/screen unit, 61 CLI integration, 10 screen in a pseudo-terminal, 12 update, 13 installer) |
+| `cargo test` | 305 passed (119 library, 88 CLI/screen unit, 62 CLI integration, 11 screen in a pseudo-terminal, 12 update, 13 installer) |
 | Known-answer tests (step 12) | TOTP: RFC 6238 Appendix B (SHA-1, SHA-256, SHA-512, all six times) and RFC 4226 Appendix D; base32: RFC 4648 section 10; cross-checked with an independent Python implementation (`hmac`/`hashlib`/`base64`) |
 | Known-answer tests (step 11) | Argon2id with a secret: vectors from the reference C implementation (libargon2 via argon2-cffi; the harness reproduces RFC 9106 first); key-file pepper: vectors from Python's `hashlib.blake2b(digest_size=32)` |
 | Unlock times (release, 4-core 2.1 GHz Xeon VM, step 11) | Standard ≈ 0.18–0.21 s, High ≈ 0.8–0.9 s, Maximum ≈ 3.6–3.8 s (first run once 5.9 s); wiping Argon2's freed memory is ~5–10 % of that |
@@ -513,6 +549,15 @@ See `docs/DESIGN.md` for the explanation. In short:
 ## Testing on Arch
 
 Could NOT be tested in the cloud environment. Do this yourself and tick:
+
+### Screen tabs – new in step 14
+
+- [ ] In the screen, `s`, the Tabs row: hide API keys with → and Enter;
+      back in the list the tab is gone, ← → skip it, and your API keys are
+      still under All
+- [ ] `cakepass config` shows `hidden-tabs: api`; `cakepass list` still
+      lists your API keys; `cakepass config set hidden-tabs none` brings the
+      tab back
 
 ### Identities, favorites, audit, clipboard time – new in step 13
 

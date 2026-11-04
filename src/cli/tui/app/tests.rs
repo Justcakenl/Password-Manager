@@ -494,7 +494,7 @@ fn settings_are_saved() {
 fn change_the_master_password() {
     let mut t = T::sample();
     t.key(Key::Char('s'));
-    t.keys(&[Key::Down, Key::Down, Key::Enter]);
+    t.keys(&[Key::Down, Key::Down, Key::Down, Key::Enter]); // past the Tabs row
     assert!(t.screen().contains("current master password"));
     t.typ("wrong");
     assert!(t.screen().contains("•••••") && !t.screen().contains("wrong"), "hidden input");
@@ -674,7 +674,7 @@ fn the_security_level_row_measures_lazily_and_switches_the_level() {
         Ok(Duration::from_millis(u64::from(p.memory_kib) / 256))
     });
     t.key(Key::Char('s'));
-    t.keys(&[Key::Down, Key::Down]);
+    t.keys(&[Key::Down, Key::Down, Key::Down]); // to the master password
     assert!(measured.borrow().is_empty(), "nothing is measured before the row is shown");
     t.key(Key::Down);
     let s = t.screen();
@@ -724,7 +724,7 @@ fn a_level_this_computer_cannot_run_is_explained() {
         Ok(Duration::from_millis(5))
     });
     t.key(Key::Char('s'));
-    t.keys(&[Key::Down, Key::Down, Key::Down, Key::Right]);
+    t.keys(&[Key::Down, Key::Down, Key::Down, Key::Down, Key::Right]);
     let s = t.screen_at(120, 30);
     assert!(s.contains("Maximum") && s.contains("needs about 1366 MiB of free memory"), "{s}");
 }
@@ -753,7 +753,7 @@ fn a_vault_with_a_key_file_in_the_screen_mode() {
     t.key(Key::Char('s'));
     assert!(t.screen_at(120, 30).contains("required:"), "{}", t.screen_at(120, 30));
     // Changing the master password re-reads the key file and keeps it.
-    t.keys(&[Key::Down, Key::Down, Key::Enter]);
+    t.keys(&[Key::Down, Key::Down, Key::Down, Key::Enter]);
     t.typ("wrong");
     t.key(Key::Enter);
     assert!(t.screen().contains("Wrong master password (or key file)"), "{}", t.screen());
@@ -1130,4 +1130,94 @@ fn the_copy_message_follows_the_clip_time_setting() {
     assert!(t.screen().contains("the clipboard is cleared in 45 s"), "{}", t.screen());
     t.later(44);
     assert!(t.screen().contains("cleared in 1 s"), "{}", t.screen());
+}
+
+// ───────────────────────── hidden tabs ─────────────────────────
+
+/// The tab bar: the second line of the screen.
+fn tab_bar(t: &T) -> String {
+    t.screen().lines().nth(1).unwrap_or_default().to_string()
+}
+
+#[test]
+fn hiding_a_tab_in_the_settings_keeps_its_items_under_all() {
+    let mut t = T::sample();
+    t.keys(&[Key::Right, Key::Right]);
+    assert_eq!(t.app.tab, Tab::Api);
+    assert!(tab_bar(&t).contains("API keys 1"), "{}", tab_bar(&t));
+    // Settings, the Tabs row: every type with a mark, ← → choose, Enter hides.
+    t.key(Key::Char('s'));
+    t.keys(&[Key::Down, Key::Down]);
+    let s = t.screen();
+    assert!(s.contains("Tabs") && s.contains("✔Logins  ✔API keys  ✔Cards  ✔IDs  ✔SSH  ✔Notes"), "{s}");
+    assert!(s.contains("Enter: show or hide its tab (its items stay under All)."), "{s}");
+    t.key(Key::Right);
+    t.key(Key::Enter);
+    assert_eq!(t.toast(), "The API keys tab is hidden; its items stay under All.");
+    assert!(t.screen().contains("✔Logins  ✖API keys  ✔Cards"), "{}", t.screen());
+    assert_eq!(t.app.cfg.hidden_tabs, [Kind::Api]);
+    // Saved at once, in the same settings file as the other settings.
+    let saved = crate::cli::config::load_from(&t.dir.path().join("config"));
+    assert_eq!(saved.hidden_tabs, [Kind::Api]);
+    assert!(std::fs::read_to_string(t.dir.path().join("config")).unwrap().contains("hidden_tabs=api\n"));
+    // Back in the list: the API tab is gone, the list moved to All, and the
+    // API key is still there.
+    t.key(Key::Esc);
+    assert_eq!(t.app.tab, Tab::All);
+    let bar = tab_bar(&t);
+    assert!(!bar.contains("API") && bar.contains("All 3") && bar.contains("Logins 1"), "{bar}");
+    assert!(bar.contains("Notes 1"), "{bar}");
+    let s = t.screen();
+    assert!(s.contains("OpenAI") && s.contains("GitHub") && s.contains("Recovery codes"), "{s}");
+    assert_eq!(t.app.view.len(), 3, "hiding a tab hides no item");
+    // ← → skip the hidden tab, both ways (and still go round).
+    t.key(Key::Right);
+    assert_eq!(t.app.tab, Tab::Logins);
+    t.key(Key::Right);
+    assert_eq!(t.app.tab, Tab::Cards, "past the hidden API tab");
+    t.keys(&[Key::Left, Key::Left]);
+    assert_eq!(t.app.tab, Tab::All);
+    t.key(Key::Left);
+    assert_eq!(t.app.tab, Tab::Notes);
+    t.key(Key::Tab);
+    assert_eq!(t.app.tab, Tab::All);
+    // The search still finds it.
+    t.typ("open");
+    assert_eq!(t.app.selected().unwrap().name(), "OpenAI");
+    t.key(Key::Esc);
+    t.key(Key::Esc);
+    // Enter or Space on the same type shows the tab again.
+    t.key(Key::Char('s'));
+    t.keys(&[Key::Down, Key::Down, Key::Right, Key::Char(' ')]);
+    assert_eq!(t.toast(), "The API keys tab is shown again.");
+    assert!(t.app.cfg.hidden_tabs.is_empty());
+    assert!(!std::fs::read_to_string(t.dir.path().join("config")).unwrap().contains("hidden_tabs"));
+    t.key(Key::Esc);
+    assert!(tab_bar(&t).contains("API keys 1"), "{}", tab_bar(&t));
+}
+
+#[test]
+fn with_every_type_tab_hidden_only_all_is_left() {
+    let mut t = T::sample();
+    t.app.cfg.hidden_tabs = Kind::ALL.to_vec();
+    let bar = tab_bar(&t);
+    assert!(bar.contains("All 3") && !bar.contains("Logins") && !bar.contains("Notes"), "{bar}");
+    for k in [Key::Right, Key::Left, Key::Tab, Key::BackTab] {
+        t.key(k);
+        assert_eq!(t.app.tab, Tab::All);
+    }
+    assert_eq!(t.app.view.len(), 3);
+    // The Tabs row without UTF-8, and in a narrow window (one type at a time).
+    t.key(Key::Char('s'));
+    t.keys(&[Key::Down, Key::Down]);
+    let mut g = Grid::new(80, 24, &ASCII);
+    t.app.draw(&mut g, t.now);
+    assert!(g.text().contains("xLogins  xAPI keys  xCards  xIDs  xSSH  xNotes"), "{}", g.text());
+    t.app.resize((60, 16));
+    assert!(t.screen_at(60, 16).contains("‹ Logins: hidden ›"), "{}", t.screen_at(60, 16));
+    t.keys(&[Key::Right, Key::Enter]);
+    assert!(t.screen_at(60, 16).contains("‹ API keys: shown ›"), "{}", t.screen_at(60, 16));
+    // ← → stop at the ends.
+    t.keys(&[Key::Right; 9]);
+    assert!(t.screen_at(60, 16).contains("‹ Notes: hidden ›"), "{}", t.screen_at(60, 16));
 }
