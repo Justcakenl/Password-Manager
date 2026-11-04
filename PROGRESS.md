@@ -292,6 +292,26 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
 - [ ] GitHub repository description still says "Beta-test"; change it in the
   repository settings.
 - [ ] Ideas for later: see the README, "For later".
+- [ ] **Before the first public release**: give unknown `Kind` values a
+  permissive deserializer plus a clear error message ("this vault uses an
+  item type this version doesn't know: '…'") instead of the generic
+  "damaged vault" message. Not a blocker for merging step 12/13 (nothing
+  has shipped yet, so no real vault can hit this today) — deepseek's step
+  13 review recommended filing it as a pre-release item specifically, not
+  a merge gate.
+- [ ] **App icon / desktop integration (queued, not started).** Assets
+  already exist at `/mnt/data/Claude code pr/CakePass-logo/`: SVG sources
+  (`cakepass-logo*.svg`, `cakepass-icon*.svg`, dark and monochrome
+  variants) and rasterized app icons at 32/256/512/1024 px
+  (`cakepass-app-icon-{32,256,512,1024}.png`), distinct from the
+  branding logo already used in `docs/cakepass-logo.png`/README. Scope
+  for whoever picks this up: add a `.desktop` file (`Exec=cakepass`,
+  `Terminal=true`, `Icon=cakepass`) and install the app-icon PNGs into the
+  XDG hicolor icon theme paths via `packaging/arch/PKGBUILD`, so CakePass
+  gets a proper icon in application launchers; check whether the existing
+  `docs/cakepass-logo.png` should be swapped for one of the new logo
+  variants while in there. This is packaging/asset work, not a numbered
+  "Step" with tests.
 - [ ] **Decide whether/when to merge `feature/card-totp-sshkey` into `main`.**
   It is finished, reviewed and tested (see "Checks" below for step 12) but
   deliberately left unmerged until the maintainer says so. Same decision
