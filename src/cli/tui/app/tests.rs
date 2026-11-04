@@ -42,6 +42,7 @@ fn add(uv: &mut UnlockedVault, name: &str, kind: Kind, user: &str, secret: &str,
         url: if kind == Kind::Note { String::new() } else { "https://example.org".into() },
         notes: notes.into(),
         tags: vec!["work".into()],
+        ..Default::default()
     };
     commands::add_entry(uv, fields).unwrap();
 }
@@ -349,11 +350,11 @@ fn search_and_tabs_filter_the_list() {
     t.typ("sk-test");
     assert!(t.app.view.is_empty() && t.screen().contains("No items match."));
     t.key(Key::Esc);
-    // Tabs.
+    // Tabs: All · Logins · API keys · Cards · SSH · Notes.
     t.key(Key::Right);
     assert_eq!(t.app.tab, Tab::Logins);
     assert_eq!(t.app.view.len(), 1);
-    t.keys(&[Key::Right, Key::Right]);
+    t.keys(&[Key::Right, Key::Right, Key::Right, Key::Right]);
     assert_eq!(t.app.tab, Tab::Notes);
     assert_eq!(t.app.selected().unwrap().name(), "Recovery codes");
     t.key(Key::Right);
@@ -790,4 +791,224 @@ fn a_vault_with_a_key_file_in_the_screen_mode() {
     t.typ(PW2);
     t.key(Key::Enter);
     assert!(t.toast().starts_with("Vault reloaded."), "{}", t.toast());
+}
+
+// ───────────────────────── cards, TOTP and SSH keys ─────────────────────────
+
+/// RFC 6238's test seed in base32: at t = 59 the 6-digit code is 287082.
+const TOTP_SEED: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+
+fn new_types() -> T {
+    T::with(|uv| {
+        add(uv, "GitHub", Kind::Login, "john", "gh-Secret-1", "");
+        let fields = |name: &str, kind| NewEntry { name: name.into(), kind, ..Default::default() };
+        let card = NewEntry {
+            username: "J. Doe".into(),
+            password: "4111 1111 1111 1111".into(),
+            expiry: "08/29".into(),
+            cvv: "737".into(),
+            ..fields("Visa", Kind::Card)
+        };
+        let key = NewEntry {
+            url: "git@github.com".into(),
+            password: "-----BEGIN KEY-----\nzq-private-line\n-----END KEY-----".into(),
+            public_key: "ssh-ed25519 AAAA me@laptop".into(),
+            passphrase: "zq-passphrase".into(),
+            ..fields("Server key", Kind::SshKey)
+        };
+        commands::add_entry(uv, card).unwrap();
+        commands::add_entry(uv, key).unwrap();
+        let (vault, key) = uv.parts_mut();
+        vault.update("GitHub", |e| e.set_totp_secret(key, TOTP_SEED)).unwrap();
+        uv.save().unwrap();
+    })
+}
+
+fn select(t: &mut T, name: &str) {
+    t.app.select_name(name);
+    assert_eq!(t.app.selected().unwrap().name(), name);
+}
+
+#[test]
+fn cards_and_ssh_keys_in_the_list_and_details() {
+    let mut t = new_types();
+    let s = t.screen();
+    assert!(s.contains("Cards 1") && s.contains("SSH 1") && s.contains("Logins 1"), "{s}");
+    // The list shows the cardholder and the host; nothing secret anywhere.
+    for text in ["card", "ssh", "J. Doe", "git@github.c"] {
+        assert!(s.contains(text), "{text} missing:\n{s}");
+    }
+    select(&mut t, "Visa");
+    let s = t.screen();
+    for text in ["Cardholder", "08/29", "Card number", "CVV"] {
+        assert!(s.contains(text), "{text} missing:\n{s}");
+    }
+    assert!(!s.contains("4111") && !s.contains("737"), "hidden until revealed:\n{s}");
+    t.key(Key::Enter);
+    let s = t.screen();
+    assert!(s.contains("4111 1111 1111 1111") && s.contains("737"), "{s}");
+    t.later(REVEAL_SECS);
+    assert!(!t.screen().contains("4111"), "hides itself");
+    select(&mut t, "Server key");
+    let s = t.screen();
+    for text in ["Host", "git@github.com", "Public key", "ssh-ed25519 AAAA", "Passphrase", "Private key"] {
+        assert!(s.contains(text), "{text} missing:\n{s}");
+    }
+    assert!(!s.contains("zq-private-line") && !s.contains("zq-passphrase"), "{s}");
+    t.key(Key::Enter);
+    let s = t.screen();
+    assert!(s.contains("zq-private-line") && s.contains("-----END KEY-----") && s.contains("zq-passphrase"));
+    // c copies the private key, p the public key.
+    t.key(Key::Char('c'));
+    t.key(Key::Char('p'));
+    assert_eq!(t.clip.borrow()[0], "-----BEGIN KEY-----\nzq-private-line\n-----END KEY-----");
+    assert_eq!(t.clip.borrow()[1], "ssh-ed25519 AAAA me@laptop");
+    assert_eq!(t.toast(), "The public key copied (test-clipboard)");
+    select(&mut t, "Visa");
+    t.key(Key::Char('p'));
+    assert!(t.toast().contains("Only an SSH key"), "{}", t.toast());
+    t.key(Key::Char('u'));
+    assert_eq!(t.clip.borrow().last().unwrap(), "J. Doe");
+    // The tabs filter by the new types.
+    t.app.select_name("GitHub");
+    t.keys(&[Key::Right, Key::Right, Key::Right]);
+    assert_eq!((t.app.tab, t.app.view.len()), (Tab::Cards, 1));
+    t.key(Key::Right);
+    assert_eq!((t.app.tab, t.app.selected().unwrap().name()), (Tab::SshKeys, "Server key"));
+}
+
+#[test]
+fn the_totp_code_is_computed_shown_and_copied() {
+    let mut t = new_types();
+    t.app.clock = || 59;
+    select(&mut t, "GitHub");
+    let s = t.screen();
+    assert!(s.contains("TOTP") && s.contains("set (t shows it)") && !s.contains("287082"), "{s}");
+    t.key(Key::Char('t'));
+    assert_eq!(t.clip.borrow().as_slice(), ["287082"], "the RFC 6238 code at t = 59");
+    assert_eq!(t.toast(), "The TOTP code copied (test-clipboard)", "the code is not kept in a message");
+    assert!(t.screen().contains("287082  (1 s)"), "{}", t.screen());
+    // Computed again for every frame: the next period has another code.
+    t.app.clock = || 60;
+    let s = t.screen();
+    assert!(!s.contains("287082") && s.contains("(30 s)"), "{s}");
+    // Hidden after a while, and when another item is chosen.
+    t.later(REVEAL_SECS);
+    assert!(!t.screen().contains("(30 s)"));
+    t.key(Key::Char('t'));
+    assert!(t.screen().contains("(30 s)"));
+    t.key(Key::Down);
+    assert!(!t.screen().contains("(30 s)"), "hidden when the selection changes");
+    // An item without a TOTP secret says how to add one.
+    select(&mut t, "Visa");
+    t.key(Key::Char('t'));
+    assert!(t.toast().contains("has no TOTP secret") && t.toast().contains("--totp"), "{}", t.toast());
+    assert_eq!(t.clip.borrow().len(), 2);
+}
+
+#[test]
+fn add_a_card_and_an_ssh_key_with_the_form() {
+    let mut t = T::new();
+    t.key(Key::Char('a'));
+    t.typ("Visa");
+    t.key(Key::Down); // Type
+    t.keys(&[Key::Right, Key::Right]); // login → API key → card
+    assert!(t.screen().contains("Cardholder") && !t.screen().contains("E-mail"), "{}", t.screen());
+    t.key(Key::Down);
+    t.typ("J. Doe");
+    t.key(Key::Down);
+    t.typ("08/29");
+    t.keys(&[Key::Down, Key::Down]); // tags, card number
+    t.typ("4111111111111111");
+    t.key(Key::Down);
+    t.typ("737");
+    let s = t.screen();
+    assert!(!s.contains("4111") && !s.contains("737"), "the number and CVV are masked:\n{s}");
+    t.key(Key::Ctrl('r'));
+    assert!(t.screen().contains("4111111111111111") && t.screen().contains("737"), "Ctrl+R shows both");
+    t.key(Key::Ctrl('g'));
+    assert!(t.app.modals.is_empty(), "no generator for a card number");
+    t.key(Key::Ctrl('s'));
+    assert_eq!(t.toast(), "Card 'Visa' saved (encrypted).");
+
+    t.key(Key::Char('a'));
+    t.typ("Server key");
+    t.key(Key::Down);
+    t.keys(&[Key::Left, Key::Left]); // login → note → SSH key
+    t.key(Key::Down);
+    t.typ("git@github.com");
+    t.key(Key::Down);
+    t.typ("ssh-ed25519 AAAA me@laptop");
+    t.keys(&[Key::Down, Key::Down]); // tags, private key
+    t.paste("-----BEGIN KEY-----\nline 2\n-----END KEY-----\n");
+    t.key(Key::Down); // on the last line: to the passphrase
+    t.typ("pass phrase");
+    assert!(!t.screen().contains("line 2") && !t.screen().contains("pass phrase"), "{}", t.screen());
+    t.key(Key::Ctrl('s'));
+    assert_eq!(t.toast(), "SSH key 'Server key' saved (encrypted).");
+
+    let uv = t.reopen(PW);
+    let k = uv.item_key();
+    let card = get(&uv, "visa");
+    assert_eq!(card.kind(), Kind::Card);
+    assert_eq!(card.username(k).unwrap().as_str(), "J. Doe");
+    assert_eq!(card.expiry(k).unwrap().as_str(), "08/29");
+    assert_eq!(card.password(k).unwrap().as_str(), "4111111111111111");
+    assert_eq!(card.cvv(k).unwrap().as_str(), "737");
+    let key = get(&uv, "server key");
+    assert_eq!(key.kind(), Kind::SshKey);
+    assert_eq!(key.password(k).unwrap().as_str(), "-----BEGIN KEY-----\nline 2\n-----END KEY-----\n");
+    assert_eq!(key.public_key(k).unwrap().as_str(), "ssh-ed25519 AAAA me@laptop");
+    assert_eq!(key.passphrase(k).unwrap().as_str(), "pass phrase");
+    assert_eq!(key.url(k).unwrap().as_str(), "git@github.com");
+}
+
+#[test]
+fn edit_keeps_or_replaces_the_hidden_card_and_key_fields() {
+    let mut t = new_types();
+    select(&mut t, "Visa");
+    t.key(Key::Char('e'));
+    let s = t.screen();
+    assert_eq!(s.matches("(unchanged)").count(), 2, "card number and CVV:\n{s}");
+    assert!(!s.contains("4111") && !s.contains("737"), "{s}");
+    // Down to the CVV (name, cardholder, expiry, tags, card number, CVV) and replace it.
+    t.keys(&[Key::Down, Key::Down, Key::Down, Key::Down, Key::Down]);
+    t.typ("999");
+    t.key(Key::Ctrl('s'));
+    assert_eq!(t.toast(), "Item 'Visa' updated.");
+    select(&mut t, "Server key");
+    t.key(Key::Char('e'));
+    // Name, host, public key, tags, private key: Enter on the unchanged key moves on.
+    t.keys(&[Key::Down, Key::Down, Key::Down, Key::Down, Key::Enter]);
+    t.typ("new pass");
+    t.key(Key::Ctrl('s'));
+    let uv = t.reopen(PW);
+    let k = uv.item_key();
+    let card = get(&uv, "visa");
+    assert_eq!(card.cvv(k).unwrap().as_str(), "999");
+    assert_eq!(card.password(k).unwrap().as_str(), "4111 1111 1111 1111", "unchanged");
+    let key = get(&uv, "server key");
+    assert_eq!(key.passphrase(k).unwrap().as_str(), "new pass");
+    assert_eq!(key.password(k).unwrap().as_str(), "-----BEGIN KEY-----\nzq-private-line\n-----END KEY-----");
+    assert!(get(&uv, "github").has_totp(), "editing elsewhere does not touch the TOTP secret");
+}
+
+#[test]
+fn new_types_render_at_the_minimum_size() {
+    let mut t = new_types();
+    for name in ["Visa", "Server key", "GitHub"] {
+        select(&mut t, name);
+        t.key(Key::Enter);
+        let s = t.screen_at(60, 16);
+        assert!(s.contains(name), "{s}");
+        t.key(Key::Enter);
+        t.key(Key::Char('e'));
+        let s = t.screen_at(60, 16);
+        assert!(s.contains("Save") && s.contains("Notes"), "{s}");
+        t.key(Key::Esc);
+    }
+    t.key(Key::Char('a'));
+    t.key(Key::Down);
+    let s = t.screen_at(60, 16);
+    assert!(s.contains("SSH key") && s.contains("note"), "all five types fit:\n{s}");
 }

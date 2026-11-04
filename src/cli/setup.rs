@@ -135,7 +135,7 @@ pub fn wizard(paths: &VaultPaths, kdf_args: &KdfArgs) -> Result<Option<UnlockedV
 fn finish(created: bool) {
     ui::success("All set!");
     ui::info("  Start CakePass:      cakepass   (arrow keys; `cakepass shell` for typed commands)");
-    ui::info("  Add something:       cakepass add GitHub   (or --type api, --type note)");
+    ui::info("  Add something:       cakepass add GitHub   (or --type api, note, card, ssh-key)");
     ui::info("  Change settings:     cakepass config");
     ui::info("  Security:            cakepass security   (level, key file, unlock time)");
     ui::info("  Update later:        cakepass --update");

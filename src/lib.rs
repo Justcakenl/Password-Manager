@@ -13,6 +13,7 @@
 //! - [`vault`]: the vault model (items), without I/O.
 //! - [`storage`]: paths (XDG), atomic writes, backups, locking.
 //! - [`generator`]: passwords and diceware passphrases.
+//! - [`totp`]: two-factor codes (TOTP, RFC 6238) from a stored secret.
 //! - [`import`]: CSV import from other password managers.
 //! - [`clipboard`]: clipboard with automatic clearing.
 
@@ -27,6 +28,7 @@ pub mod import;
 pub mod keyfile;
 pub mod secure_mem;
 pub mod storage;
+pub mod totp;
 pub mod vault;
 
 pub use error::{Error, Result};

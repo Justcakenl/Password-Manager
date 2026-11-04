@@ -29,6 +29,7 @@ use cakepass::generator::{self, PassphraseOptions, PasswordOptions};
 use cakepass::keyfile::{self, LoadedKeyFile};
 use cakepass::secure_mem::{self, Hardening};
 use cakepass::storage::{self, UnlockedVault, VaultPaths};
+use cakepass::totp::Totp;
 use cakepass::vault::{Entry, Kind, NewEntry, Vault};
 use cakepass::{Error, Result, import};
 
@@ -424,21 +425,25 @@ fn generate_secret(g: &GenArgs) -> Result<(Zeroizing<String>, f64)> {
     Recipe::from_args(g).generate()
 }
 
-/// "The password" / "The API key" / "The note".
+/// "The password" / "The API key" / "The note" / "The card number" / "The private key".
 pub(super) fn secret_noun(kind: Kind) -> &'static str {
     match kind {
         Kind::Login => "The password",
         Kind::Api => "The API key",
         Kind::Note => "The note",
+        Kind::Card => "The card number",
+        Kind::SshKey => "The private key",
     }
 }
 
-/// "Login" / "API key" / "Note" (for messages).
+/// "Login" / "API key" / "Note" / "Card" / "SSH key" (for messages).
 pub(super) fn kind_noun(kind: Kind) -> &'static str {
     match kind {
         Kind::Login => "Login",
         Kind::Api => "API key",
         Kind::Note => "Note",
+        Kind::Card => "Card",
+        Kind::SshKey => "SSH key",
     }
 }
 
@@ -501,6 +506,52 @@ fn ask_api_key() -> Result<Zeroizing<String>> {
 
 fn ask_note_content() -> Result<Zeroizing<String>> {
     prompt::multiline("Type or paste the text of your note (it is stored encrypted):")
+}
+
+/// Ask for a value that is copied from somewhere (a card number, a security
+/// code, a passphrase): hidden input, pasting is fine, no repetition (it is
+/// not invented now; check it afterwards with `get --show`).
+fn ask_hidden(question: &str, required: Option<&str>) -> Result<Zeroizing<String>> {
+    let v = prompt::secret(question)?;
+    let v = Zeroizing::new(v.expose_secret().trim().to_string());
+    if let Some(what) = required
+        && v.is_empty()
+    {
+        return Err(Error::InvalidInput(format!("the {what} must not be empty")));
+    }
+    Ok(v)
+}
+
+fn ask_card_number() -> Result<Zeroizing<String>> {
+    ask_hidden("Card number (hidden input; pasting is fine): ", Some("card number"))
+}
+
+fn ask_new_cvv() -> Result<Zeroizing<String>> {
+    ask_hidden("New security code / CVV (hidden input; empty = clear): ", None)
+}
+
+/// A passphrase is kept exactly as typed (spaces included), like a password.
+fn ask_new_passphrase() -> Result<Zeroizing<String>> {
+    let p = prompt::secret("New passphrase of the private key (hidden input; empty = clear): ")?;
+    Ok(Zeroizing::new(p.expose_secret().to_string()))
+}
+
+/// The private key of an SSH key: multi-line, like a note, kept exactly.
+fn ask_private_key() -> Result<Zeroizing<String>> {
+    let k = prompt::multiline("Paste the private key (PEM or OpenSSH format; it is stored encrypted):")?;
+    if k.trim().is_empty() {
+        return Err(Error::InvalidInput("the private key must not be empty".into()));
+    }
+    Ok(k)
+}
+
+/// Ask for a TOTP secret (hidden): the base32 secret or the otpauth:// link
+/// a site shows under its QR code. It is checked before anything is saved.
+fn ask_totp() -> Result<Zeroizing<String>> {
+    let s =
+        ask_hidden("TOTP secret or otpauth:// link (hidden input; pasting is fine): ", Some("TOTP secret"))?;
+    Totp::parse(&s)?;
+    Ok(s)
 }
 
 fn report_generated(name: &str, pw: &str, bits: f64) {
@@ -712,7 +763,7 @@ fn init(paths: &VaultPaths, kdf_args: &KdfArgs) -> Result<()> {
         key_file_loss_warning();
     }
     ui::info(
-        "Next: `cakepass add <name>` (login), `--type api` (API key) or `--type note`. \
+        "Next: `cakepass add <name>` (login), or with `--type api`, `note`, `card` or `ssh-key`. \
          Make regular copies of the vault file (see the README).",
     );
     Ok(())
@@ -737,6 +788,9 @@ fn add_item(
         return Err(Error::InvalidInput(
             "a note has no username, e-mail address, URL or password; use only --tags".into(),
         ));
+    }
+    if matches!(kind, Kind::Card | Kind::SshKey) {
+        return add_card_or_ssh_key(uv, a);
     }
     let interactive = a.username.is_none() && a.email.is_none() && a.url.is_none() && a.tags.is_none();
     let (user_q, url_q) = match kind {
@@ -779,8 +833,10 @@ fn add_item(
             }
             Kind::Login => ask_item_password(&a.gen_opts)?,
             Kind::Api => (ask_api_key()?, None),
+            Kind::Card | Kind::SshKey => unreachable!("handled by add_card_or_ssh_key"),
         }
     };
+    let totp = if a.totp { ask_totp()? } else { Zeroizing::new(String::new()) };
     let fields = NewEntry {
         name: a.name.clone(),
         kind,
@@ -789,12 +845,79 @@ fn add_item(
         password: secret.to_string(),
         url,
         notes: notes.to_string(),
+        totp_secret: totp.to_string(),
         tags,
+        ..Default::default()
     };
     let name = add_entry(uv, fields)?;
     ui::success(&format!("{} '{name}' saved (encrypted).", kind_noun(kind)));
+    if a.totp {
+        totp_saved_hint(&name);
+    }
     if let Some(bits) = generated_bits {
         report_generated(&name, &secret, bits);
+    }
+    Ok(())
+}
+
+fn totp_saved_hint(name: &str) {
+    ui::info(&format!("TOTP secret saved: `cakepass get \"{name}\" --totp` shows the current code."));
+}
+
+/// `add --type card` and `add --type ssh-key`: the questions in the order
+/// you read them off the card or the key files. Hidden input for the card
+/// number, the security code and the passphrase.
+fn add_card_or_ssh_key(uv: &mut UnlockedVault, a: AddArgs) -> Result<()> {
+    let kind = a.kind;
+    let interactive = a.username.is_none() && a.email.is_none() && a.url.is_none() && a.tags.is_none();
+    let mut fields = NewEntry { name: a.name.clone(), kind, ..Default::default() };
+    if kind == Kind::Card {
+        if a.email.is_some() || a.url.is_some() || a.generate {
+            return Err(Error::InvalidInput(
+                "a card has no e-mail address, URL or generated password; use -u for the cardholder name and --tags"
+                    .into(),
+            ));
+        }
+        fields.username = match a.username {
+            Some(u) => u,
+            None => prompt::line("Cardholder name (optional): ")?,
+        };
+        fields.password = ask_card_number()?.to_string();
+        fields.expiry = prompt::line("Expiry date, e.g. 08/29 (optional): ")?;
+        fields.cvv = ask_hidden("Security code / CVV (hidden input, optional): ", None)?.to_string();
+    } else {
+        if a.username.is_some() || a.email.is_some() || a.generate {
+            return Err(Error::InvalidInput(
+                "an SSH key has no username or e-mail address, and cakepass does not generate keys; \
+                 use --url for the host and --tags"
+                    .into(),
+            ));
+        }
+        fields.password = ask_private_key()?.to_string();
+        fields.public_key =
+            prompt::line("Public key (optional, one line, e.g. ssh-ed25519 AAAA… me@laptop): ")?;
+        fields.passphrase = prompt::secret("Passphrase of the private key (hidden input, optional): ")?
+            .expose_secret()
+            .to_string();
+        fields.url = match a.url {
+            Some(u) => u,
+            None => prompt::line("Host (optional, e.g. git@github.com): ")?,
+        };
+    }
+    if interactive {
+        fields.notes = prompt::line("Notes (optional, one line): ")?;
+    }
+    fields.tags = match a.tags {
+        Some(t) => t,
+        None => split_tags(&prompt::line("Tags, separated by commas (optional): ")?),
+    };
+    if a.totp {
+        fields.totp_secret = ask_totp()?.to_string();
+    }
+    let name = add_entry(uv, fields)?;
+    ui::success(&format!("{} '{name}' saved (encrypted).", kind_noun(kind)));
+    if a.totp {
+        totp_saved_hint(&name);
     }
     Ok(())
 }
@@ -830,6 +953,9 @@ fn warn_if_not_email(email: &str) {
 fn get(uv: &UnlockedVault, g: &GetArgs) -> Result<()> {
     let key = uv.item_key();
     let e = find_entry(&uv.vault, key, &g.name)?;
+    if g.totp {
+        return show_totp(e, key, g.no_copy);
+    }
     let kind = e.kind();
     let hidden = ui::dim("(hidden; use --show)");
     let empty = ui::dim("-");
@@ -849,10 +975,21 @@ fn get(uv: &UnlockedVault, g: &GetArgs) -> Result<()> {
             field("E-mail", &value(&e.email(key)?))?;
             field("Service", &value(&e.url(key)?))?;
         }
+        Kind::Card => {
+            field("Cardholder", &value(&e.username(key)?))?;
+            field("Expiry date", &value(&e.expiry(key)?))?;
+        }
+        Kind::SshKey => {
+            field("Host", &value(&e.url(key)?))?;
+            field("Public key", &value(&e.public_key(key)?))?;
+        }
         Kind::Note => {}
     }
     field("Tags", &value(&e.tags().join(", ")))?;
     field("Modified", &ui::format_time(e.modified()))?;
+    if e.has_totp() {
+        field("TOTP", &ui::dim("set (use --totp for the current code)"))?;
+    }
     let secret_label = capitalize(kind.secret_label());
 
     if g.show {
@@ -867,7 +1004,22 @@ fn get(uv: &UnlockedVault, g: &GetArgs) -> Result<()> {
             } else {
                 field_block("Notes", &notes)?
             }
-            field(&secret_label, &value(&e.password(key)?))?;
+            match kind {
+                Kind::Card => {
+                    field(&secret_label, &value(&e.password(key)?))?;
+                    field("Security code", &value(&e.cvv(key)?))?;
+                }
+                Kind::SshKey => {
+                    field("Passphrase", &value(&e.passphrase(key)?))?;
+                    let private = e.password(key)?;
+                    if private.is_empty() {
+                        field(&secret_label, &empty)?
+                    } else {
+                        field_block(&secret_label, &private)?
+                    }
+                }
+                _ => field(&secret_label, &value(&e.password(key)?))?,
+            }
         }
         return Ok(());
     }
@@ -875,7 +1027,13 @@ fn get(uv: &UnlockedVault, g: &GetArgs) -> Result<()> {
         field("Content", if e.has_notes() { &hidden } else { &empty })?;
     } else {
         field("Notes", if e.has_notes() { &hidden } else { &empty })?;
+        if kind == Kind::SshKey {
+            field("Passphrase", if e.has_passphrase() { &hidden } else { &empty })?;
+        }
         field(&secret_label, if e.has_password() { &hidden } else { &empty })?;
+        if kind == Kind::Card {
+            field("Security code", if e.has_cvv() { &hidden } else { &empty })?;
+        }
     }
     if g.no_copy {
         return Ok(());
@@ -885,18 +1043,52 @@ fn get(uv: &UnlockedVault, g: &GetArgs) -> Result<()> {
         if user.is_empty() {
             return Err(Error::InvalidInput("this item has no username".into()));
         }
-        copy_to_clipboard(&user, "The username")
+        let noun = if kind == Kind::Card { "The cardholder name" } else { "The username" };
+        copy_to_clipboard(&user, noun)
     } else if g.copy_email {
         let mail = e.email(key)?;
         if mail.is_empty() {
             return Err(Error::InvalidInput("this item has no e-mail address".into()));
         }
         copy_to_clipboard(&mail, "The e-mail address")
+    } else if g.copy_public {
+        let public = e.public_key(key)?;
+        if public.is_empty() {
+            return Err(Error::InvalidInput("this item has no public key".into()));
+        }
+        copy_to_clipboard(&public, "The public key")
     } else if !e.has_secret() {
         ui::info(&format!("This item has no {}.", kind.secret_label()));
         Ok(())
     } else {
         copy_to_clipboard(&e.secret(key)?, secret_noun(kind))
+    }
+}
+
+/// `get --totp`: the current two-factor code, computed now from the
+/// decrypted secret (never stored), shown and copied (cleared after 20 s).
+fn show_totp(e: &Entry, key: &ItemKey, no_copy: bool) -> Result<()> {
+    let Some(totp) = e.totp(key)? else {
+        return Err(Error::InvalidInput(format!(
+            "'{}' has no TOTP secret; add one with `cakepass edit \"{}\" --totp`",
+            e.name(),
+            e.name()
+        )));
+    };
+    let code = totp.now();
+    drop(totp);
+    field("Name", e.name())?;
+    field("TOTP code", code.as_str())?;
+    field("Valid for", &format!("{} more second(s)", code.seconds_left()))?;
+    if no_copy {
+        return Ok(());
+    }
+    match copy_to_clipboard(code.as_str(), "The TOTP code") {
+        Err(Error::NoClipboard) => {
+            ui::info("No clipboard tool found; type the code shown above.");
+            Ok(())
+        }
+        other => other,
     }
 }
 
@@ -914,19 +1106,52 @@ fn keep_or(input: String) -> Option<String> {
     }
 }
 
+/// Which options of `edit` do not fit this type of item (a clear error is
+/// better than silently storing a CVV in a login).
+fn check_edit_options(kind: Kind, a: &EditArgs) -> Result<()> {
+    let card_only = a.expiry || a.cvv;
+    let ssh_only = a.public_key || a.key_passphrase;
+    let problem = match kind {
+        Kind::Note
+            if a.username.is_some() || a.email.is_some() || a.url.is_some() || a.password || a.generate =>
+        {
+            Some("a note has no username, e-mail address, URL or password; use --notes for the contents")
+        }
+        Kind::Card if a.email.is_some() || a.url.is_some() || a.generate => Some(
+            "a card has no e-mail address or URL, and its number is not generated; use -u for the cardholder name",
+        ),
+        Kind::SshKey if a.username.is_some() || a.email.is_some() || a.generate => Some(
+            "an SSH key has no username or e-mail address, and cakepass does not generate keys; use --url for the host",
+        ),
+        Kind::Card if ssh_only => Some("--public-key and --key-passphrase are for an SSH key"),
+        Kind::SshKey if card_only => Some("--expiry and --cvv are for a card"),
+        Kind::Login | Kind::Api | Kind::Note if card_only || ssh_only => {
+            Some("--expiry and --cvv are for a card, --public-key and --key-passphrase for an SSH key")
+        }
+        _ => None,
+    };
+    match problem {
+        Some(p) => Err(Error::InvalidInput(p.into())),
+        None => Ok(()),
+    }
+}
+
 fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
-    let (old_name, kind, cur_user, cur_email, cur_url, cur_tags) = {
+    let (old_name, kind, cur_user, cur_email, cur_url, cur_tags, cur_expiry, cur_public) = {
         let key = uv.item_key();
         let e = find_entry(&uv.vault, key, &a.name)?;
-        (e.name().to_string(), e.kind(), e.username(key)?, e.email(key)?, e.url(key)?, e.tags().join(", "))
+        (
+            e.name().to_string(),
+            e.kind(),
+            e.username(key)?,
+            e.email(key)?,
+            e.url(key)?,
+            e.tags().join(", "),
+            e.expiry(key)?,
+            e.public_key(key)?,
+        )
     };
-    if kind == Kind::Note
-        && (a.username.is_some() || a.email.is_some() || a.url.is_some() || a.password || a.generate)
-    {
-        return Err(Error::InvalidInput(
-            "a note has no username, e-mail address, URL or password; use --notes for the contents".into(),
-        ));
-    }
+    check_edit_options(kind, &a)?;
     let interactive = a.rename.is_none()
         && a.username.is_none()
         && a.email.is_none()
@@ -934,7 +1159,13 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
         && a.tags.is_none()
         && !a.password
         && !a.generate
-        && !a.notes;
+        && !a.notes
+        && !a.expiry
+        && !a.cvv
+        && !a.public_key
+        && !a.key_passphrase
+        && !a.totp
+        && !a.no_totp;
 
     let mut rename = a.rename;
     let mut username = a.username;
@@ -944,16 +1175,32 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
     let mut notes: Option<Zeroizing<String>> = None;
     let mut new_secret: Option<Zeroizing<String>> = None;
     let mut generated_bits = None;
+    let mut expiry: Option<String> = None;
+    let mut cvv: Option<Zeroizing<String>> = None;
+    let mut public_key: Option<String> = None;
+    let mut passphrase: Option<Zeroizing<String>> = None;
+    let mut totp: Option<Zeroizing<String>> = None;
 
     if interactive {
         ui::info("Press Enter to leave a field unchanged, or type '-' to clear it.");
         rename = keep_or(prompt::line(&format!("Name [{old_name}]: "))?).filter(|s| !s.is_empty());
-        if kind != Kind::Note {
-            let (uq, lq) =
-                if kind == Kind::Api { ("Account / ID", "Service URL") } else { ("Username", "URL") };
-            username = keep_or(prompt::line(&format!("{uq} [{}]: ", cur_user.as_str()))?);
-            email = keep_or(prompt::line(&format!("E-mail address [{}]: ", cur_email.as_str()))?);
-            url = keep_or(prompt::line(&format!("{lq} [{}]: ", cur_url.as_str()))?);
+        match kind {
+            Kind::Login | Kind::Api => {
+                let (uq, lq) =
+                    if kind == Kind::Api { ("Account / ID", "Service URL") } else { ("Username", "URL") };
+                username = keep_or(prompt::line(&format!("{uq} [{}]: ", cur_user.as_str()))?);
+                email = keep_or(prompt::line(&format!("E-mail address [{}]: ", cur_email.as_str()))?);
+                url = keep_or(prompt::line(&format!("{lq} [{}]: ", cur_url.as_str()))?);
+            }
+            Kind::Card => {
+                username = keep_or(prompt::line(&format!("Cardholder name [{}]: ", cur_user.as_str()))?);
+                expiry = keep_or(prompt::line(&format!("Expiry date [{}]: ", cur_expiry.as_str()))?);
+            }
+            Kind::SshKey => {
+                url = keep_or(prompt::line(&format!("Host [{}]: ", cur_url.as_str()))?);
+                public_key = keep_or(prompt::line(&format!("Public key [{}]: ", cur_public.as_str()))?);
+            }
+            Kind::Note => {}
         }
         tags = keep_or(prompt::line(&format!("Tags [{cur_tags}]: "))?).map(|t| split_tags(&t));
         match kind {
@@ -988,6 +1235,22 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
                     new_secret = Some(ask_api_key()?);
                 }
             }
+            Kind::Card => {
+                if prompt::confirm("Replace the card number?")? {
+                    new_secret = Some(ask_card_number()?);
+                }
+                if prompt::confirm("Change the security code (CVV)?")? {
+                    cvv = Some(ask_new_cvv()?);
+                }
+            }
+            Kind::SshKey => {
+                if prompt::confirm("Replace the private key?")? {
+                    new_secret = Some(ask_private_key()?);
+                }
+                if prompt::confirm("Change the passphrase?")? {
+                    passphrase = Some(ask_new_passphrase()?);
+                }
+            }
             Kind::Note => {}
         }
     } else {
@@ -1005,6 +1268,8 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
         } else if a.password {
             new_secret = Some(match kind {
                 Kind::Api => ask_api_key()?,
+                Kind::Card => ask_card_number()?,
+                Kind::SshKey => ask_private_key()?,
                 _ => {
                     let first = prompt::secret("New password: ")?;
                     if prompt::stdin_is_tty() {
@@ -1016,6 +1281,23 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
                     Zeroizing::new(first.expose_secret().to_string())
                 }
             });
+        }
+        if a.expiry {
+            expiry = Some(prompt::line("New expiry date, e.g. 08/29 (empty = clear): ")?);
+        }
+        if a.cvv {
+            cvv = Some(ask_new_cvv()?);
+        }
+        if a.public_key {
+            public_key = Some(prompt::line("New public key (one line, empty = clear): ")?);
+        }
+        if a.key_passphrase {
+            passphrase = Some(ask_new_passphrase()?);
+        }
+        if a.totp {
+            totp = Some(ask_totp()?);
+        } else if a.no_totp {
+            totp = Some(Zeroizing::new(String::new()));
         }
     }
 
@@ -1044,6 +1326,21 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
         if let Some(p) = &new_secret {
             entry.set_password(key, p)?;
         }
+        if let Some(x) = &expiry {
+            entry.set_expiry(key, x)?;
+        }
+        if let Some(c) = &cvv {
+            entry.set_cvv(key, c)?;
+        }
+        if let Some(p) = &public_key {
+            entry.set_public_key(key, p)?;
+        }
+        if let Some(p) = &passphrase {
+            entry.set_passphrase(key, p)?;
+        }
+        if let Some(t) = &totp {
+            entry.set_totp_secret(key, t)?;
+        }
         if let Some(new_name) = &rename {
             entry.set_name(new_name)?;
         }
@@ -1052,6 +1349,11 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
     let final_name = rename.as_deref().map_or(old_name, |n| n.trim().to_string());
     uv.save()?;
     ui::success(&format!("Item '{final_name}' updated."));
+    match &totp {
+        Some(t) if t.is_empty() => ui::info("The TOTP secret was removed."),
+        Some(_) => totp_saved_hint(&final_name),
+        None => {}
+    }
     if let (Some(p), Some(bits)) = (&new_secret, generated_bits) {
         report_generated(&final_name, p, bits);
     }
@@ -1114,12 +1416,21 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 
 fn summary(entries: &[&Entry]) -> String {
     let count = |k: Kind| entries.iter().filter(|e| e.kind() == k).count();
-    let parts: Vec<String> =
-        [(Kind::Login, "login", "logins"), (Kind::Api, "API key", "API keys"), (Kind::Note, "note", "notes")]
-            .iter()
-            .filter(|&&(k, _, _)| count(k) > 0)
-            .map(|&(k, one, many)| plural(count(k), one, many))
-            .collect();
+    let words = |k: Kind| match k {
+        Kind::Login => ("login", "logins"),
+        Kind::Api => ("API key", "API keys"),
+        Kind::Card => ("card", "cards"),
+        Kind::SshKey => ("SSH key", "SSH keys"),
+        Kind::Note => ("note", "notes"),
+    };
+    let parts: Vec<String> = Kind::ALL
+        .iter()
+        .filter(|&&k| count(k) > 0)
+        .map(|&k| {
+            let (one, many) = words(k);
+            plural(count(k), one, many)
+        })
+        .collect();
     format!("{}: {}", plural(entries.len(), "item", "items"), parts.join(" · "))
 }
 
@@ -1220,6 +1531,7 @@ fn generate(
                 url: None,
                 tags: None,
                 generate: false,
+                totp: false,
                 gen_opts: g.clone(),
             };
             add_item(uv, args, Some((secret, bits)))
@@ -1320,6 +1632,13 @@ fn import_csv(uv: &mut UnlockedVault, file: &Path) -> Result<()> {
         "{added} item(s) imported; {duplicates} already present; {} empty or invalid row(s) skipped.",
         parsed.skipped
     ));
+    if parsed.totp_dropped > 0 {
+        ui::warn(&format!(
+            "{} item(s) were imported WITHOUT their TOTP secret: it was not a time-based (TOTP) secret \
+             cakepass can use (e.g. a Steam or counter-based code). Keep using your authenticator app for those.",
+            parsed.totp_dropped
+        ));
+    }
     drop(parsed);
 
     if prompt::confirm(&format!("Do you want to overwrite and delete {} now?", file.display()))? {
@@ -1366,8 +1685,8 @@ fn info(paths: &VaultPaths) -> Result<()> {
                     println!("  Encryption:       XChaCha20-Poly1305");
                     if h.version >= 2 {
                         println!(
-                            "  Second layer:     every item field (username, e-mail, URL, password/key, notes) \
-                             encrypted separately (XChaCha20-Poly1305, own HKDF subkey)"
+                            "  Second layer:     every item field (username, e-mail, URL, password/key, notes, \
+                             card, SSH key and TOTP fields) encrypted separately (XChaCha20-Poly1305, own HKDF subkey)"
                         );
                     } else {
                         println!("  Second layer:     not yet (old format; upgraded when opened)");

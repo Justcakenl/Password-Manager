@@ -12,7 +12,9 @@ use std::path::Path;
 
 use crate::crypto::ItemKey;
 use crate::error::{Error, Result};
+use crate::totp::Totp;
 use crate::vault::{Entry, Kind, NewEntry, Vault};
+use zeroize::Zeroize;
 
 const NAME: &[&str] = &["name", "title", "account", "item name", "site"];
 const URL: &[&str] = &["url", "login_uri", "uri", "website", "web site", "login url", "urls"];
@@ -22,6 +24,7 @@ const PASSWORD: &[&str] = &["password", "login_password", "pass"];
 const NOTES: &[&str] = &["notes", "note", "extra", "comments", "comment"];
 const TAGS: &[&str] = &["tags", "folder", "group", "grouping", "category", "collection"];
 const TYPE: &[&str] = &["type", "item type"];
+const TOTP: &[&str] = &["totp", "login_totp", "otpauth", "one-time password"];
 
 #[derive(Default)]
 struct Columns {
@@ -33,6 +36,7 @@ struct Columns {
     notes: Option<usize>,
     tags: Option<usize>,
     kind: Option<usize>,
+    totp: Option<usize>,
 }
 
 fn find(headers: &[String], names: &[&str]) -> Option<usize> {
@@ -45,6 +49,9 @@ pub struct CsvImport {
     pub vault: Vault,
     /// Empty or unusable rows.
     pub skipped: usize,
+    /// Items imported WITHOUT their TOTP secret, because it was not one
+    /// CakePass can use (e.g. a Steam code or a counter-based `hotp`).
+    pub totp_dropped: usize,
 }
 
 /// Get a readable name from a URL ("https://www.github.com/login" → "github.com").
@@ -76,6 +83,7 @@ pub fn parse_csv(reader: impl Read, key: &ItemKey) -> Result<CsvImport> {
         notes: find(&headers, NOTES),
         tags: find(&headers, TAGS),
         kind: find(&headers, TYPE),
+        totp: find(&headers, TOTP),
     };
     if cols.password.is_none() && cols.name.is_none() {
         return Err(Error::InvalidInput(
@@ -85,6 +93,7 @@ pub fn parse_csv(reader: impl Read, key: &ItemKey) -> Result<CsvImport> {
 
     let mut vault = Vault::new();
     let mut skipped = 0;
+    let mut totp_dropped = 0;
     let mut record = csv::StringRecord::new();
     loop {
         match rdr.read_record(&mut record) {
@@ -114,6 +123,8 @@ pub fn parse_csv(reader: impl Read, key: &ItemKey) -> Result<CsvImport> {
                 .map(|t| t.trim().to_string())
                 .filter(|t| !t.is_empty())
                 .collect(),
+            totp_secret: get(cols.totp),
+            ..Default::default()
         };
         if fields.name.is_empty()
             && fields.username.is_empty()
@@ -140,13 +151,20 @@ pub fn parse_csv(reader: impl Read, key: &ItemKey) -> Result<CsvImport> {
         fields.url = fields.url.replace(char::is_control, " ");
         fields.notes = fields.notes.replace(|c: char| c.is_control() && c != '\n' && c != '\t', " ");
         fields.tags = fields.tags.iter().map(|t| t.replace(char::is_control, " ")).collect();
+        fields.totp_secret = fields.totp_secret.replace(char::is_control, " ");
+        // A TOTP secret CakePass cannot use (a Steam code, `hotp`, a typo) is
+        // left out rather than losing the whole login; the caller says so.
+        if !fields.totp_secret.is_empty() && Totp::parse(&fields.totp_secret).is_err() {
+            fields.totp_secret.zeroize();
+            totp_dropped += 1;
+        }
         match Entry::new(fields, key) {
             Ok(e) => vault.add(e)?,
             Err(_) => skipped += 1,
         }
     }
     record.clear();
-    Ok(CsvImport { vault, skipped })
+    Ok(CsvImport { vault, skipped, totp_dropped })
 }
 
 /// Overwrite a file with zeros, fsync and delete it.
@@ -209,6 +227,35 @@ mod tests {
         assert_eq!(e.notes(&test_item_key(1)).unwrap().as_str(), "my note");
         assert_eq!(e.tags(), &["Work".to_string()]);
         assert_eq!(r.vault.get("GitHub (2)").unwrap().username(&test_item_key(1)).unwrap().as_str(), "pete");
+    }
+
+    #[test]
+    fn totp_column_is_imported() {
+        let k = test_item_key(1);
+        let seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+        let csv = format!(
+            "folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp\n\
+             ,,login,GitHub,,,0,https://github.com,john,pw1,{}\n\
+             ,,login,Steam,,,0,https://steam.example,gamer,pw2,steam://ABCDEFGH\n\
+             ,,login,Plain,,,0,,pete,pw3,\n",
+            seed.to_lowercase()
+        );
+        let r = parse(&csv).unwrap();
+        assert_eq!((r.vault.len(), r.skipped, r.totp_dropped), (3, 0, 1));
+        let gh = r.vault.get("GitHub").unwrap();
+        assert_eq!(gh.totp(&k).unwrap().unwrap().code_at(59).as_str(), "287082");
+        // An unusable TOTP secret is left out; the login itself is kept.
+        let steam = r.vault.get("Steam").unwrap();
+        assert!(!steam.has_totp() && pw(steam) == "pw2");
+        assert!(!r.vault.get("Plain").unwrap().has_totp());
+        // KeePassXC: a "TOTP" column with an otpauth:// URI.
+        let csv = format!(
+            "\"Group\",\"Title\",\"Username\",\"Password\",\"URL\",\"Notes\",\"TOTP\"\n\
+             \"Root\",\"Mail\",\"j\",\"secret\",\"\",\"\",\"otpauth://totp/Mail:j?secret={seed}&period=30&digits=8\"\n"
+        );
+        let r = parse(&csv).unwrap();
+        let t = r.vault.get("Mail").unwrap().totp(&k).unwrap().unwrap();
+        assert_eq!(t.code_at(59).as_str(), "94287082");
     }
 
     #[test]

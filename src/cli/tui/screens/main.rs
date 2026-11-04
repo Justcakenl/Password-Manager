@@ -10,6 +10,7 @@
 use std::time::{Duration, Instant};
 
 use cakepass::vault::Kind;
+use zeroize::Zeroizing;
 
 use super::super::super::{commands, ui};
 use super::super::app::{App, CopyWhat, Exit, Modal, Screen, Tab};
@@ -71,12 +72,14 @@ impl App {
         if new != self.sel {
             self.sel = new;
             self.reveal_until = None;
+            self.totp_shown = None;
         }
     }
 
     fn set_tab(&mut self, tab: Tab) {
         self.tab = tab;
         self.reveal_until = None;
+        self.totp_shown = None;
         self.refilter();
     }
 
@@ -129,6 +132,8 @@ impl App {
             Key::Char('c') => self.copy_field(CopyWhat::Secret),
             Key::Char('u') => self.copy_field(CopyWhat::Username),
             Key::Char('m') => self.copy_field(CopyWhat::Email),
+            Key::Char('t') => self.copy_field(CopyWhat::Totp),
+            Key::Char('p') => self.copy_field(CopyWhat::PublicKey),
             Key::Char('a' | 'n') => self.open_add(),
             Key::Char('e') => self.open_edit(),
             Key::Delete | Key::Char('d') => self.ask_delete(),
@@ -335,7 +340,9 @@ impl App {
             x += nw + 1;
             if uw > 0 && e.kind() != Kind::Note {
                 // Decrypted for this row only; wiped when `user` goes out of scope.
-                if let Ok(user) = e.username(key) {
+                // (An SSH key has no username: its host is shown instead.)
+                let user = if e.kind() == Kind::SshKey { e.url(key) } else { e.username(key) };
+                if let Ok(user) = user {
                     g.print(x, y, uw, &user, if selected { base } else { Style::PLAIN });
                 }
             }
@@ -372,35 +379,75 @@ impl App {
         };
         row(g, &mut y, "Name", e.name(), Style::BOLD);
         row(g, &mut y, "Type", kind.label(), Style::kind(kind));
-        if kind != Kind::Note {
-            let (user_l, url_l) =
-                if kind == Kind::Api { ("Account/ID", "Service") } else { ("Username", "URL") };
-            for (label, value) in [(user_l, e.username(key)), ("E-mail", e.email(key)), (url_l, e.url(key))] {
-                match value {
-                    Ok(v) if v.is_empty() => row(g, &mut y, label, "-", Style::DIM),
-                    Ok(v) => row(g, &mut y, label, &v, Style::PLAIN),
-                    Err(_) => row(g, &mut y, label, "(cannot decrypt)", Style::ERROR),
-                }
+        let plain_fields: Vec<(&str, cakepass::Result<Zeroizing<String>>)> = match kind {
+            Kind::Login => vec![("Username", e.username(key)), ("E-mail", e.email(key)), ("URL", e.url(key))],
+            Kind::Api => {
+                vec![("Account/ID", e.username(key)), ("E-mail", e.email(key)), ("Service", e.url(key))]
+            }
+            Kind::Card => vec![("Cardholder", e.username(key)), ("Expiry", e.expiry(key))],
+            Kind::SshKey => vec![("Host", e.url(key)), ("Public key", e.public_key(key))],
+            Kind::Note => Vec::new(),
+        };
+        for (label, value) in plain_fields {
+            match value {
+                Ok(v) if v.is_empty() => row(g, &mut y, label, "-", Style::DIM),
+                Ok(v) => row(g, &mut y, label, &v, Style::PLAIN),
+                Err(_) => row(g, &mut y, label, "(cannot decrypt)", Style::ERROR),
             }
         }
         let tags = e.tags().join(", ");
         row(g, &mut y, "Tags", if tags.is_empty() { "-" } else { &tags }, Style::PLAIN);
         row(g, &mut y, "Modified", &ui::format_time(e.modified()), Style::DIM);
+        if e.has_totp() {
+            // Computed for this frame from the decrypted secret; nothing is kept.
+            let shown = self.totp_shown.as_ref().is_some_and(|(n, _)| n == e.name());
+            match (shown, e.totp(key)) {
+                (true, Ok(Some(t))) => {
+                    let code = t.code_at((self.clock)());
+                    let text = Zeroizing::new(format!("{}  ({} s)", code.as_str(), code.seconds_left()));
+                    row(g, &mut y, "TOTP", &text, Style::ACCENT_BOLD);
+                }
+                (_, Err(_)) => row(g, &mut y, "TOTP", "(cannot decrypt)", Style::ERROR),
+                _ => row(g, &mut y, "TOTP", "set (t shows it)", Style::DIM),
+            }
+        }
 
         let revealed = self.reveal_until.is_some();
         let dots: String = std::iter::repeat_n(g.g.dot, 8).collect();
         let footer_rows = u16::from(bottom.saturating_sub(y) > 3);
-        if kind != Kind::Note {
-            let label = commands::capitalize(kind.secret_label());
-            if !e.has_password() {
-                row(g, &mut y, &label, "-", Style::DIM);
+        // One hidden line: dots, or the value while revealed.
+        let hidden_row = |g: &mut Grid,
+                          y: &mut u16,
+                          label: &str,
+                          has: bool,
+                          value: &dyn Fn() -> cakepass::Result<Zeroizing<String>>| {
+            if !has {
+                row(g, y, label, "-", Style::DIM);
             } else if revealed {
+                match value() {
+                    Ok(v) => row(g, y, label, &v, Style::ACCENT_BOLD),
+                    Err(_) => row(g, y, label, "(cannot decrypt)", Style::ERROR),
+                }
+            } else {
+                row(g, y, label, &dots, Style::DIM);
+            }
+        };
+        if kind == Kind::SshKey {
+            hidden_row(g, &mut y, "Passphrase", e.has_passphrase(), &|| e.passphrase(key));
+            let label = commands::capitalize(kind.secret_label());
+            if e.has_password() && revealed {
                 match e.password(key) {
-                    Ok(pw) => row(g, &mut y, &label, &pw, Style::ACCENT_BOLD),
+                    Ok(pk) => draw_block(g, r, &mut y, &label, &pk, bottom - footer_rows),
                     Err(_) => row(g, &mut y, &label, "(cannot decrypt)", Style::ERROR),
                 }
             } else {
-                row(g, &mut y, &label, &dots, Style::DIM);
+                hidden_row(g, &mut y, &label, e.has_password(), &|| e.password(key));
+            }
+        } else if kind != Kind::Note {
+            let label = commands::capitalize(kind.secret_label());
+            hidden_row(g, &mut y, &label, e.has_password(), &|| e.password(key));
+            if kind == Kind::Card {
+                hidden_row(g, &mut y, "CVV", e.has_cvv(), &|| e.cvv(key));
             }
         }
         let notes_label = if kind == Kind::Note { "Content" } else { "Notes" };
@@ -455,5 +502,7 @@ fn kind_tag(kind: Kind) -> &'static str {
         Kind::Login => "login",
         Kind::Api => "api",
         Kind::Note => "note",
+        Kind::Card => "card",
+        Kind::SshKey => "ssh",
     }
 }

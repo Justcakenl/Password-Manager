@@ -73,17 +73,21 @@ pub enum Tab {
     All,
     Logins,
     Api,
+    Cards,
+    SshKeys,
     Notes,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::All, Tab::Logins, Tab::Api, Tab::Notes];
+    pub const ALL: [Tab; 6] = [Tab::All, Tab::Logins, Tab::Api, Tab::Cards, Tab::SshKeys, Tab::Notes];
 
     pub fn kind(self) -> Option<Kind> {
         match self {
             Tab::All => None,
             Tab::Logins => Some(Kind::Login),
             Tab::Api => Some(Kind::Api),
+            Tab::Cards => Some(Kind::Card),
+            Tab::SshKeys => Some(Kind::SshKey),
             Tab::Notes => Some(Kind::Note),
         }
     }
@@ -93,13 +97,16 @@ impl Tab {
             Tab::All => "All",
             Tab::Logins => "Logins",
             Tab::Api => "API keys",
+            Tab::Cards => "Cards",
+            // Short, so all six tabs keep their counts in 80 columns.
+            Tab::SshKeys => "SSH",
             Tab::Notes => "Notes",
         }
     }
 
     pub fn step(self, delta: isize) -> Tab {
         let i = Tab::ALL.iter().position(|&t| t == self).unwrap_or(0) as isize;
-        Tab::ALL[(i + delta).rem_euclid(4) as usize]
+        Tab::ALL[(i + delta).rem_euclid(Tab::ALL.len() as isize) as usize]
     }
 }
 
@@ -155,6 +162,10 @@ pub enum CopyWhat {
     Secret,
     Username,
     Email,
+    /// The public key of an SSH key.
+    PublicKey,
+    /// The current TOTP code (computed now; also shown in the details).
+    Totp,
 }
 
 pub struct App {
@@ -176,6 +187,11 @@ pub struct App {
     /// First visible row of the list (kept between frames).
     pub top: Cell<usize>,
     pub reveal_until: Option<Instant>,
+    /// The TOTP code of this item is shown in the details until then. Only
+    /// the name is kept: the code is computed again for every frame.
+    pub totp_shown: Option<(String, Instant)>,
+    /// Seconds since 1970 (for TOTP codes). Replaced by a fixed time in the tests.
+    pub clock: fn() -> u64,
     pub screen: Screen,
     pub modals: Vec<Modal>,
     pub toast: Option<Toast>,
@@ -216,6 +232,8 @@ impl App {
             sel: 0,
             top: Cell::new(0),
             reveal_until: None,
+            totp_shown: None,
+            clock: cakepass::vault::now,
             screen: Screen::Main,
             modals: Vec::new(),
             toast: None,
@@ -284,6 +302,7 @@ impl App {
     /// Lock now because nobody typed anything for the lock timeout.
     pub fn lock_idle(&mut self) {
         self.reveal_until = None;
+        self.totp_shown = None;
         self.exit.get_or_insert(Exit::Idle);
     }
 
@@ -301,6 +320,9 @@ impl App {
         if self.reveal_until.is_some_and(|t| now >= t) {
             self.reveal_until = None;
         }
+        if self.totp_shown.as_ref().is_some_and(|(_, t)| now >= *t) {
+            self.totp_shown = None;
+        }
         if self.toast.as_ref().is_some_and(|t| now >= t.until) {
             self.toast = None;
         }
@@ -313,7 +335,8 @@ impl App {
     /// screen (at most a second, for the lock countdown).
     pub fn wait_ms(&self, now: Instant) -> i32 {
         let lock_at = self.last_input + self.lock_after;
-        let mut next = [Some(lock_at), self.reveal_until, self.toast.as_ref().map(|t| t.until)]
+        let totp_until = self.totp_shown.as_ref().map(|(_, t)| *t);
+        let mut next = [Some(lock_at), self.reveal_until, totp_until, self.toast.as_ref().map(|t| t.until)]
             .into_iter()
             .flatten()
             .map(|t| t.saturating_duration_since(now))
@@ -483,18 +506,51 @@ impl App {
                 (e.secret(key), commands::secret_noun(kind), format!("no {}", kind.secret_label()))
             }
             CopyWhat::Username if kind == Kind::Note => return self.info("A note has no username."),
+            CopyWhat::Username if kind == Kind::SshKey => return self.info("An SSH key has no username."),
             CopyWhat::Username => {
-                let noun = if kind == Kind::Api { "The account ID" } else { "The username" };
+                let noun = match kind {
+                    Kind::Api => "The account ID",
+                    Kind::Card => "The cardholder name",
+                    _ => "The username",
+                };
                 (e.username(key), noun, "no username".to_string())
             }
             CopyWhat::Email if kind == Kind::Note => return self.info("A note has no e-mail address."),
+            CopyWhat::Email if matches!(kind, Kind::Card | Kind::SshKey) => {
+                return self.info(format!("{} has no e-mail address.", commands::kind_noun(kind)));
+            }
             CopyWhat::Email => (e.email(key), "The e-mail address", "no e-mail address".to_string()),
+            CopyWhat::PublicKey if kind != Kind::SshKey => {
+                return self.info("Only an SSH key has a public key.");
+            }
+            CopyWhat::PublicKey => (e.public_key(key), "The public key", "no public key".to_string()),
+            CopyWhat::Totp => return self.copy_totp(),
         };
         match value {
             Ok(v) if v.is_empty() => self.info(format!("This item has {missing}.")),
             Ok(v) => self.copy_value(&v, noun),
             Err(e) => self.fail(error_text(&e)),
         }
+    }
+
+    /// `t`: compute the current TOTP code of the selected item (fresh from
+    /// the decrypted secret, which is wiped right after), copy it and show
+    /// it in the details for a while. The code itself is never kept.
+    fn copy_totp(&mut self) {
+        let Some(e) = self.selected() else { return };
+        let name = e.name().to_string();
+        let code = match e.totp(self.uv.item_key()) {
+            Ok(Some(totp)) => totp.code_at((self.clock)()),
+            Ok(None) => {
+                return self.info(format!(
+                    "'{name}' has no TOTP secret. Add one with: cakepass edit \"{name}\" --totp"
+                ));
+            }
+            Err(e) => return self.fail(error_text(&e)),
+        };
+        self.reveal_until = None;
+        self.totp_shown = Some((name, self.now + Duration::from_secs(REVEAL_SECS)));
+        self.copy_value(code.as_str(), "The TOTP code");
     }
 
     // ───────────────────────── keys ─────────────────────────
@@ -529,6 +585,7 @@ impl App {
         // A secret is only ever revealed on the bare main screen.
         if !self.modals.is_empty() || !matches!(self.screen, Screen::Main) {
             self.reveal_until = None;
+            self.totp_shown = None;
         }
     }
 

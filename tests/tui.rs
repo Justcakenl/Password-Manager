@@ -393,6 +393,79 @@ fn add_an_item_with_the_arrow_keys_then_read_it_with_the_cli() {
 }
 
 #[test]
+fn cards_ssh_keys_and_totp_in_the_screen() {
+    let v = Vault::new();
+    // A login with a TOTP secret, added with the CLI (RFC 6238's seed).
+    let seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+    v.cmd()
+        .args(["add", "GitHub", "-u", "john", "-e", "", "--url", "", "-t", "", "--totp"])
+        .write_stdin(format!("{PW}\ngh-pw\n{seed}\n"))
+        .assert()
+        .success();
+    let mut t = v.pty(&[], &[], 80, 24);
+    t.login();
+    t.wait_for("GitHub");
+    // A card: login → API key → card.
+    t.send("a");
+    t.wait_for("Add an item");
+    t.send("Visa");
+    t.send(DOWN);
+    t.send("\x1b[C\x1b[C");
+    t.wait_for("Cardholder");
+    t.send(DOWN);
+    t.send("J. Doe");
+    t.send(DOWN);
+    t.send("08/29");
+    t.send(&DOWN.repeat(2));
+    t.send("4111111111111111");
+    t.send(DOWN);
+    t.send("737");
+    t.wait_for("•••");
+    assert!(!t.screen().contains("4111") && !t.screen().contains("737"), "masked while typing");
+    t.send("\x13");
+    t.wait_for("Card 'Visa' saved (encrypted).");
+    // An SSH key with a pasted private key: login → note → SSH key.
+    t.send("a");
+    t.send("Server");
+    t.send(DOWN);
+    t.send("\x1b[D\x1b[D");
+    t.wait_for("Private key");
+    t.send(DOWN);
+    t.send("git@github.com");
+    t.send(&DOWN.repeat(3));
+    t.send("\x1b[200~-----BEGIN KEY-----\rpty-key-line\r-----END KEY-----\x1b[201~");
+    t.send(DOWN);
+    t.send("pty-pass");
+    t.send("\x13");
+    t.wait_for("SSH key 'Server' saved (encrypted).");
+    // t on the login shows its current TOTP code in the details.
+    t.send("\x1b[H"); // Home: the first item (GitHub)
+    t.send("t");
+    t.wait_for(" s)");
+    let screen = t.screen();
+    let totp = cakepass::totp::Totp::parse(seed).unwrap();
+    let now = cakepass::vault::now();
+    assert!(
+        [now.saturating_sub(5), now, now + 5].iter().any(|&s| screen.contains(totp.code_at(s).as_str())),
+        "{screen}"
+    );
+    t.send("q");
+    assert_eq!(t.wait_exit(), 0);
+    assert_restored(&t.output());
+
+    v.cmd().args(["get", "visa", "--show"]).write_stdin(format!("{PW}\n")).assert().success().stdout(
+        contains("J. Doe").and(contains("08/29")).and(contains("4111111111111111")).and(contains("737")),
+    );
+    v.cmd().args(["get", "server", "--show"]).write_stdin(format!("{PW}\n")).assert().success().stdout(
+        contains("git@github.com")
+            .and(contains("-----BEGIN KEY-----"))
+            .and(contains("pty-key-line"))
+            .and(contains("-----END KEY-----"))
+            .and(contains("pty-pass")),
+    );
+}
+
+#[test]
 fn locks_itself_when_idle() {
     let v = Vault::new();
     let mut t = v.pty(&[], &[("CAKEPASS_TEST_LOCK_SECS", "2")], 80, 24);

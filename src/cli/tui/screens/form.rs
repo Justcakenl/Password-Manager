@@ -1,15 +1,22 @@
 //! The form to add or edit an item.
 //!
 //! What you see is what is saved. An edit form is filled in with the
-//! decrypted item when it opens; the password is shown as dots with
-//! "(unchanged)" until you change it (typing replaces it, Ctrl+R shows it
-//! and lets you edit it in place). Validation is the library's: its error
-//! appears in the status line and the form stays open.
+//! decrypted item when it opens; a hidden field that holds a stored value
+//! (the password, card number, private key, security code, passphrase) is
+//! shown as dots with "(unchanged)" until you change it (typing replaces
+//! it, Ctrl+R shows it and lets you edit it in place). Validation is the
+//! library's: its error appears in the status line and the form stays open.
+//!
+//! The fields depend on the type: a card has a cardholder, expiry date and
+//! security code; an SSH key has a host, public key, passphrase and a
+//! multi-line private key (pasting it is the normal way in).
 //!
 //! SECURITY: the fields are `Zeroizing` text inputs that exist only while the
 //! form is open; they are wiped when it closes, saved or not.
 
 use std::time::Instant;
+
+use zeroize::Zeroizing;
 
 use cakepass::crypto::ItemKey;
 use cakepass::vault::{Entry, Kind, NewEntry};
@@ -40,8 +47,12 @@ pub enum Field {
     User,
     Email,
     Url,
+    Expiry,
+    PublicKey,
     Tags,
     Secret,
+    Cvv,
+    Passphrase,
     Notes,
     Buttons,
 }
@@ -49,6 +60,11 @@ pub enum Field {
 impl Field {
     fn bit(self) -> u16 {
         1 << self as u16
+    }
+
+    /// Fields shown as dots until Ctrl+R.
+    pub fn hidden(self) -> bool {
+        matches!(self, Field::Secret | Field::Cvv | Field::Passphrase)
     }
 }
 
@@ -68,19 +84,25 @@ pub struct Form {
     pub user: TextInput,
     pub email: TextInput,
     pub url: TextInput,
+    pub expiry: TextInput,
+    pub public_key: TextInput,
     pub tags: TextInput,
+    /// The password, API key, card number or private key (multi-line for an SSH key).
     pub secret: TextInput,
+    pub cvv: TextInput,
+    pub passphrase: TextInput,
     pub notes: TextInput,
+    /// Ctrl+R: the hidden fields are shown.
     pub secret_shown: bool,
-    /// Edit: the field holds the stored password, untouched so far.
-    pub secret_unchanged: bool,
+    /// Edit: hidden fields that hold the stored value, untouched so far.
+    unchanged: u16,
     changed: u16,
     pub error: Option<String>,
     /// 0 = Save, 1 = Cancel.
     pub button: u8,
 }
 
-const KINDS: [Kind; 3] = [Kind::Login, Kind::Api, Kind::Note];
+const KINDS: [Kind; 5] = Kind::ALL;
 
 impl Form {
     pub fn add(kind: Kind) -> Form {
@@ -92,11 +114,15 @@ impl Form {
             user: TextInput::new(false),
             email: TextInput::new(false),
             url: TextInput::new(false),
+            expiry: TextInput::new(false),
+            public_key: TextInput::new(false),
             tags: TextInput::new(false),
-            secret: TextInput::new(false),
+            secret: TextInput::new(kind == Kind::SshKey),
+            cvv: TextInput::new(false),
+            passphrase: TextInput::new(false),
             notes: TextInput::new(true),
             secret_shown: false,
-            secret_unchanged: false,
+            unchanged: 0,
             changed: 0,
             error: None,
             button: 0,
@@ -111,10 +137,24 @@ impl Form {
         f.user.set(&e.username(key)?);
         f.email.set(&e.email(key)?);
         f.url.set(&e.url(key)?);
+        f.expiry.set(&e.expiry(key)?);
+        f.public_key.set(&e.public_key(key)?);
         f.tags.set(&e.tags().join(", "));
         f.notes.set(&e.notes(key)?);
-        f.secret.set(&e.password(key)?);
-        f.secret_unchanged = true;
+        for (field, value) in [
+            (Field::Secret, e.password(key)?),
+            (Field::Cvv, e.cvv(key)?),
+            (Field::Passphrase, e.passphrase(key)?),
+        ] {
+            if let Some(input) = f.input(field) {
+                input.set(&value);
+            }
+            // The password field always says "(unchanged)"; the others only
+            // when something is stored.
+            if field == Field::Secret || !value.is_empty() {
+                f.unchanged |= field.bit();
+            }
+        }
         Ok(f)
     }
 
@@ -125,12 +165,18 @@ impl Form {
     /// The fields of this type, top to bottom.
     pub fn fields(&self) -> Vec<Field> {
         let mut out = vec![Field::Name, Field::Kind];
-        if self.kind != Kind::Note {
-            out.extend([Field::User, Field::Email, Field::Url]);
+        match self.kind {
+            Kind::Login | Kind::Api => out.extend([Field::User, Field::Email, Field::Url]),
+            Kind::Card => out.extend([Field::User, Field::Expiry]),
+            Kind::SshKey => out.extend([Field::Url, Field::PublicKey]),
+            Kind::Note => {}
         }
         out.push(Field::Tags);
-        if self.kind != Kind::Note {
-            out.push(Field::Secret);
+        match self.kind {
+            Kind::Login | Kind::Api => out.push(Field::Secret),
+            Kind::Card => out.extend([Field::Secret, Field::Cvv]),
+            Kind::SshKey => out.extend([Field::Secret, Field::Passphrase]),
+            Kind::Note => {}
         }
         out.extend([Field::Notes, Field::Buttons]);
         out
@@ -148,6 +194,11 @@ impl Form {
         self.changed & f.bit() != 0
     }
 
+    /// Edit: whether the hidden field `f` still holds the stored value, unseen.
+    pub fn is_unchanged(&self, f: Field) -> bool {
+        self.unchanged & f.bit() != 0
+    }
+
     /// Whether anything was changed (to ask before throwing it away).
     pub fn dirty(&self) -> bool {
         self.changed != 0
@@ -163,13 +214,21 @@ impl Form {
             (Field::Name, _) => "Name",
             (Field::Kind, _) => "Type",
             (Field::User, Kind::Api) => "Account/ID",
+            (Field::User, Kind::Card) => "Cardholder",
             (Field::User, _) => "Username",
             (Field::Email, _) => "E-mail",
             (Field::Url, Kind::Api) => "Service URL",
+            (Field::Url, Kind::SshKey) => "Host",
             (Field::Url, _) => "URL",
+            (Field::Expiry, _) => "Expiry date",
+            (Field::PublicKey, _) => "Public key",
             (Field::Tags, _) => "Tags",
             (Field::Secret, Kind::Api) => "API key",
+            (Field::Secret, Kind::Card) => "Card number",
+            (Field::Secret, Kind::SshKey) => "Private key",
             (Field::Secret, _) => "Password",
+            (Field::Cvv, _) => "CVV",
+            (Field::Passphrase, _) => "Passphrase",
             (Field::Notes, Kind::Note) => "Content",
             (Field::Notes, _) => "Notes",
             (Field::Buttons, _) => "",
@@ -182,29 +241,67 @@ impl Form {
             Field::User => Some(&mut self.user),
             Field::Email => Some(&mut self.email),
             Field::Url => Some(&mut self.url),
+            Field::Expiry => Some(&mut self.expiry),
+            Field::PublicKey => Some(&mut self.public_key),
             Field::Tags => Some(&mut self.tags),
             Field::Secret => Some(&mut self.secret),
+            Field::Cvv => Some(&mut self.cvv),
+            Field::Passphrase => Some(&mut self.passphrase),
             Field::Notes => Some(&mut self.notes),
             Field::Kind | Field::Buttons => None,
         }
     }
 
+    /// The text of a field to save: empty when this type has no such field
+    /// (something typed before the type was changed is not saved).
+    fn value(&self, f: Field) -> &str {
+        let input = match f {
+            Field::Name => &self.name,
+            Field::User => &self.user,
+            Field::Email => &self.email,
+            Field::Url => &self.url,
+            Field::Expiry => &self.expiry,
+            Field::PublicKey => &self.public_key,
+            Field::Tags => &self.tags,
+            Field::Secret => &self.secret,
+            Field::Cvv => &self.cvv,
+            Field::Passphrase => &self.passphrase,
+            Field::Notes => &self.notes,
+            Field::Kind | Field::Buttons => return "",
+        };
+        if self.fields().contains(&f) { input.as_str() } else { "" }
+    }
+
     /// Put a generated password in the password field.
     pub fn set_secret(&mut self, s: &str) {
         self.secret.set(s);
-        self.secret_unchanged = false;
+        self.unchanged &= !Field::Secret.bit();
         self.mark(Field::Secret);
+    }
+
+    /// Choose another type (adding only). The private key of an SSH key is
+    /// the only multi-line secret, so the field is rebuilt when that changes.
+    fn set_kind(&mut self, kind: Kind) {
+        if (kind == Kind::SshKey) != (self.kind == Kind::SshKey) {
+            let text = Zeroizing::new(self.secret.as_str().to_string());
+            self.secret = TextInput::new(kind == Kind::SshKey);
+            self.secret.insert_str(&text);
+        }
+        self.kind = kind;
+        self.mark(Field::Kind);
     }
 
     pub fn handle(&mut self, ev: Event) -> Action {
         let key = match ev {
             Event::Key(k) => k,
             Event::Paste(text) => {
-                if self.focus == Field::Secret && self.secret_unchanged && !self.secret_shown {
-                    self.secret.clear();
-                    self.secret_unchanged = false;
-                }
                 let focus = self.focus;
+                if focus.hidden() && self.is_unchanged(focus) && !self.secret_shown {
+                    if let Some(i) = self.input(focus) {
+                        i.clear();
+                    }
+                    self.unchanged &= !focus.bit();
+                }
                 if self.input(focus).is_some_and(|i| i.insert_str(&text)) {
                     self.mark(focus);
                 }
@@ -212,11 +309,12 @@ impl Form {
             }
         };
         let secret_keys = self.kind != Kind::Note;
+        let generator = matches!(self.kind, Kind::Login | Kind::Api);
         match key {
             Key::Ctrl('s') => return Action::Save,
             Key::Esc => return Action::Cancel,
             Key::F(1) => return Action::Help,
-            Key::Ctrl('g') if secret_keys => return Action::Generate,
+            Key::Ctrl('g') if generator => return Action::Generate,
             Key::Ctrl('r') if secret_keys => {
                 self.secret_shown = !self.secret_shown;
                 return Action::None;
@@ -234,8 +332,7 @@ impl Form {
                 Key::Left | Key::Right | Key::Char(' ') => {
                     let i = KINDS.iter().position(|&k| k == self.kind).unwrap_or(0) as isize;
                     let d = if key == Key::Left { -1 } else { 1 };
-                    self.kind = KINDS[(i + d).rem_euclid(3) as usize];
-                    self.mark(Field::Kind);
+                    self.set_kind(KINDS[(i + d).rem_euclid(KINDS.len() as isize) as usize]);
                 }
                 Key::Up => self.step(-1),
                 Key::Down | Key::Enter => self.step(1),
@@ -267,30 +364,50 @@ impl Form {
                     }
                 }
             },
+            // The private key of an SSH key has several lines, like the notes.
+            Field::Secret if self.kind == Kind::SshKey => match key {
+                Key::Up => {
+                    if !self.secret.up() {
+                        self.step(-1);
+                    }
+                }
+                Key::Down => {
+                    if !self.secret.down() {
+                        self.step(1);
+                    }
+                }
+                // Enter on a stored key you cannot see moves on (it starts a
+                // new line once you type or show it).
+                Key::Enter if self.is_unchanged(Field::Secret) && !self.secret_shown => self.step(1),
+                k => self.edit_field(Field::Secret, k),
+            },
             field => match key {
                 Key::Up => self.step(-1),
                 Key::Down | Key::Enter => self.step(1),
-                k => {
-                    let editing = matches!(k, Key::Char(_) | Key::Backspace | Key::Delete | Key::Ctrl('u'));
-                    if field == Field::Secret && editing && self.secret_unchanged && !self.secret_shown {
-                        // Typing replaces a stored password you cannot see.
-                        self.secret.clear();
-                        self.secret_unchanged = false;
-                        self.mark(Field::Secret);
-                        if !matches!(k, Key::Char(_)) {
-                            return Action::None;
-                        }
-                    }
-                    if self.input(field).is_some_and(|i| i.edit(k)) {
-                        if field == Field::Secret {
-                            self.secret_unchanged = false;
-                        }
-                        self.mark(field);
-                    }
-                }
+                k => self.edit_field(field, k),
             },
         }
         Action::None
+    }
+
+    /// An editing key in a text field.
+    fn edit_field(&mut self, field: Field, k: Key) {
+        let editing = matches!(k, Key::Char(_) | Key::Backspace | Key::Delete | Key::Ctrl('u'));
+        if field.hidden() && editing && self.is_unchanged(field) && !self.secret_shown {
+            // Typing replaces a stored value you cannot see.
+            if let Some(i) = self.input(field) {
+                i.clear();
+            }
+            self.unchanged &= !field.bit();
+            self.mark(field);
+            if !matches!(k, Key::Char(_)) {
+                return;
+            }
+        }
+        if self.input(field).is_some_and(|i| i.edit(k)) {
+            self.unchanged &= !field.bit();
+            self.mark(field);
+        }
     }
 
     /// What the focused field is for (shown in the status line).
@@ -298,15 +415,23 @@ impl Form {
         match (self.focus, self.kind) {
             (Field::Name, _) => "The name you find it by, e.g. GitHub (each name once).",
             (Field::Kind, _) if !self.adding() => "The type cannot be changed.",
-            (Field::Kind, _) => "← → choose: login, API key or note (a note is text only).",
+            (Field::Kind, _) => "← → choose: login, API key, card, SSH key or note (a note is text only).",
             (Field::User, Kind::Api) => "Optional: the account or key ID.",
+            (Field::User, Kind::Card) => "Optional: the name on the card.",
             (Field::User, _) => "Optional.",
             (Field::Email, _) => "Optional: the e-mail address that belongs to it.",
+            (Field::Url, Kind::SshKey) => "Optional: where the key is used, e.g. git@github.com.",
             (Field::Url, _) => "Optional: the web address.",
+            (Field::Expiry, _) => "Optional: as on the card, e.g. 08/29.",
+            (Field::PublicKey, _) => "Optional: one line, e.g. ssh-ed25519 AAAA… me@laptop.",
             (Field::Tags, _) => "Optional, separated by commas: work, mail",
-            (Field::Secret, _) if self.secret_unchanged => "Unchanged; typing replaces it. Ctrl+R shows it.",
+            (f, _) if f.hidden() && self.is_unchanged(f) => "Unchanged; typing replaces it. Ctrl+R shows it.",
             (Field::Secret, Kind::Api) => "Hidden. Paste or type the key; Ctrl+R shows it.",
+            (Field::Secret, Kind::Card) => "Hidden. Type or paste the card number; Ctrl+R shows it.",
+            (Field::Secret, Kind::SshKey) => "Hidden. Paste the private key (all lines); Ctrl+R shows it.",
             (Field::Secret, _) => "Hidden while you type. Ctrl+R shows, Ctrl+G generates.",
+            (Field::Cvv, _) => "Optional and hidden: the security code on the back.",
+            (Field::Passphrase, _) => "Optional and hidden: the passphrase of the private key.",
             (Field::Notes, Kind::Note) => "The text of the note. Enter starts a new line.",
             (Field::Notes, _) => "Optional. Enter starts a new line.",
             (Field::Buttons, _) => "Enter: save or cancel. Ctrl+S saves from any field.",
@@ -385,23 +510,30 @@ impl App {
             f.focus = Field::Secret;
             return Err(Some(match kind {
                 Kind::Api => "The API key must not be empty.".into(),
+                Kind::Card => "The card number must not be empty.".into(),
+                Kind::SshKey => "The private key is empty: paste it.".into(),
                 _ => "The password is empty: type one or press Ctrl+G.".into(),
             }));
         }
         let tags = commands::split_tags(f.tags.as_str());
-        let odd_mail = !note && commands::email_looks_odd(f.email.as_str());
+        let odd_mail = commands::email_looks_odd(f.value(Field::Email));
         let result: Result<(String, String)> = match &f.mode {
             Mode::Add => {
-                let text = |i: &TextInput| if note { String::new() } else { i.as_str().to_string() };
+                let text = |field: Field| f.value(field).to_string();
                 let fields = NewEntry {
                     name: f.name.as_str().to_string(),
                     kind,
-                    username: text(&f.user),
-                    email: text(&f.email),
-                    password: text(&f.secret),
-                    url: text(&f.url),
+                    username: text(Field::User),
+                    email: text(Field::Email),
+                    password: text(Field::Secret),
+                    url: text(Field::Url),
                     notes: f.notes.as_str().to_string(),
+                    expiry: text(Field::Expiry),
+                    cvv: text(Field::Cvv),
+                    public_key: text(Field::PublicKey),
+                    passphrase: text(Field::Passphrase),
                     tags,
+                    ..Default::default()
                 };
                 commands::add_entry(&mut self.uv, fields).map(|name| {
                     (name.clone(), format!("{} '{name}' saved (encrypted).", commands::kind_noun(kind)))
@@ -432,6 +564,18 @@ impl App {
                         }
                         if form.is_changed(Field::Secret) {
                             e.set_password(key, form.secret.as_str())?;
+                        }
+                        if form.is_changed(Field::Expiry) {
+                            e.set_expiry(key, form.expiry.as_str())?;
+                        }
+                        if form.is_changed(Field::Cvv) {
+                            e.set_cvv(key, form.cvv.as_str())?;
+                        }
+                        if form.is_changed(Field::PublicKey) {
+                            e.set_public_key(key, form.public_key.as_str())?;
+                        }
+                        if form.is_changed(Field::Passphrase) {
+                            e.set_passphrase(key, form.passphrase.as_str())?;
                         }
                         if form.is_changed(Field::Name) {
                             e.set_name(form.name.as_str())?;
@@ -502,7 +646,11 @@ impl App {
                 Field::Kind if f.adding() => {
                     let mut x = vx;
                     for k in KINDS {
-                        let name = if k == Kind::Api { "API key" } else { k.label() };
+                        let name = match k {
+                            Kind::Api => "API key",
+                            Kind::SshKey => "SSH key",
+                            k => k.label(),
+                        };
                         let style = match (k == f.kind, focused) {
                             (true, true) => Style::SELECTED,
                             (true, false) => Style::ACCENT_BOLD,
@@ -514,7 +662,7 @@ impl App {
                 Field::Kind => {
                     g.print(vx, y, vw, f.kind.label(), Style::kind(f.kind));
                 }
-                Field::Secret if f.secret_unchanged && !f.secret_shown => {
+                field if field.hidden() && f.is_unchanged(field) && !f.secret_shown => {
                     let dots: String = std::iter::repeat_n(g.g.dot, 8).collect();
                     let n = g.print(vx, y, vw, &dots, Style::DIM);
                     g.print(vx + n + 2, y, vw.saturating_sub(n + 2), "(unchanged)", Style::DIM);
@@ -541,10 +689,14 @@ impl App {
                         Field::User => &f.user,
                         Field::Email => &f.email,
                         Field::Url => &f.url,
+                        Field::Expiry => &f.expiry,
+                        Field::PublicKey => &f.public_key,
                         Field::Tags => &f.tags,
+                        Field::Cvv => &f.cvv,
+                        Field::Passphrase => &f.passphrase,
                         _ => &f.secret,
                     };
-                    let mask = (field == Field::Secret && !f.secret_shown).then_some(g.g.dot);
+                    let mask = (field.hidden() && !f.secret_shown).then_some(g.g.dot);
                     let area = Rect::new(vx, y, vw, 1);
                     // The field you type in is underlined, like a line on a paper form.
                     let style = if focused { Style::FIELD } else { Style::PLAIN };
@@ -568,8 +720,10 @@ impl App {
         if f.focus == Field::Kind && f.adding() {
             hints.insert(1, ("←→", "type"));
         }
-        if f.kind != Kind::Note {
-            hints.extend([("Ctrl+G", "generate"), ("Ctrl+R", "show password")]);
+        match f.kind {
+            Kind::Login | Kind::Api => hints.extend([("Ctrl+G", "generate"), ("Ctrl+R", "show password")]),
+            Kind::Card | Kind::SshKey => hints.push(("Ctrl+R", "show hidden")),
+            Kind::Note => {}
         }
         hints.push(("F1", "help"));
         hints

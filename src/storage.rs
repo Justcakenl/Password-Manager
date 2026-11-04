@@ -833,6 +833,50 @@ mod tests {
     }
 
     #[test]
+    fn a_schema_4_vault_of_cakepass_0_4_is_upgraded_to_schema_5() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(&dir);
+        ensure_dir(p.dir()).unwrap();
+        // Format 3 with content schema 4, exactly as cakepass 0.4.0 wrote it
+        // (no card, TOTP or SSH key fields yet).
+        let vk = VaultKey::create(PWC, P).unwrap();
+        let s = |f: &str, v: &str| vk.item_key().seal(f, v).unwrap();
+        let json = format!(
+            r#"{{"schema":4,"entries":[{{"name":"Mail","kind":"login","username_sealed":"{}","email_sealed":"{}","url_sealed":"{}","password_sealed":"{}","notes_sealed":"{}","tags":["home"],"created":3,"modified":4}}]}}"#,
+            s("username", "me"),
+            s("email", "me@mail.example"),
+            s("url", "https://mail.example"),
+            s("password", "schema-4-secret"),
+            s("notes", ""),
+        );
+        let old = format::seal_as_version_for_tests(&vk, 3, json.as_bytes()).unwrap();
+        write_atomic(&p.file, &old).unwrap();
+
+        // Opening converts the content and saves it right away; the .bak
+        // keeps the schema 4 file.
+        let mut uv = UnlockedVault::open(p.clone(), PWC).unwrap();
+        assert!(uv.take_warnings().iter().any(|w| w.contains("newest format")));
+        assert_eq!(secret_of(&uv, "mail"), "schema-4-secret");
+        assert_ne!(fs::read(&p.file).unwrap(), old);
+        assert_eq!(fs::read(&p.backup).unwrap(), old);
+        // The new fields can be used and are saved.
+        let (vault, key) = uv.parts_mut();
+        vault.update("mail", |e| e.set_totp_secret(key, "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")).unwrap();
+        uv.save().unwrap();
+        drop(uv);
+        let mut uv = UnlockedVault::open(p, PWC).unwrap();
+        assert!(!uv.take_warnings().iter().any(|w| w.contains("newest format")), "migrate only once");
+        let e = uv.vault.get("mail").unwrap();
+        let k = uv.item_key();
+        assert_eq!(e.username(k).unwrap().as_str(), "me");
+        assert_eq!(e.email(k).unwrap().as_str(), "me@mail.example");
+        assert_eq!(e.url(k).unwrap().as_str(), "https://mail.example");
+        assert_eq!((e.tags(), e.created(), e.modified() > 4), (&["home".to_string()][..], 3, true));
+        assert_eq!(e.totp(k).unwrap().unwrap().code_at(59).as_str(), "287082");
+        assert!(e.cvv(k).unwrap().is_empty() && e.public_key(k).unwrap().is_empty());
+    }
+
+    #[test]
     fn export_files_are_never_lighter_than_standard() {
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);

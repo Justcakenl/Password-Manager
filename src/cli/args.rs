@@ -15,9 +15,9 @@ use super::update::AutoMode;
 /// Version for `cakepass --version`: number + the git commit it was built from.
 const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (commit ", env!("CAKEPASS_GIT_COMMIT"), ")");
 
-/// Parse an item type ("login", "api" or "note") for clap.
+/// Parse an item type ("login", "api", "note", "card" or "ssh-key") for clap.
 fn parse_kind(s: &str) -> Result<Kind, String> {
-    Kind::parse(s).ok_or_else(|| format!("unknown type '{s}'; choose login, api or note"))
+    Kind::parse(s).ok_or_else(|| format!("unknown type '{s}'; choose login, api, note, card or ssh-key"))
 }
 
 /// Parse a security level ("standard", "high" or "maximum") for clap.
@@ -48,7 +48,7 @@ pub fn shell_command() -> clap::Command {
 #[command(
     name = "cakepass",
     version = VERSION,
-    about = "CakePass – offline, encrypted vault for passwords, API keys and notes\n(command: cakepass)",
+    about = "CakePass – offline, encrypted vault for passwords, API keys, notes, cards and SSH keys\n(command: cakepass)",
     help_template = HELP_TEMPLATE,
     disable_help_flag = true,
     disable_version_flag = true,
@@ -63,7 +63,10 @@ pub fn shell_command() -> clap::Command {
         cakepass add GitHub              add a login (asks for every field)\n  \
         cakepass add OpenAI --type api   store an API key\n  \
         cakepass add Recovery --type note   secure note\n  \
+        cakepass add Visa --type card    a bank card or credit card\n  \
+        cakepass add Server --type ssh-key   an SSH key (private key, public key, passphrase)\n  \
         cakepass get GitHub              copy the password to the clipboard (20 s)\n  \
+        cakepass get GitHub --totp       show and copy the current two-factor (TOTP) code\n  \
         cakepass generate --passphrase   make a passphrase\n  \
         cakepass generate --save Mail    generate, change it if you like, save it\n  \
         cakepass config set animation off   turn the intro animation off\n  \
@@ -141,10 +144,10 @@ pub enum Cmd {
         kdf: KdfArgs,
     },
 
-    /// Add a login, API key or note (without options, cakepass asks for everything)
+    /// Add a login, API key, note, card or SSH key (without options, cakepass asks for everything)
     Add(AddArgs),
 
-    /// Show an item and copy its secret (password, key, note) to the clipboard
+    /// Show an item and copy its secret (password, key, note, card number) to the clipboard
     #[command(alias = "show")]
     Get(GetArgs),
 
@@ -167,7 +170,7 @@ pub enum Cmd {
         /// Only items with this tag
         #[arg(short, long)]
         tag: Option<String>,
-        /// Only this type: login, api or note
+        /// Only this type: login, api, note, card or ssh-key
         #[arg(long = "type", value_name = "TYPE", value_parser = parse_kind)]
         kind: Option<Kind>,
     },
@@ -415,16 +418,16 @@ pub struct GenArgs {
 pub struct AddArgs {
     /// Name of the item, e.g. "GitHub"
     pub name: String,
-    /// Type of item: login, api (API key/token) or note
+    /// Type of item: login, api (API key/token), note, card (bank/credit card) or ssh-key
     #[arg(long = "type", short = 'k', value_name = "TYPE", value_parser = parse_kind, default_value = "login")]
     pub kind: Kind,
-    /// Username (for an API key: account or key ID)
+    /// Username (for an API key: account or key ID; for a card: the cardholder name)
     #[arg(short, long)]
     pub username: Option<String>,
     /// E-mail address that belongs to this item
     #[arg(short, long)]
     pub email: Option<String>,
-    /// Web address (for an API key: the service)
+    /// Web address (for an API key: the service; for an SSH key: the host)
     #[arg(long)]
     pub url: Option<String>,
     /// Tags, separated by commas
@@ -433,6 +436,10 @@ pub struct AddArgs {
     /// Generate the password (instead of typing it yourself)
     #[arg(short, long)]
     pub generate: bool,
+    /// Also store a TOTP secret for two-factor codes (asked in a hidden prompt:
+    /// the base32 secret or the otpauth:// link the site gives you)
+    #[arg(long)]
+    pub totp: bool,
     #[command(flatten)]
     pub gen_opts: GenArgs,
 }
@@ -450,8 +457,14 @@ pub struct GetArgs {
     /// Copy the e-mail address instead of the secret
     #[arg(long, conflicts_with_all = ["show", "copy_username"])]
     pub copy_email: bool,
+    /// Copy the public key of an SSH key instead of the private key
+    #[arg(long, conflicts_with_all = ["show", "copy_username", "copy_email"])]
+    pub copy_public: bool,
+    /// Show the current two-factor (TOTP) code and copy it (cleared after 20 s)
+    #[arg(long, conflicts_with_all = ["show", "copy_username", "copy_email", "copy_public"])]
+    pub totp: bool,
     /// Copy nothing
-    #[arg(long, conflicts_with_all = ["copy_username", "copy_email"])]
+    #[arg(long, conflicts_with_all = ["copy_username", "copy_email", "copy_public"])]
     pub no_copy: bool,
 }
 
@@ -462,19 +475,19 @@ pub struct EditArgs {
     /// New name
     #[arg(long, value_name = "NAME")]
     pub rename: Option<String>,
-    /// New username
+    /// New username (for a card: the cardholder name)
     #[arg(short, long)]
     pub username: Option<String>,
     /// New e-mail address
     #[arg(short, long)]
     pub email: Option<String>,
-    /// New web address
+    /// New web address (for an SSH key: the host)
     #[arg(long)]
     pub url: Option<String>,
     /// New tags (replaces the old ones), separated by commas
     #[arg(short, long, value_delimiter = ',')]
     pub tags: Option<Vec<String>>,
-    /// Type a new password or API key (hidden prompt)
+    /// Type a new password, API key, card number or private key (hidden prompt)
     #[arg(long, conflicts_with = "generate")]
     pub password: bool,
     /// Generate a new password
@@ -483,6 +496,24 @@ pub struct EditArgs {
     /// Type new notes (for a note: the new contents)
     #[arg(long)]
     pub notes: bool,
+    /// Card: type a new expiry date
+    #[arg(long)]
+    pub expiry: bool,
+    /// Card: type a new security code (hidden prompt)
+    #[arg(long)]
+    pub cvv: bool,
+    /// SSH key: type a new public key
+    #[arg(long)]
+    pub public_key: bool,
+    /// SSH key: type a new passphrase for the private key (hidden prompt)
+    #[arg(long)]
+    pub key_passphrase: bool,
+    /// Set or replace the TOTP secret for two-factor codes (hidden prompt)
+    #[arg(long, conflicts_with = "no_totp")]
+    pub totp: bool,
+    /// Remove the TOTP secret
+    #[arg(long)]
+    pub no_totp: bool,
     #[command(flatten)]
     pub gen_opts: GenArgs,
 }
@@ -547,5 +578,18 @@ mod tests {
             }
         }
         check(&command());
+        // The fields that came with cards, TOTP and SSH keys are secrets
+        // too (or sit next to them): always asked for, never a value here.
+        for (sub, expected) in [
+            ("add", &["totp"][..]),
+            ("get", &["copy_public", "totp"]),
+            ("edit", &["expiry", "cvv", "public_key", "key_passphrase", "totp", "no_totp"]),
+        ] {
+            let cmd = command().find_subcommand(sub).unwrap().clone();
+            for id in expected {
+                let arg = cmd.get_arguments().find(|a| a.get_id() == *id).expect(id);
+                assert!(!arg.get_action().takes_values(), "option {id} of {sub} accepts a value");
+            }
+        }
     }
 }

@@ -32,6 +32,7 @@ const GREEN: u8 = 114;
 const YELLOW: u8 = 221;
 const BLUE: u8 = 117;
 const SAND: u8 = 222;
+const LAVENDER: u8 = 183;
 
 impl Style {
     const fn new(fg: u8, bg: u8, attrs: u8) -> Style {
@@ -61,6 +62,8 @@ impl Style {
             Kind::Login => Style::new(PINK, 0, 0),
             Kind::Api => Style::new(BLUE, 0, 0),
             Kind::Note => Style::new(SAND, 0, 0),
+            Kind::Card => Style::new(GREEN, 0, 0),
+            Kind::SshKey => Style::new(LAVENDER, 0, 0),
         }
     }
 }

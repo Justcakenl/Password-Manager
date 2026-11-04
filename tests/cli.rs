@@ -1308,3 +1308,288 @@ fn a_mistyped_passphrase_creates_nothing() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("does not match"));
     assert!(!v.path.exists());
 }
+
+// ───────────────────────── cards, TOTP and SSH keys (step 12) ─────────────────────────
+
+const CARD_NUMBER: &str = "4111 1111 1111 1111";
+/// RFC 6238's test seed ("12345678901234567890") in base32.
+const TOTP_SEED: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+const PRIVATE_KEY: [&str; 3] =
+    ["-----BEGIN OPENSSH PRIVATE KEY-----", "b3BlbnNzaC1rZXktdjEAAAAA", "-----END OPENSSH PRIVATE KEY-----"];
+
+fn stdout_of(a: &assert_cmd::assert::Assert) -> String {
+    String::from_utf8(a.get_output().stdout.clone()).unwrap()
+}
+
+/// The code for this moment and for the next one (a test may cross a boundary).
+fn current_codes(secret: &str) -> [String; 2] {
+    let t = cakepass::totp::Totp::parse(secret).unwrap();
+    let now = cakepass::vault::now();
+    [t.code_at(now).as_str().to_string(), t.code_at(now + 30).as_str().to_string()]
+}
+
+#[test]
+fn store_get_and_edit_cards() {
+    let k = Vaulty::new().init();
+    // Cardholder, card number (hidden), expiry date, CVV (hidden), notes, tags.
+    k.run(
+        &["add", "Visa", "--type", "card"],
+        &format!("{PW}\nJ. Doe\n{CARD_NUMBER}\n08/29\n737\nPIN in the safe\nbank, visa\n"),
+    )
+    .success()
+    .stderr(contains("Card 'Visa' saved (encrypted)"));
+    // Without --show: cardholder and expiry date; the number and CVV hidden.
+    k.run(&["get", "visa", "--no-copy"], &format!("{PW}\n")).success().stdout(
+        contains("card")
+            .and(contains(format!("{:<16} J. Doe", "Cardholder:")))
+            .and(contains(format!("{:<16} 08/29", "Expiry date:")))
+            .and(contains(format!("{:<16} (hidden; use --show)", "Security code:")))
+            .and(contains("4111").not())
+            .and(contains("737").not()),
+    );
+    // The card number is "the secret": copied by default (no clipboard here).
+    k.run(&["get", "visa"], &format!("{PW}\n"))
+        .failure()
+        .stdout(contains("4111").not())
+        .stderr(contains("no clipboard tool found").and(contains("4111").not()));
+    k.run(&["get", "visa", "--show"], &format!("{PW}\n")).success().stdout(
+        contains(format!("{:<16} {CARD_NUMBER}", "Card number:"))
+            .and(contains(format!("{:<16} 737", "Security code:")))
+            .and(contains("PIN in the safe")),
+    );
+    // Listed, filtered and counted as a card; searchable by cardholder only.
+    k.run(&["list", "--type", "card"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("Visa").and(contains("J. Doe")).and(contains("4111").not()))
+        .stderr(contains("1 item: 1 card"));
+    k.run(&["search", "doe"], &format!("{PW}\n")).success().stdout(contains("Visa"));
+    k.run(&["search", "4111"], &format!("{PW}\n")).success().stderr(contains("Nothing found"));
+    // Edit: a new number, CVV and expiry date, each asked for (not arguments).
+    k.run(
+        &["edit", "visa", "--password", "--cvv", "--expiry"],
+        &format!("{PW}\n5500 0000 0000 0004\n12/31\n123\n"),
+    )
+    .success();
+    k.run(&["get", "visa", "--show"], &format!("{PW}\n")).success().stdout(
+        contains("5500 0000 0000 0004")
+            .and(contains(format!("{:<16} 12/31", "Expiry date:")))
+            .and(contains(format!("{:<16} 123", "Security code:")))
+            .and(contains("4111").not()),
+    );
+    // Interactive edit: Enter keeps a field.
+    k.run(&["edit", "visa"], &format!("{PW}\n\nJane Doe\n\n\nn\nn\nn\n")).success();
+    k.run(&["get", "visa", "--show"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("Jane Doe").and(contains("12/31")).and(contains("5500 0000 0000 0004")));
+    // Options that do not fit a card are refused.
+    k.run(&["add", "X", "--type", "card", "-e", "a@b.nl"], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("a card has no e-mail address"));
+    k.run(&["add", "X", "--type", "card", "--generate"], &format!("{PW}\n")).failure();
+    k.run(&["edit", "visa", "--key-passphrase"], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("for an SSH key"));
+    k.run(&["edit", "visa", "--url", "https://x"], &format!("{PW}\n")).failure();
+    // An empty card number is refused.
+    k.run(&["add", "Empty", "--type", "card", "-u", "x", "-t", ""], &format!("{PW}\n\n"))
+        .failure()
+        .stderr(contains("must not be empty"));
+}
+
+#[test]
+fn store_get_and_edit_ssh_keys() {
+    let k = Vaulty::new().init();
+    // Private key (multi-line, ends with a dot), public key, passphrase (hidden), host, notes, tags.
+    let key_text = PRIVATE_KEY.join("\n");
+    k.run(
+        &["add", "Server", "--type", "ssh-key"],
+        &format!(
+            "{PW}\n{key_text}\n.\nssh-ed25519 AAAAC3Nza me@laptop\nkey passphrase\ngit@github.com\nfingerprint SHA256:x\nwork\n"
+        ),
+    )
+    .success()
+    .stderr(contains("SSH key 'Server' saved (encrypted)"));
+    // Without --show: host and public key; private key and passphrase hidden.
+    let out = k.run(&["get", "server", "--no-copy"], &format!("{PW}\n")).success();
+    let text = stdout_of(&out);
+    assert!(text.contains(&format!("{:<16} git@github.com", "Host:")), "{text}");
+    assert!(text.contains(&format!("{:<16} ssh-ed25519 AAAAC3Nza me@laptop", "Public key:")), "{text}");
+    assert!(text.contains(&format!("{:<16} (hidden; use --show)", "Private key:")), "{text}");
+    assert!(!text.contains("b3BlbnNzaC1rZXkt") && !text.contains("key passphrase"), "{text}");
+    // --show reveals every line of the private key and the passphrase.
+    let out = k.run(&["get", "server", "--show"], &format!("{PW}\n")).success();
+    let text = stdout_of(&out);
+    for line in PRIVATE_KEY {
+        assert!(text.contains(line), "{line} missing: {text}");
+    }
+    assert!(text.contains(&format!("{:<16} key passphrase", "Passphrase:")), "{text}");
+    // The private key is the secret that is copied; --copy-public copies the public key.
+    k.run(&["get", "server"], &format!("{PW}\n")).failure().stderr(contains("no clipboard tool found"));
+    k.run(&["get", "server", "--copy-public"], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("no clipboard tool found"));
+    k.add("GitHub", "john", ITEM_PW);
+    k.run(&["get", "github", "--copy-public"], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("has no public key"));
+    k.run(&["get", "server", "--copy-public", "--show"], &format!("{PW}\n")).failure();
+    k.run(&["list", "--type", "ssh-key"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("Server").and(contains("git@github.com")).and(contains("GitHub").not()))
+        .stderr(contains("1 item: 1 SSH key"));
+    // Edit: a new private key, public key and passphrase; the host by option.
+    k.run(
+        &["edit", "server", "--password", "--public-key", "--key-passphrase", "--url", "backup.example"],
+        &format!("{PW}\nNEW KEY LINE 1\nNEW KEY LINE 2\n.\nssh-ed25519 BBBB new@laptop\n  spaced pass \n"),
+    )
+    .success();
+    let text = stdout_of(&k.run(&["get", "server", "--show"], &format!("{PW}\n")).success());
+    assert!(
+        text.contains("NEW KEY LINE 1") && text.contains("NEW KEY LINE 2") && !text.contains("b3BlbnNzaC1")
+    );
+    assert!(text.contains("ssh-ed25519 BBBB new@laptop") && text.contains("backup.example"), "{text}");
+    assert!(text.contains(&format!("{:<16}   spaced pass ", "Passphrase:")), "kept exactly: {text}");
+    // Options that do not fit an SSH key are refused; an empty private key too.
+    k.run(&["add", "X", "--type", "ssh-key", "-u", "john"], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("an SSH key has no username"));
+    k.run(&["edit", "server", "--cvv"], &format!("{PW}\n")).failure().stderr(contains("for a card"));
+    k.run(&["edit", "github", "--public-key"], &format!("{PW}\n")).failure();
+    k.run(&["add", "Empty", "--type", "ssh-key", "--url", "", "-t", ""], &format!("{PW}\n.\n"))
+        .failure()
+        .stderr(contains("the private key must not be empty"));
+}
+
+#[test]
+fn totp_codes_for_two_factor_authentication() {
+    let k = Vaulty::new().init();
+    // `--totp` asks for the secret in a hidden prompt (spaces and case do not matter).
+    let spaced = "gezd gnbv gy3t qojq gezd gnbv gy3t qojq";
+    k.run(
+        &["add", "GitHub", "-u", "john", "-e", "", "--url", "https://github.com", "-t", "", "--totp"],
+        &format!("{PW}\n{ITEM_PW}\n{spaced}\n"),
+    )
+    .success()
+    .stderr(contains("Login 'GitHub' saved").and(contains("--totp` shows the current code")));
+    k.run(&["get", "github", "--no-copy"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("TOTP").and(contains("set (use --totp")).and(contains(TOTP_SEED).not()));
+    // The current code, computed now: the same as an independent computation.
+    let out = k.run(&["get", "github", "--totp", "--no-copy"], &format!("{PW}\n")).success();
+    let text = stdout_of(&out);
+    let codes = current_codes(TOTP_SEED);
+    assert!(codes.iter().any(|c| text.contains(&format!("{:<16} {c}", "TOTP code:"))), "{text} / {codes:?}");
+    assert!(text.contains("Valid for") && !text.contains(TOTP_SEED) && !text.contains(ITEM_PW), "{text}");
+    // Without a clipboard tool the code is still shown (no error).
+    k.run(&["get", "github", "--totp"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("TOTP code"))
+        .stderr(contains("No clipboard tool found"));
+    // A bad secret is refused before anything is saved; the old one stays.
+    k.run(&["edit", "github", "--totp"], &format!("{PW}\nnot base32!\n"))
+        .failure()
+        .stderr(contains("not valid base32"));
+    k.run(&["edit", "github", "--totp"], &format!("{PW}\n\n"))
+        .failure()
+        .stderr(contains("must not be empty"));
+    k.run(&["get", "github", "--totp", "--no-copy"], &format!("{PW}\n")).success();
+    // An otpauth:// URI with its own settings (8 digits).
+    k.run(
+        &["edit", "github", "--totp"],
+        &format!("{PW}\notpauth://totp/GitHub:john?secret={TOTP_SEED}&issuer=GitHub&digits=8\n"),
+    )
+    .success();
+    let text = stdout_of(&k.run(&["get", "github", "--totp", "--no-copy"], &format!("{PW}\n")).success());
+    let codes = current_codes(&format!("otpauth://totp/x?secret={TOTP_SEED}&digits=8"));
+    assert!(codes.iter().any(|c| c.len() == 8 && text.contains(c.as_str())), "{text} / {codes:?}");
+    // Removed again.
+    k.run(&["edit", "github", "--no-totp"], &format!("{PW}\n")).success().stderr(contains("removed"));
+    k.run(&["get", "github", "--totp"], &format!("{PW}\n")).failure().stderr(contains("has no TOTP secret"));
+    k.run(&["edit", "github", "--totp", "--no-totp"], &format!("{PW}\n")).failure();
+    // Any type can carry one, e.g. an API key.
+    k.run(
+        &["add", "Cloud", "--type", "api", "-u", "", "-e", "", "--url", "", "-t", "", "--totp"],
+        &format!("{PW}\nsk-cloud-1\n{TOTP_SEED}\n"),
+    )
+    .success();
+    k.run(&["get", "cloud", "--totp", "--no-copy"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("TOTP code"));
+    // The password still is the secret of a login with TOTP.
+    k.run(&["get", "github", "--show"], &format!("{PW}\n")).success().stdout(contains(ITEM_PW));
+}
+
+#[test]
+fn totp_column_is_imported_from_csv() {
+    let k = Vaulty::new().init();
+    let csv = k.dir().join("bitwarden.csv");
+    std::fs::write(
+        &csv,
+        format!(
+            "folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp\n\
+             ,,login,GitHub,,,0,https://github.com,john,pw-1,{TOTP_SEED}\n\
+             ,,login,Steam,,,0,https://steam.example,gamer,pw-2,steam://ABCDE\n"
+        ),
+    )
+    .unwrap();
+    k.run(&["import-csv", csv.to_str().unwrap()], &format!("{PW}\nn\n")).success().stderr(
+        contains("2 item(s) imported").and(contains("1 item(s) were imported WITHOUT their TOTP secret")),
+    );
+    let text = stdout_of(&k.run(&["get", "github", "--totp", "--no-copy"], &format!("{PW}\n")).success());
+    assert!(current_codes(TOTP_SEED).iter().any(|c| text.contains(c.as_str())), "{text}");
+    k.run(&["get", "steam", "--totp"], &format!("{PW}\n")).failure().stderr(contains("has no TOTP secret"));
+}
+
+#[test]
+fn cards_ssh_keys_and_totp_leave_nothing_readable_on_disk() {
+    let k = Vaulty::new().init();
+    let markers = [
+        "zq-holder-4711",
+        "4999123412344711",
+        "zq-exp-4711",
+        "zq-cvv-4711",
+        "zq-card-note-4711",
+        "ZQPRIVATEKEYLINE4711",
+        "zq-public-4711",
+        "zq-passphrase-4711",
+        "zq-host-4711",
+    ];
+    k.run(
+        &["add", "Card", "--type", "card"],
+        &format!("{PW}\nzq-holder-4711\n4999123412344711\nzq-exp-4711\nzq-cvv-4711\nzq-card-note-4711\n\n"),
+    )
+    .success();
+    k.run(
+        &["add", "Key", "--type", "ssh-key", "--url", "zq-host-4711", "-t", ""],
+        &format!("{PW}\nZQPRIVATEKEYLINE4711\n.\nzq-public-4711\nzq-passphrase-4711\n"),
+    )
+    .success();
+    // A distinctive, valid base32 TOTP secret (32 characters).
+    let secret = "ZQZQZQZQMFRGGZDFMZTWQ2LKNNWG23TP".to_string();
+    k.run(&["edit", "card", "--totp"], &format!("{PW}\n{secret}\n")).success();
+    k.run(&["edit", "card", "-t", "x"], &format!("{PW}\n")).success(); // a .bak with all of it
+    let export = k.dir().join("backup.cakepass");
+    k.run(&["export", export.to_str().unwrap()], &format!("{PW}\n{PW2}\n{PW2}\n")).success();
+    let mut files = Vec::new();
+    all_files(k.dir(), &mut files);
+    assert!(files.len() >= 3, "vault, backup and export expected");
+    let markers: Vec<String> = markers.iter().map(|m| m.to_string()).chain([secret.clone()]).collect();
+    for (path, bytes) in &files {
+        for m in &markers {
+            assert!(
+                !bytes.windows(m.len()).any(|w| w == m.as_bytes()),
+                "{m} is readable in {}",
+                path.display()
+            );
+        }
+    }
+    // And it is all there after logging in.
+    let text = stdout_of(&k.run(&["get", "card", "--show"], &format!("{PW}\n")).success());
+    for m in ["zq-holder-4711", "4999123412344711", "zq-exp-4711", "zq-cvv-4711", "zq-card-note-4711"] {
+        assert!(text.contains(m), "{m}: {text}");
+    }
+    let text = stdout_of(&k.run(&["get", "key", "--show"], &format!("{PW}\n")).success());
+    for m in ["ZQPRIVATEKEYLINE4711", "zq-public-4711", "zq-passphrase-4711", "zq-host-4711"] {
+        assert!(text.contains(m), "{m}: {text}");
+    }
+}
