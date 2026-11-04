@@ -8,8 +8,9 @@
 //! require the key; the plaintext then briefly lives in a `Zeroizing<String>`
 //! and is wiped afterwards.
 //!
-//! Only name, type, tags and dates are not encrypted separately (they are
-//! protected by the outer layer on disk), so you can find and sort items.
+//! Only name, type, tags, the favorite flag and dates are not encrypted
+//! separately (they are protected by the outer layer on disk), so you can
+//! find, sort and pin items.
 //!
 //! Item types ([`Kind`]), and which encrypted fields each one uses (the
 //! generic fields get another label per type, as `api` already did):
@@ -22,6 +23,10 @@
 //! - **sshkey**: the private key (`password`, the main secret; multiple
 //!   lines), public key, the passphrase of the private key, host (`url`),
 //!   notes
+//! - **identity** (passport, ID card, driving licence, bank account,
+//!   membership): full name (`username`), the number (`password`, the main
+//!   secret), who issued it (`url`), expiry date (the field cards use),
+//!   notes. It needs no field of its own, so it came without a schema change.
 //!
 //! Every type can also carry a TOTP secret (two-factor codes, see
 //! [`crate::totp`]); in practice a login or an API key. Unused fields of a
@@ -83,11 +88,14 @@ pub enum Kind {
     Card,
     /// An SSH key pair.
     SshKey,
+    /// A personal document or account number: passport, ID card, driver's
+    /// licence, bank account (IBAN), membership.
+    Identity,
 }
 
 impl Kind {
     /// All types, in the order they are shown (tabs, the form, summaries).
-    pub const ALL: [Kind; 5] = [Kind::Login, Kind::Api, Kind::Card, Kind::SshKey, Kind::Note];
+    pub const ALL: [Kind; 6] = [Kind::Login, Kind::Api, Kind::Card, Kind::Identity, Kind::SshKey, Kind::Note];
 
     /// Short display name.
     pub fn label(self) -> &'static str {
@@ -97,6 +105,7 @@ impl Kind {
             Kind::Note => "note",
             Kind::Card => "card",
             Kind::SshKey => "ssh key",
+            Kind::Identity => "identity",
         }
     }
 
@@ -108,10 +117,12 @@ impl Kind {
             Kind::Note => "note",
             Kind::Card => "card number",
             Kind::SshKey => "private key",
+            Kind::Identity => "number",
         }
     }
 
-    /// Read a type from text ("login", "api", "note", "card", "ssh-key", ...).
+    /// Read a type from text ("login", "api", "note", "card", "ssh-key",
+    /// "identity", ...).
     pub fn parse(s: &str) -> Option<Kind> {
         match s.trim().to_lowercase().as_str() {
             "login" | "password" => Some(Kind::Login),
@@ -120,6 +131,8 @@ impl Kind {
             "card" | "bank card" | "bank-card" | "bankcard" | "credit card" | "credit-card"
             | "creditcard" => Some(Kind::Card),
             "ssh-key" | "ssh key" | "sshkey" | "ssh" => Some(Kind::SshKey),
+            "identity" | "id" | "document" | "passport" | "id-card" | "licence" | "license" | "iban"
+            | "bank-account" | "membership" => Some(Kind::Identity),
             _ => None,
         }
     }
@@ -140,12 +153,13 @@ pub struct Entry {
     email_sealed: String,
     /// Encrypted.
     url_sealed: String,
-    /// Encrypted: password (login), API key (api), card number (card) or
-    /// private key (sshkey).
+    /// Encrypted: password (login), API key (api), card number (card),
+    /// private key (sshkey) or document/account number (identity).
     password_sealed: String,
     /// Encrypted: notes, or the contents of a note.
     notes_sealed: String,
-    /// Encrypted: the expiry date of a card (free text, e.g. "08/29").
+    /// Encrypted: the expiry date of a card or an identity document (free
+    /// text, e.g. "08/29").
     /// This and the four fields below are missing in vaults of schema 4 and
     /// older; they are filled in (empty) when such a vault is opened.
     #[serde(default)]
@@ -165,10 +179,21 @@ pub struct Entry {
     passphrase_sealed: String,
     #[serde(default)]
     tags: Vec<String>,
+    /// Pinned by the user. Not encrypted, like the tags: it is how you
+    /// organise your items, not what is in them (the whole file is still
+    /// encrypted on disk). Missing in older vaults, so `false` there; not
+    /// written while it is `false`, so a vault without favorites looks
+    /// exactly as before. No migration needed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    favorite: bool,
     #[serde(default)]
     created: u64,
     #[serde(default)]
     modified: u64,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Fields for a new item (everything except the name is optional).
@@ -180,18 +205,19 @@ pub struct NewEntry {
     pub name: String,
     #[zeroize(skip)]
     pub kind: Kind,
-    /// Username (login), account/key ID (api) or cardholder name (card).
+    /// Username (login), account/key ID (api), cardholder name (card) or
+    /// full name (identity).
     pub username: String,
     /// E-mail address that belongs to the item.
     pub email: String,
-    /// Password (login), API key (api), card number (card) or private key
-    /// (sshkey); empty for a note.
+    /// Password (login), API key (api), card number (card), private key
+    /// (sshkey) or number (identity); empty for a note.
     pub password: String,
-    /// URL (login), service URL (api) or host (sshkey).
+    /// URL (login), service URL (api), host (sshkey) or issuer (identity).
     pub url: String,
     /// Notes, or the text of a note.
     pub notes: String,
-    /// Expiry date of a card.
+    /// Expiry date of a card or an identity document.
     pub expiry: String,
     /// Security code of a card.
     pub cvv: String,
@@ -222,6 +248,7 @@ impl Entry {
             public_key_sealed: String::new(),
             passphrase_sealed: String::new(),
             tags: Vec::new(),
+            favorite: false,
             created: t,
             modified: t,
         };
@@ -305,7 +332,7 @@ impl Entry {
     pub fn secret(&self, key: &ItemKey) -> Result<Zeroizing<String>> {
         match self.kind {
             Kind::Note => self.notes(key),
-            Kind::Login | Kind::Api | Kind::Card | Kind::SshKey => self.password(key),
+            Kind::Login | Kind::Api | Kind::Card | Kind::SshKey | Kind::Identity => self.password(key),
         }
     }
     /// Whether there is an e-mail address (without decrypting).
@@ -340,11 +367,21 @@ impl Entry {
     pub fn has_secret(&self) -> bool {
         match self.kind {
             Kind::Note => self.has_notes(),
-            Kind::Login | Kind::Api | Kind::Card | Kind::SshKey => self.has_password(),
+            Kind::Login | Kind::Api | Kind::Card | Kind::SshKey | Kind::Identity => self.has_password(),
         }
     }
     pub fn tags(&self) -> &[String] {
         &self.tags
+    }
+    /// Whether the item is pinned as a favorite.
+    pub fn is_favorite(&self) -> bool {
+        self.favorite
+    }
+    /// Pin or unpin the item. This does NOT change the modification date:
+    /// the date says when the content last changed (the audit uses it to
+    /// find old passwords), and pinning changes no content.
+    pub fn set_favorite(&mut self, favorite: bool) {
+        self.favorite = favorite;
     }
     pub fn created(&self) -> u64 {
         self.created
@@ -519,6 +556,7 @@ impl std::fmt::Debug for Entry {
             .field("kind", &self.kind)
             .field("content", &"[ENCRYPTED]")
             .field("tags", &self.tags)
+            .field("favorite", &self.favorite)
             .finish()
     }
 }
@@ -718,6 +756,7 @@ impl Vault {
                 public_key_sealed: key.seal(FIELD_PUBLIC_KEY, "")?,
                 passphrase_sealed: key.seal(FIELD_PASSPHRASE, "")?,
                 tags: e.tags.clone(),
+                favorite: false,
                 created: e.created,
                 modified: e.modified,
             });
@@ -1352,7 +1391,8 @@ mod tests {
         assert_eq!(e.notes(&k).unwrap().as_str(), "PIN in the safe");
         assert!(e.has_secret() && e.has_cvv() && !e.has_email() && !e.has_totp() && !e.has_public_key());
         let json = json_of(&e);
-        for plain in ["J. Doe", "4111", "08/29", "737", "PIN in"] {
+        // Short values as whole JSON strings: random base64 may contain "737".
+        for plain in ["J. Doe", "4111 1111", "08/29", "\"737\"", "PIN in"] {
             assert!(!json.contains(plain), "{plain} is readable in the JSON");
         }
         assert!(
@@ -1584,5 +1624,110 @@ mod tests {
             let (mut mine, _) = load(&item).unwrap();
             assert_eq!(mine.merge(&other, &k1, &k1).unwrap(), (1, 0), "{f} is not compared when merging");
         }
+    }
+
+    fn identity(k: &ItemKey) -> Entry {
+        Entry::new(
+            NewEntry {
+                name: "Passport".into(),
+                kind: Kind::Identity,
+                username: "Jane Q. Doe".into(),
+                password: "NX7731ZQ9".into(),
+                url: "Gemeente Utrecht".into(),
+                expiry: "2031-05-14".into(),
+                notes: "Nationality: NL".into(),
+                ..Default::default()
+            },
+            k,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn identities_reuse_the_generic_encrypted_fields() {
+        let k = test_item_key(1);
+        let e = identity(&k);
+        assert_eq!(e.kind(), Kind::Identity);
+        assert_eq!(e.username(&k).unwrap().as_str(), "Jane Q. Doe", "the full name");
+        assert_eq!(e.secret(&k).unwrap().as_str(), "NX7731ZQ9", "the number is the secret");
+        assert_eq!(e.url(&k).unwrap().as_str(), "Gemeente Utrecht", "who issued it");
+        assert_eq!(e.expiry(&k).unwrap().as_str(), "2031-05-14", "the expiry field of a card, reused");
+        assert_eq!(e.notes(&k).unwrap().as_str(), "Nationality: NL");
+        assert!(e.has_secret() && !e.has_email() && !e.has_cvv() && !e.has_totp() && !e.has_passphrase());
+        let json = json_of(&e);
+        for plain in ["Jane Q. Doe", "NX7731ZQ9", "Gemeente Utrecht", "2031-05-14", "Nationality: NL"] {
+            assert!(!json.contains(plain), "{plain} is readable in the JSON");
+        }
+        assert!(json.contains("\"kind\":\"identity\""));
+        assert!(json.contains("\"schema\":5"), "no new schema: no new encrypted field");
+        assert!(matches!(e.secret(&test_item_key(2)), Err(Error::Decrypt)));
+        // Through JSON, re-keying and merging like every other type.
+        let mut v = Vault::new();
+        v.add(e.clone()).unwrap();
+        let (back, migrated) = Vault::from_json(v.to_json().unwrap().as_slice(), &k).unwrap();
+        assert!(!migrated);
+        assert_eq!(back.entries(), v.entries());
+        let k2 = test_item_key(2);
+        v.rekey(&k, &k2).unwrap();
+        assert_eq!(v.entries()[0].secret(&k2).unwrap().as_str(), "NX7731ZQ9");
+        assert_eq!(v.entries()[0].expiry(&k2).unwrap().as_str(), "2031-05-14");
+        // The full name and issuer are searchable; the number is not.
+        let mut v = Vault::new();
+        v.add(e).unwrap();
+        assert_eq!(v.search("doe", &k).len(), 1);
+        assert_eq!(v.search("utrecht", &k).len(), 1);
+        assert_eq!(v.search("identity", &k).len(), 1, "by type");
+        assert_eq!(v.search("NX7731", &k).len(), 0);
+        for name in ["identity", "ID", "passport", "IBAN", "licence", "membership"] {
+            assert_eq!(Kind::parse(name), Some(Kind::Identity), "{name}");
+        }
+        assert_eq!((Kind::Identity.label(), Kind::Identity.secret_label()), ("identity", "number"));
+        assert!(Kind::ALL.contains(&Kind::Identity));
+    }
+
+    #[test]
+    fn favorites_are_plain_metadata_without_a_migration() {
+        let k = test_item_key(1);
+        let mut v = Vault::new();
+        v.add(entry("GitHub", "pw-1")).unwrap();
+        v.add(entry("Mail", "pw-2")).unwrap();
+        // Not a favorite by default, and then not written at all: a vault
+        // without favorites is byte-for-byte what it was before.
+        let before = String::from_utf8(v.to_json().unwrap().as_slice().to_vec()).unwrap();
+        assert!(!before.contains("favorite"));
+        let modified = v.get("mail").unwrap().modified();
+        v.update("mail", |e| {
+            e.set_favorite(true);
+            Ok(())
+        })
+        .unwrap();
+        let e = v.get("mail").unwrap();
+        assert!(e.is_favorite() && !v.get("github").unwrap().is_favorite());
+        assert_eq!(e.modified(), modified, "pinning is not a change of content (the audit relies on it)");
+        assert!(format!("{e:?}").contains("favorite: true"));
+        // Stored as a plain flag next to the tags (not a sealed field) and read back.
+        let json = String::from_utf8(v.to_json().unwrap().as_slice().to_vec()).unwrap();
+        assert_eq!(json.matches("\"favorite\":true").count(), 1);
+        assert!(!json.contains("favorite_sealed"));
+        let (back, migrated) = Vault::from_json(json.as_bytes(), &k).unwrap();
+        assert!(!migrated && back.get("mail").unwrap().is_favorite());
+        // A schema-5 vault written before favorites existed opens as is.
+        let (old, migrated) = Vault::from_json(before.as_bytes(), &k).unwrap();
+        assert!(!migrated && old.entries().iter().all(|e| !e.is_favorite()));
+        // Kept through re-keying (a copy of the item).
+        let k2 = test_item_key(2);
+        v.rekey(&k, &k2).unwrap();
+        assert!(v.get("mail").unwrap().is_favorite());
+        // Not part of "the same item" when importing: a pinned copy is still a duplicate.
+        let mut other = Vault::new();
+        other.add(entry("Mail", "pw-2")).unwrap();
+        let mut mine = Vault::new();
+        mine.add(entry("Mail", "pw-2")).unwrap();
+        mine.update("mail", |e| {
+            e.set_favorite(true);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(mine.merge(&other, &k, &k).unwrap(), (0, 1));
     }
 }

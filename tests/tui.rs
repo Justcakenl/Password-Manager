@@ -466,6 +466,61 @@ fn cards_ssh_keys_and_totp_in_the_screen() {
 }
 
 #[test]
+fn a_favorite_and_an_identity_in_the_screen() {
+    let v = Vault::new();
+    for name in ["Alpha", "Zulu"] {
+        v.cmd()
+            .args(["add", name, "-u", "john", "-e", "", "--url", "", "-t", ""])
+            .write_stdin(format!("{PW}\npw-{name}-1\n"))
+            .assert()
+            .success();
+    }
+    let mut t = v.pty(&[], &[], 80, 24);
+    t.login();
+    t.wait_for("Zulu");
+    // End: Zulu; f pins it, and it moves to the top with a star.
+    t.send("\x1b[F");
+    t.send("f");
+    t.wait_for("'Zulu' pinned as a favorite");
+    t.wait_for("★Zulu");
+    // An identity: login → API key → card → ID.
+    t.send("a");
+    t.wait_for("Add an item");
+    t.send("Passport");
+    t.send(DOWN);
+    t.send("\x1b[C\x1b[C\x1b[C");
+    t.wait_for("Issued by");
+    t.send(DOWN);
+    t.send("Jane Doe");
+    t.send(DOWN);
+    t.send("Gemeente Utrecht");
+    t.send(DOWN);
+    t.send("2031-05-14");
+    t.send(&DOWN.repeat(2));
+    t.send("NX7731ZQ9");
+    t.wait_for("•••");
+    assert!(!t.screen().contains("NX7731ZQ9"), "masked while typing");
+    t.send("\x13");
+    t.wait_for("Identity 'Passport' saved (encrypted).");
+    t.send("q");
+    assert_eq!(t.wait_exit(), 0);
+    assert_restored(&t.output());
+
+    v.cmd()
+        .args(["list", "--favorites"])
+        .write_stdin(format!("{PW}\n"))
+        .assert()
+        .success()
+        .stdout(contains("Zulu").and(contains("Alpha").not()));
+    v.cmd().args(["get", "passport", "--show"]).write_stdin(format!("{PW}\n")).assert().success().stdout(
+        contains("Jane Doe")
+            .and(contains("Gemeente Utrecht"))
+            .and(contains("2031-05-14"))
+            .and(contains("NX7731ZQ9")),
+    );
+}
+
+#[test]
 fn locks_itself_when_idle() {
     let v = Vault::new();
     let mut t = v.pty(&[], &[("CAKEPASS_TEST_LOCK_SECS", "2")], 80, 24);

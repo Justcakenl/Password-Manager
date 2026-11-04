@@ -7,6 +7,7 @@
 //! # CakePass settings (change them with `cakepass config`)
 //! animation=on
 //! lock_timeout_minutes=5
+//! clip_time_seconds=20
 //! keyfile=/run/media/you/USB/cakepass.key
 //! ```
 //!
@@ -18,6 +19,7 @@ use std::fs;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Component, Path, PathBuf};
 
+use cakepass::clipboard::{DEFAULT_CLEAR_SECS, parse_clear_secs};
 use cakepass::{Error, Result, storage};
 
 /// Default idle time before the screen mode and the line mode lock, in minutes.
@@ -32,13 +34,21 @@ pub struct Config {
     pub animation: bool,
     /// Lock the screen mode and the line mode after this many minutes without input.
     pub lock_timeout_minutes: u64,
+    /// Clear the clipboard this many seconds after copying a secret (inside
+    /// `cakepass::clipboard::CLEAR_SECS_RANGE`).
+    pub clip_time_secs: u64,
     /// Where the key file is, for a vault that needs one (only the path).
     pub keyfile: Option<PathBuf>,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { animation: true, lock_timeout_minutes: DEFAULT_LOCK_MINUTES, keyfile: None }
+        Config {
+            animation: true,
+            lock_timeout_minutes: DEFAULT_LOCK_MINUTES,
+            clip_time_secs: DEFAULT_CLEAR_SECS,
+            keyfile: None,
+        }
     }
 }
 
@@ -88,6 +98,11 @@ impl Config {
                         cfg.lock_timeout_minutes = m;
                     }
                 }
+                "clip_time_seconds" => {
+                    if let Some(s) = parse_clear_secs(value) {
+                        cfg.clip_time_secs = s;
+                    }
+                }
                 "keyfile" => cfg.keyfile = parse_keyfile_path(value),
                 _ => {}
             }
@@ -98,9 +113,10 @@ impl Config {
     /// The text to write to a config file.
     pub fn to_text(&self) -> String {
         let mut text = format!(
-            "# CakePass settings (change them with `cakepass config`)\nanimation={}\nlock_timeout_minutes={}\n",
+            "# CakePass settings (change them with `cakepass config`)\nanimation={}\nlock_timeout_minutes={}\nclip_time_seconds={}\n",
             if self.animation { "on" } else { "off" },
-            self.lock_timeout_minutes
+            self.lock_timeout_minutes,
+            self.clip_time_secs
         );
         // Only a path that reads back the same is written (see `parse_keyfile_path`).
         if let Some(p) =
@@ -161,14 +177,16 @@ mod tests {
         assert!(c.animation);
         assert_eq!(c.lock_timeout_minutes, 5);
         assert_eq!(c.lock_timeout_secs(), 300);
+        assert_eq!(c.clip_time_secs, 20);
         assert_eq!(Config::parse(""), c);
     }
 
     #[test]
     fn parses_valid_values() {
-        let c = Config::parse("# comment\nanimation=off\nlock_timeout_minutes=15\n");
+        let c = Config::parse("# comment\nanimation=off\nlock_timeout_minutes=15\nclip_time_seconds=45\n");
         assert!(!c.animation);
         assert_eq!(c.lock_timeout_minutes, 15);
+        assert_eq!(c.clip_time_secs, 45);
         assert!(!Config::parse(" animation = off ").animation, "spaces around = are fine");
     }
 
@@ -180,6 +198,10 @@ mod tests {
             "lock_timeout_minutes=99999",
             "lock_timeout_minutes=abc",
             "lock_timeout_minutes=-5",
+            "clip_time_seconds=0",
+            "clip_time_seconds=4",
+            "clip_time_seconds=301",
+            "clip_time_seconds=never",
             "unknown=1\n\x1b[2J\nnonsense",
         ] {
             assert_eq!(Config::parse(text), Config::default(), "{text:?}");
@@ -208,7 +230,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sub").join("config");
         assert_eq!(load_from(&path), Config::default(), "missing file gives defaults");
-        let cfg = Config { animation: false, lock_timeout_minutes: 42, keyfile: None };
+        let cfg = Config { animation: false, lock_timeout_minutes: 42, clip_time_secs: 90, keyfile: None };
         save_to(&path, &cfg).unwrap();
         assert_eq!(load_from(&path), cfg);
         assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);

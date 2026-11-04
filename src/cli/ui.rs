@@ -57,6 +57,7 @@ pub fn kind_label(kind: cakepass::vault::Kind) -> String {
         Kind::Note => "38;5;222",
         Kind::Card => "38;5;114",
         Kind::SshKey => "38;5;183",
+        Kind::Identity => "38;5;216",
     };
     paint(true, code, kind.label())
 }

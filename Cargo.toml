@@ -38,6 +38,9 @@ thiserror = "2"
 libc = "0.2"
 clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
 clap_complete = "4.5"
+# The man page (`cakepass man`), generated from the clap definition like the
+# shell completions above. A documentation tool; it never sees a secret.
+clap_mangen = { version = "0.3", features = ["env"] }
 rpassword = "7.3"
 zxcvbn = "3.1"
 csv = "1.3"

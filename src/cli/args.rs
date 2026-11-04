@@ -15,9 +15,10 @@ use super::update::AutoMode;
 /// Version for `cakepass --version`: number + the git commit it was built from.
 const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (commit ", env!("CAKEPASS_GIT_COMMIT"), ")");
 
-/// Parse an item type ("login", "api", "note", "card" or "ssh-key") for clap.
+/// Parse an item type ("login", "api", "note", "card", "ssh-key" or "identity") for clap.
 fn parse_kind(s: &str) -> Result<Kind, String> {
-    Kind::parse(s).ok_or_else(|| format!("unknown type '{s}'; choose login, api, note, card or ssh-key"))
+    Kind::parse(s)
+        .ok_or_else(|| format!("unknown type '{s}'; choose login, api, note, card, ssh-key or identity"))
 }
 
 /// Parse a security level ("standard", "high" or "maximum") for clap.
@@ -48,7 +49,7 @@ pub fn shell_command() -> clap::Command {
 #[command(
     name = "cakepass",
     version = VERSION,
-    about = "CakePass – offline, encrypted vault for passwords, API keys, notes, cards and SSH keys\n(command: cakepass)",
+    about = "CakePass – offline, encrypted vault for passwords, API keys, notes, cards, SSH keys and\nidentity documents (command: cakepass)",
     help_template = HELP_TEMPLATE,
     disable_help_flag = true,
     disable_version_flag = true,
@@ -65,11 +66,15 @@ pub fn shell_command() -> clap::Command {
         cakepass add Recovery --type note   secure note\n  \
         cakepass add Visa --type card    a bank card or credit card\n  \
         cakepass add Server --type ssh-key   an SSH key (private key, public key, passphrase)\n  \
-        cakepass get GitHub              copy the password to the clipboard (20 s)\n  \
+        cakepass add Passport --type identity   a passport, ID card, licence or bank account\n  \
+        cakepass get GitHub              copy the password to the clipboard (cleared after 20 s; see clip-time)\n  \
         cakepass get GitHub --totp       show and copy the current two-factor (TOTP) code\n  \
+        cakepass edit GitHub --favorite  pin an item; `cakepass list --favorites` shows the pinned ones\n  \
+        cakepass audit                   find weak, reused, old and empty passwords\n  \
         cakepass generate --passphrase   make a passphrase\n  \
         cakepass generate --save Mail    generate, change it if you like, save it\n  \
         cakepass config set animation off   turn the intro animation off\n  \
+        cakepass config set clip-time 45    clear the clipboard after 45 seconds instead of 20\n  \
         cakepass security                show the security level and key file; change them\n  \
         cakepass security --level maximum   make guessing your password even more expensive\n  \
         cakepass keyfile create /run/media/$USER/USB/cakepass.key   a key file for a USB stick\n  \
@@ -144,10 +149,11 @@ pub enum Cmd {
         kdf: KdfArgs,
     },
 
-    /// Add a login, API key, note, card or SSH key (without options, cakepass asks for everything)
+    /// Add a login, API key, note, card, SSH key or identity document (without
+    /// options, cakepass asks for everything)
     Add(AddArgs),
 
-    /// Show an item and copy its secret (password, key, note, card number) to the clipboard
+    /// Show an item and copy its secret (password, key, note, card or document number) to the clipboard
     #[command(alias = "show")]
     Get(GetArgs),
 
@@ -170,9 +176,12 @@ pub enum Cmd {
         /// Only items with this tag
         #[arg(short, long)]
         tag: Option<String>,
-        /// Only this type: login, api, note, card or ssh-key
+        /// Only this type: login, api, note, card, ssh-key or identity
         #[arg(long = "type", value_name = "TYPE", value_parser = parse_kind)]
         kind: Option<Kind>,
+        /// Only your favorites (pin one with `cakepass edit NAME --favorite`)
+        #[arg(short, long)]
+        favorites: bool,
     },
 
     /// Search name, type, tags, username, e-mail address and URL
@@ -180,6 +189,16 @@ pub enum Cmd {
     Search {
         /// Search term (case-insensitive)
         query: String,
+    },
+
+    /// Password health check: weak, reused, old and empty passwords and API
+    /// keys (offline; shows item names only, never a secret)
+    #[command(alias = "health")]
+    Audit {
+        /// Count an item as old when it was not changed for more than this many days
+        #[arg(long, value_name = "DAYS", default_value_t = cakepass::audit::DEFAULT_STALE_DAYS,
+              value_parser = clap::value_parser!(u64).range(1..=36_500))]
+        older_than: u64,
     },
 
     /// Generate a password or passphrase; in a terminal you can view, edit,
@@ -234,7 +253,7 @@ pub enum Cmd {
         action: KeyfileAction,
     },
 
-    /// Show or change settings (animation, lock timeout)
+    /// Show or change settings (animation, lock timeout, clipboard time)
     Config {
         #[command(subcommand)]
         action: Option<ConfigAction>,
@@ -259,6 +278,9 @@ pub enum Cmd {
         /// bash, zsh or fish
         shell: clap_complete::Shell,
     },
+
+    /// Print the manual page (roff), e.g. `cakepass man > cakepass.1`
+    Man,
 }
 
 /// What `cakepass config` can do.
@@ -271,7 +293,8 @@ pub enum ConfigAction {
         /// Which setting
         #[arg(value_enum)]
         key: ConfigKey,
-        /// The new value (animation: on/off; lock-timeout: minutes; keyfile: a path, or none)
+        /// The new value (animation: on/off; lock-timeout: minutes; clip-time:
+        /// seconds, 5 to 300; keyfile: a path, or none)
         value: String,
     },
 }
@@ -283,6 +306,8 @@ pub enum ConfigKey {
     Animation,
     /// Lock CakePass (screen and line mode) after this many minutes of inactivity
     LockTimeout,
+    /// Clear the clipboard this many seconds after copying a secret (5 to 300; default 20)
+    ClipTime,
     /// Where your key file is, for a vault that needs one (only the path is stored)
     Keyfile,
 }
@@ -418,16 +443,19 @@ pub struct GenArgs {
 pub struct AddArgs {
     /// Name of the item, e.g. "GitHub"
     pub name: String,
-    /// Type of item: login, api (API key/token), note, card (bank/credit card) or ssh-key
+    /// Type of item: login, api (API key/token), note, card (bank/credit card), ssh-key or
+    /// identity (passport, ID card, driving licence, bank account, membership)
     #[arg(long = "type", short = 'k', value_name = "TYPE", value_parser = parse_kind, default_value = "login")]
     pub kind: Kind,
-    /// Username (for an API key: account or key ID; for a card: the cardholder name)
+    /// Username (for an API key: account or key ID; for a card: the cardholder name;
+    /// for an identity: the full name)
     #[arg(short, long)]
     pub username: Option<String>,
     /// E-mail address that belongs to this item
     #[arg(short, long)]
     pub email: Option<String>,
-    /// Web address (for an API key: the service; for an SSH key: the host)
+    /// Web address (for an API key: the service; for an SSH key: the host; for an
+    /// identity: who issued it)
     #[arg(long)]
     pub url: Option<String>,
     /// Tags, separated by commas
@@ -460,7 +488,7 @@ pub struct GetArgs {
     /// Copy the public key of an SSH key instead of the private key
     #[arg(long, conflicts_with_all = ["show", "copy_username", "copy_email"])]
     pub copy_public: bool,
-    /// Show the current two-factor (TOTP) code and copy it (cleared after 20 s)
+    /// Show the current two-factor (TOTP) code and copy it (cleared like a password)
     #[arg(long, conflicts_with_all = ["show", "copy_username", "copy_email", "copy_public"])]
     pub totp: bool,
     /// Copy nothing
@@ -475,19 +503,19 @@ pub struct EditArgs {
     /// New name
     #[arg(long, value_name = "NAME")]
     pub rename: Option<String>,
-    /// New username (for a card: the cardholder name)
+    /// New username (for a card: the cardholder name; for an identity: the full name)
     #[arg(short, long)]
     pub username: Option<String>,
     /// New e-mail address
     #[arg(short, long)]
     pub email: Option<String>,
-    /// New web address (for an SSH key: the host)
+    /// New web address (for an SSH key: the host; for an identity: who issued it)
     #[arg(long)]
     pub url: Option<String>,
     /// New tags (replaces the old ones), separated by commas
     #[arg(short, long, value_delimiter = ',')]
     pub tags: Option<Vec<String>>,
-    /// Type a new password, API key, card number or private key (hidden prompt)
+    /// Type a new password, API key, card number, private key or document number (hidden prompt)
     #[arg(long, conflicts_with = "generate")]
     pub password: bool,
     /// Generate a new password
@@ -496,7 +524,7 @@ pub struct EditArgs {
     /// Type new notes (for a note: the new contents)
     #[arg(long)]
     pub notes: bool,
-    /// Card: type a new expiry date
+    /// Card or identity: type a new expiry date
     #[arg(long)]
     pub expiry: bool,
     /// Card: type a new security code (hidden prompt)
@@ -514,6 +542,12 @@ pub struct EditArgs {
     /// Remove the TOTP secret
     #[arg(long)]
     pub no_totp: bool,
+    /// Pin the item as a favorite (`cakepass list --favorites`)
+    #[arg(long, conflicts_with = "no_favorite")]
+    pub favorite: bool,
+    /// Unpin the item
+    #[arg(long)]
+    pub no_favorite: bool,
     #[command(flatten)]
     pub gen_opts: GenArgs,
 }

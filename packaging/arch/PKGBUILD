@@ -70,6 +70,11 @@ package() {
   "$bin" completions zsh  > "$pkgdir/usr/share/zsh/site-functions/_cakepass"
   "$bin" completions fish > "$pkgdir/usr/share/fish/vendor_completions.d/cakepass.fish"
 
+  # Man page (`man cakepass`), generated from the same definition as --help
+  # (makepkg compresses it).
+  install -dm0755 "$pkgdir/usr/share/man/man1"
+  "$bin" man > "$pkgdir/usr/share/man/man1/cakepass.1"
+
   # Where the source code is, for `cakepass --update`.
   install -dm0755 "$pkgdir/usr/share/cakepass"
   printf '%s\n' "$_root" > "$pkgdir/usr/share/cakepass/source-dir"

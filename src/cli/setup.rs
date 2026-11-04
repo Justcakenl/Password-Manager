@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 
 use secrecy::SecretString;
 
+use cakepass::clipboard;
 use cakepass::crypto::{self, KdfParams, MemoryUse, SecurityLevel};
 use cakepass::generator::{self, PassphraseOptions};
 use cakepass::keyfile::{self, LoadedKeyFile};
@@ -135,7 +136,7 @@ pub fn wizard(paths: &VaultPaths, kdf_args: &KdfArgs) -> Result<Option<UnlockedV
 fn finish(created: bool) {
     ui::success("All set!");
     ui::info("  Start CakePass:      cakepass   (arrow keys; `cakepass shell` for typed commands)");
-    ui::info("  Add something:       cakepass add GitHub   (or --type api, note, card, ssh-key)");
+    ui::info("  Add something:       cakepass add GitHub   (or --type api, note, card, ssh-key, identity)");
     ui::info("  Change settings:     cakepass config");
     ui::info("  Security:            cakepass security   (level, key file, unlock time)");
     ui::info("  Update later:        cakepass --update");
@@ -318,6 +319,15 @@ pub fn config_command(action: Option<ConfigAction>) -> Result<()> {
                         ))
                     })?;
                 }
+                ConfigKey::ClipTime => {
+                    cfg.clip_time_secs = clipboard::parse_clear_secs(&value).ok_or_else(|| {
+                        Error::InvalidInput(format!(
+                            "clip-time must be a whole number of seconds between {} and {}",
+                            clipboard::CLEAR_SECS_RANGE.start(),
+                            clipboard::CLEAR_SECS_RANGE.end()
+                        ))
+                    })?;
+                }
                 ConfigKey::Keyfile => cfg.keyfile = keyfile_setting(&value)?,
             }
             config::save(&cfg)?;
@@ -357,11 +367,13 @@ fn show(cfg: &Config) {
     println!("{}", ui::bold("CakePass settings"));
     println!("  animation:     {}", if cfg.animation { "on" } else { "off" });
     println!("  lock-timeout:  {} minute(s)", cfg.lock_timeout_minutes);
+    println!("  clip-time:     {} second(s)", cfg.clip_time_secs);
     println!(
         "  keyfile:       {}",
         cfg.keyfile.as_ref().map_or("none".to_string(), |p| p.display().to_string())
     );
     println!("  file:          {}", config::path().map_or("-".to_string(), |p| p.display().to_string()));
     ui::info("Change with: cakepass config set animation off   |   cakepass config set lock-timeout 10");
+    ui::info("             cakepass config set clip-time 45   (seconds, 5 to 300)");
     ui::info("             cakepass config set keyfile /path/to/cakepass.key   (or: none)");
 }

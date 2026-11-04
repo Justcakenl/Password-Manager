@@ -134,6 +134,7 @@ impl App {
             Key::Char('m') => self.copy_field(CopyWhat::Email),
             Key::Char('t') => self.copy_field(CopyWhat::Totp),
             Key::Char('p') => self.copy_field(CopyWhat::PublicKey),
+            Key::Char('f') => self.toggle_favorite(),
             Key::Char('a' | 'n') => self.open_add(),
             Key::Char('e') => self.open_edit(),
             Key::Delete | Key::Char('d') => self.ask_delete(),
@@ -261,13 +262,18 @@ impl App {
         let w = g.width();
         let count = |t: Tab| self.entries().iter().filter(|e| t.kind().is_none_or(|k| e.kind() == k)).count();
         let labels: Vec<String> = Tab::ALL.iter().map(|&t| format!("{} {}", t.label(), count(t))).collect();
-        let full_w: usize = labels.iter().map(|l| str_width(l) + 3).sum();
-        let with_counts = full_w + 18 <= w as usize;
+        // With counts if they fit (with a narrower gap when needed), else without.
+        let needed = |gap: usize| labels.iter().map(|l| str_width(l) + gap).sum::<usize>() + 18;
+        let (with_counts, gap) = match (needed(3) <= w as usize, needed(2) <= w as usize) {
+            (true, _) => (true, 3),
+            (false, true) => (true, 2),
+            (false, false) => (false, 3),
+        };
         let mut x = 1;
         for (i, &t) in Tab::ALL.iter().enumerate() {
             let label = if with_counts { labels[i].as_str() } else { t.label() };
             let style = if t == self.tab { Style::ACTIVE_TAB } else { Style::DIM };
-            x += g.print(x, 1, w.saturating_sub(x), label, style) + 3;
+            x += g.print(x, 1, w.saturating_sub(x), label, style) + gap;
         }
         // The search field on the right.
         let sw = (w.saturating_sub(x + 1)).min(32);
@@ -335,6 +341,10 @@ impl App {
             }
             let kind_style = if selected { base } else { Style::kind(e.kind()) };
             g.print(r.x + 2, y, 6, kind_tag(e.kind()), kind_style);
+            if e.is_favorite() {
+                // Right before the name (the type tag is at most 5 wide).
+                g.set(r.x + 8, y, g.g.star, if selected { base } else { Style::ACCENT_BOLD });
+            }
             let mut x = r.x + 9;
             g.print(x, y, nw, e.name(), if selected { base } else { Style::BOLD });
             x += nw + 1;
@@ -386,6 +396,9 @@ impl App {
             }
             Kind::Card => vec![("Cardholder", e.username(key)), ("Expiry", e.expiry(key))],
             Kind::SshKey => vec![("Host", e.url(key)), ("Public key", e.public_key(key))],
+            Kind::Identity => {
+                vec![("Full name", e.username(key)), ("Issued by", e.url(key)), ("Expiry", e.expiry(key))]
+            }
             Kind::Note => Vec::new(),
         };
         for (label, value) in plain_fields {
@@ -504,5 +517,6 @@ fn kind_tag(kind: Kind) -> &'static str {
         Kind::Note => "note",
         Kind::Card => "card",
         Kind::SshKey => "ssh",
+        Kind::Identity => "id",
     }
 }

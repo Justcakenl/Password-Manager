@@ -350,11 +350,11 @@ fn search_and_tabs_filter_the_list() {
     t.typ("sk-test");
     assert!(t.app.view.is_empty() && t.screen().contains("No items match."));
     t.key(Key::Esc);
-    // Tabs: All · Logins · API keys · Cards · SSH · Notes.
+    // Tabs: All · Logins · API keys · Cards · IDs · SSH · Notes.
     t.key(Key::Right);
     assert_eq!(t.app.tab, Tab::Logins);
     assert_eq!(t.app.view.len(), 1);
-    t.keys(&[Key::Right, Key::Right, Key::Right, Key::Right]);
+    t.keys(&[Key::Right, Key::Right, Key::Right, Key::Right, Key::Right]);
     assert_eq!(t.app.tab, Tab::Notes);
     assert_eq!(t.app.selected().unwrap().name(), "Recovery codes");
     t.key(Key::Right);
@@ -482,7 +482,10 @@ fn settings_are_saved() {
     }
     assert_eq!(t.app.cfg.lock_timeout_minutes, 1, "never below one minute");
     let saved = crate::cli::config::load_from(&t.dir.path().join("config"));
-    assert_eq!(saved, Config { animation: false, lock_timeout_minutes: 1, keyfile: None });
+    assert_eq!(
+        saved,
+        Config { animation: false, lock_timeout_minutes: 1, keyfile: None, ..Config::default() }
+    );
     t.key(Key::Esc);
     assert!(matches!(t.app.screen, Screen::Main));
 }
@@ -873,7 +876,7 @@ fn cards_and_ssh_keys_in_the_list_and_details() {
     t.app.select_name("GitHub");
     t.keys(&[Key::Right, Key::Right, Key::Right]);
     assert_eq!((t.app.tab, t.app.view.len()), (Tab::Cards, 1));
-    t.key(Key::Right);
+    t.keys(&[Key::Right, Key::Right]); // past the (empty) IDs tab
     assert_eq!((t.app.tab, t.app.selected().unwrap().name()), (Tab::SshKeys, "Server key"));
 }
 
@@ -1010,7 +1013,7 @@ fn new_types_render_at_the_minimum_size() {
     t.key(Key::Char('a'));
     t.key(Key::Down);
     let s = t.screen_at(60, 16);
-    assert!(s.contains("SSH key") && s.contains("note"), "all five types fit:\n{s}");
+    assert!(s.contains(" ID ") && s.contains("SSH key") && s.contains(" note "), "all six types fit:\n{s}");
 }
 
 #[test]
@@ -1033,4 +1036,98 @@ fn a_revealed_private_key_is_a_preview_and_c_copies_it_exactly() {
     assert!(s.contains("…"), "a clipped line is marked as clipped:\n{s}");
     t.key(Key::Char('c'));
     assert_eq!(t.clip.borrow().as_slice(), [key.as_str()], "c copies the key byte for byte");
+}
+
+// ───────────────────────── identities, favorites, clip-time ─────────────────────────
+
+#[test]
+fn add_an_identity_with_the_form_and_see_it_in_the_list() {
+    let mut t = T::new();
+    t.key(Key::Char('a'));
+    t.typ("Passport");
+    t.key(Key::Down); // Type
+    t.keys(&[Key::Right, Key::Right, Key::Right]); // login → API key → card → ID
+    let s = t.screen();
+    assert!(s.contains("Full name") && s.contains("Issued by") && s.contains("Expiry date"), "{s}");
+    assert!(!s.contains("E-mail") && !s.contains("CVV"), "only the fields of an identity:\n{s}");
+    t.key(Key::Down);
+    t.typ("Jane Q. Doe");
+    t.key(Key::Down);
+    t.typ("Gemeente Utrecht");
+    t.key(Key::Down);
+    t.typ("2031-05-14");
+    t.keys(&[Key::Down, Key::Down]); // tags, number
+    t.typ("NX7731ZQ9");
+    assert!(!t.screen().contains("NX7731ZQ9"), "the number is masked while typing");
+    t.key(Key::Ctrl('g'));
+    assert!(t.app.modals.is_empty(), "no generator for a document number");
+    t.key(Key::Ctrl('s'));
+    assert_eq!(t.toast(), "Identity 'Passport' saved (encrypted).");
+    // The list: type tag, full name; the details: issuer, expiry, the number as dots.
+    let s = t.screen();
+    assert!(s.contains("id ") && s.contains("Jane Q. Doe") && s.contains("IDs 1"), "{s}");
+    assert!(s.contains("Gemeente Utrecht") && s.contains("2031-05-14") && s.contains("Number"), "{s}");
+    assert!(!s.contains("NX7731ZQ9"), "{s}");
+    t.key(Key::Enter);
+    assert!(t.screen().contains("NX7731ZQ9"), "revealed");
+    t.key(Key::Char('c'));
+    t.key(Key::Char('u'));
+    assert_eq!(t.clip.borrow().as_slice(), ["NX7731ZQ9", "Jane Q. Doe"]);
+    t.key(Key::Char('m'));
+    assert!(t.toast().contains("no e-mail address"), "{}", t.toast());
+
+    let uv = t.reopen(PW);
+    let k = uv.item_key();
+    let e = get(&uv, "passport");
+    assert_eq!(e.kind(), Kind::Identity);
+    assert_eq!(e.username(k).unwrap().as_str(), "Jane Q. Doe");
+    assert_eq!(e.url(k).unwrap().as_str(), "Gemeente Utrecht");
+    assert_eq!(e.expiry(k).unwrap().as_str(), "2031-05-14");
+    assert_eq!(e.password(k).unwrap().as_str(), "NX7731ZQ9");
+}
+
+#[test]
+fn f_pins_a_favorite_with_a_star_and_puts_it_first() {
+    let mut t = T::sample();
+    // Recovery codes is last (by name); pin it.
+    t.app.select_name("Recovery codes");
+    t.key(Key::Char('f'));
+    assert_eq!(t.toast(), "'Recovery codes' pinned as a favorite (f again unpins it).");
+    let s = t.screen();
+    // The line of `name` in the list column (the details pane is on the right).
+    let row =
+        |name: &str| s.lines().position(|l| l.chars().take(44).collect::<String>().contains(name)).unwrap();
+    assert!(row("Recovery codes") < row("GitHub") && row("GitHub") < row("OpenAI"), "favorites first:\n{s}");
+    assert!(s.lines().any(|l| l.contains("★Recovery codes")), "the star:\n{s}");
+    assert!(!s.lines().any(|l| l.contains("★GitHub")));
+    assert_eq!(t.app.selected().unwrap().name(), "Recovery codes", "the selection follows the item");
+    // Saved at once, and only the flag changed.
+    let uv = t.reopen(PW);
+    let e = get(&uv, "recovery codes");
+    assert!(e.is_favorite() && !get(&uv, "github").is_favorite());
+    // Without UTF-8 the star is a plain *.
+    let mut g = Grid::new(80, 24, &ASCII);
+    t.app.draw(&mut g, t.now);
+    assert!(g.text().lines().any(|l| l.contains("*Recovery codes")), "{}", g.text());
+    // f again unpins it; the list is back in name order.
+    t.key(Key::Char('f'));
+    assert_eq!(t.toast(), "'Recovery codes' is no longer a favorite.");
+    let s = t.screen();
+    // The line of `name` in the list column (the details pane is on the right).
+    let row =
+        |name: &str| s.lines().position(|l| l.chars().take(44).collect::<String>().contains(name)).unwrap();
+    assert!(row("GitHub") < row("Recovery codes") && !s.contains('★'), "{s}");
+    assert!(!get(&t.reopen(PW), "recovery codes").is_favorite());
+    // `f` is a shortcut now, not the start of a search.
+    assert!(!t.app.searching);
+}
+
+#[test]
+fn the_copy_message_follows_the_clip_time_setting() {
+    let mut t = T::sample();
+    t.app.cfg.clip_time_secs = 45;
+    t.key(Key::Char('c'));
+    assert!(t.screen().contains("the clipboard is cleared in 45 s"), "{}", t.screen());
+    t.later(44);
+    assert!(t.screen().contains("cleared in 1 s"), "{}", t.screen());
 }

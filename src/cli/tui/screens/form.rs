@@ -9,7 +9,8 @@
 //!
 //! The fields depend on the type: a card has a cardholder, expiry date and
 //! security code; an SSH key has a host, public key, passphrase and a
-//! multi-line private key (pasting it is the normal way in).
+//! multi-line private key (pasting it is the normal way in); an identity has
+//! a full name, who issued it, an expiry date and the (hidden) number.
 //!
 //! SECURITY: the fields are `Zeroizing` text inputs that exist only while the
 //! form is open; they are wiped when it closes, saved or not.
@@ -102,7 +103,7 @@ pub struct Form {
     pub button: u8,
 }
 
-const KINDS: [Kind; 5] = Kind::ALL;
+const KINDS: [Kind; 6] = Kind::ALL;
 
 impl Form {
     pub fn add(kind: Kind) -> Form {
@@ -169,6 +170,7 @@ impl Form {
             Kind::Login | Kind::Api => out.extend([Field::User, Field::Email, Field::Url]),
             Kind::Card => out.extend([Field::User, Field::Expiry]),
             Kind::SshKey => out.extend([Field::Url, Field::PublicKey]),
+            Kind::Identity => out.extend([Field::User, Field::Url, Field::Expiry]),
             Kind::Note => {}
         }
         out.push(Field::Tags);
@@ -176,6 +178,7 @@ impl Form {
             Kind::Login | Kind::Api => out.push(Field::Secret),
             Kind::Card => out.extend([Field::Secret, Field::Cvv]),
             Kind::SshKey => out.extend([Field::Secret, Field::Passphrase]),
+            Kind::Identity => out.push(Field::Secret),
             Kind::Note => {}
         }
         out.extend([Field::Notes, Field::Buttons]);
@@ -215,10 +218,12 @@ impl Form {
             (Field::Kind, _) => "Type",
             (Field::User, Kind::Api) => "Account/ID",
             (Field::User, Kind::Card) => "Cardholder",
+            (Field::User, Kind::Identity) => "Full name",
             (Field::User, _) => "Username",
             (Field::Email, _) => "E-mail",
             (Field::Url, Kind::Api) => "Service URL",
             (Field::Url, Kind::SshKey) => "Host",
+            (Field::Url, Kind::Identity) => "Issued by",
             (Field::Url, _) => "URL",
             (Field::Expiry, _) => "Expiry date",
             (Field::PublicKey, _) => "Public key",
@@ -226,6 +231,7 @@ impl Form {
             (Field::Secret, Kind::Api) => "API key",
             (Field::Secret, Kind::Card) => "Card number",
             (Field::Secret, Kind::SshKey) => "Private key",
+            (Field::Secret, Kind::Identity) => "Number",
             (Field::Secret, _) => "Password",
             (Field::Cvv, _) => "CVV",
             (Field::Passphrase, _) => "Passphrase",
@@ -415,13 +421,18 @@ impl Form {
         match (self.focus, self.kind) {
             (Field::Name, _) => "The name you find it by, e.g. GitHub (each name once).",
             (Field::Kind, _) if !self.adding() => "The type cannot be changed.",
-            (Field::Kind, _) => "← → choose: login, API key, card, SSH key or note (a note is text only).",
+            (Field::Kind, _) => "← → choose: login, API key, card, ID (identity), SSH key or note.",
             (Field::User, Kind::Api) => "Optional: the account or key ID.",
             (Field::User, Kind::Card) => "Optional: the name on the card.",
+            (Field::User, Kind::Identity) => "Optional: whose document or account this is.",
             (Field::User, _) => "Optional.",
             (Field::Email, _) => "Optional: the e-mail address that belongs to it.",
             (Field::Url, Kind::SshKey) => "Optional: where the key is used, e.g. git@github.com.",
+            (Field::Url, Kind::Identity) => {
+                "Optional: who issued it, e.g. a government office, a bank or a club."
+            }
             (Field::Url, _) => "Optional: the web address.",
+            (Field::Expiry, Kind::Identity) => "Optional: as on the document; empty if it does not expire.",
             (Field::Expiry, _) => "Optional: as on the card, e.g. 08/29.",
             (Field::PublicKey, _) => "Optional: one line, e.g. ssh-ed25519 AAAA… me@laptop.",
             (Field::Tags, _) => "Optional, separated by commas: work, mail",
@@ -429,6 +440,9 @@ impl Form {
             (Field::Secret, Kind::Api) => "Hidden. Paste or type the key; Ctrl+R shows it.",
             (Field::Secret, Kind::Card) => "Hidden. Type or paste the card number; Ctrl+R shows it.",
             (Field::Secret, Kind::SshKey) => "Hidden. Paste the private key (all lines); Ctrl+R shows it.",
+            (Field::Secret, Kind::Identity) => {
+                "Hidden. The document, account (IBAN) or membership number; Ctrl+R shows it."
+            }
             (Field::Secret, _) => "Hidden while you type. Ctrl+R shows, Ctrl+G generates.",
             (Field::Cvv, _) => "Optional and hidden: the security code on the back.",
             (Field::Passphrase, _) => "Optional and hidden: the passphrase of the private key.",
@@ -512,6 +526,7 @@ impl App {
                 Kind::Api => "The API key must not be empty.".into(),
                 Kind::Card => "The card number must not be empty.".into(),
                 Kind::SshKey => "The private key is empty: paste it.".into(),
+                Kind::Identity => "The number must not be empty.".into(),
                 _ => "The password is empty: type one or press Ctrl+G.".into(),
             }));
         }
@@ -644,19 +659,25 @@ impl App {
             g.print(inner.x + 2, y, LW, f.label(field), label_style);
             match field {
                 Field::Kind if f.adding() => {
+                    let name = |k: Kind| match k {
+                        Kind::Api => "API key",
+                        Kind::SshKey => "SSH key",
+                        Kind::Identity => "ID",
+                        k => k.label(),
+                    };
+                    // No gaps between the types when the window is narrow (the
+                    // chosen one is still marked by its colour).
+                    let total: u16 = KINDS.iter().map(|&k| name(k).len() as u16 + 3).sum();
+                    let gap = u16::from(total <= vw);
                     let mut x = vx;
                     for k in KINDS {
-                        let name = match k {
-                            Kind::Api => "API key",
-                            Kind::SshKey => "SSH key",
-                            k => k.label(),
-                        };
                         let style = match (k == f.kind, focused) {
                             (true, true) => Style::SELECTED,
                             (true, false) => Style::ACCENT_BOLD,
                             _ => Style::DIM,
                         };
-                        x += g.print(x, y, 10, &format!(" {name} "), style) + 1;
+                        x += g.print(x, y, (vx + vw).saturating_sub(x), &format!(" {} ", name(k)), style)
+                            + gap;
                     }
                 }
                 Field::Kind => {
@@ -722,7 +743,7 @@ impl App {
         }
         match f.kind {
             Kind::Login | Kind::Api => hints.extend([("Ctrl+G", "generate"), ("Ctrl+R", "show password")]),
-            Kind::Card | Kind::SshKey => hints.push(("Ctrl+R", "show hidden")),
+            Kind::Card | Kind::SshKey | Kind::Identity => hints.push(("Ctrl+R", "show hidden")),
             Kind::Note => {}
         }
         hints.push(("F1", "help"));

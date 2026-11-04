@@ -25,7 +25,6 @@ use std::time::{Duration, Instant};
 
 use zeroize::Zeroizing;
 
-use cakepass::clipboard::CLEAR_AFTER_SECS;
 use cakepass::crypto::{self, ItemKey, KdfParams, SecurityLevel};
 use cakepass::format::Credentials;
 use cakepass::keyfile::{self, LoadedKeyFile};
@@ -74,12 +73,14 @@ pub enum Tab {
     Logins,
     Api,
     Cards,
+    Identities,
     SshKeys,
     Notes,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 6] = [Tab::All, Tab::Logins, Tab::Api, Tab::Cards, Tab::SshKeys, Tab::Notes];
+    pub const ALL: [Tab; 7] =
+        [Tab::All, Tab::Logins, Tab::Api, Tab::Cards, Tab::Identities, Tab::SshKeys, Tab::Notes];
 
     pub fn kind(self) -> Option<Kind> {
         match self {
@@ -87,6 +88,7 @@ impl Tab {
             Tab::Logins => Some(Kind::Login),
             Tab::Api => Some(Kind::Api),
             Tab::Cards => Some(Kind::Card),
+            Tab::Identities => Some(Kind::Identity),
             Tab::SshKeys => Some(Kind::SshKey),
             Tab::Notes => Some(Kind::Note),
         }
@@ -98,7 +100,8 @@ impl Tab {
             Tab::Logins => "Logins",
             Tab::Api => "API keys",
             Tab::Cards => "Cards",
-            // Short, so all six tabs keep their counts in 80 columns.
+            Tab::Identities => "IDs",
+            // Short, so all seven tabs keep their counts in 80 columns.
             Tab::SshKeys => "SSH",
             Tab::Notes => "Notes",
         }
@@ -389,6 +392,8 @@ impl App {
             out
         };
         self.view.retain(|&i| kind.is_none_or(|k| entries[i].kind() == k));
+        // Favorites first; otherwise the vault's order (by name). Stable.
+        self.view.sort_by_key(|&i| !entries[i].is_favorite());
         match keep.and_then(|n| self.view.iter().position(|&i| entries[i].name() == n)) {
             Some(pos) => self.sel = pos,
             None => self.sel = self.sel.min(self.view.len().saturating_sub(1)),
@@ -482,7 +487,7 @@ impl App {
     pub fn copy_value(&mut self, value: &str, what: &str) {
         match (self.copier)(value) {
             Ok(tool) => {
-                let clears = self.now + Duration::from_secs(CLEAR_AFTER_SECS);
+                let clears = self.now + Duration::from_secs(self.cfg.clip_time_secs);
                 self.toast = Some(Toast {
                     text: format!("{what} copied ({tool})"),
                     style: Style::SUCCESS,
@@ -511,12 +516,13 @@ impl App {
                 let noun = match kind {
                     Kind::Api => "The account ID",
                     Kind::Card => "The cardholder name",
+                    Kind::Identity => "The full name",
                     _ => "The username",
                 };
                 (e.username(key), noun, "no username".to_string())
             }
             CopyWhat::Email if kind == Kind::Note => return self.info("A note has no e-mail address."),
-            CopyWhat::Email if matches!(kind, Kind::Card | Kind::SshKey) => {
+            CopyWhat::Email if matches!(kind, Kind::Card | Kind::SshKey | Kind::Identity) => {
                 return self.info(format!("{} has no e-mail address.", commands::kind_noun(kind)));
             }
             CopyWhat::Email => (e.email(key), "The e-mail address", "no e-mail address".to_string()),
@@ -551,6 +557,34 @@ impl App {
         self.reveal_until = None;
         self.totp_shown = Some((name, self.now + Duration::from_secs(REVEAL_SECS)));
         self.copy_value(code.as_str(), "The TOTP code");
+    }
+
+    /// `f`: pin the selected item as a favorite, or unpin it. Saved at once
+    /// (all or nothing, like every other change).
+    pub fn toggle_favorite(&mut self) {
+        let Some(e) = self.selected() else { return };
+        let (name, pin) = (e.name().to_string(), !e.is_favorite());
+        let change = |v: &mut Vault, _: &ItemKey| {
+            v.update(&name, |e| {
+                e.set_favorite(pin);
+                Ok(())
+            })
+        };
+        match self.commit(change) {
+            Ok(()) => {
+                self.refilter();
+                self.ok(if pin {
+                    format!("'{name}' pinned as a favorite (f again unpins it).")
+                } else {
+                    format!("'{name}' is no longer a favorite.")
+                });
+            }
+            Err(e) => {
+                if let Some(t) = self.save_error(e) {
+                    self.fail(t);
+                }
+            }
+        }
     }
 
     // ───────────────────────── keys ─────────────────────────

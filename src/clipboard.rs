@@ -3,11 +3,15 @@
 //! SECURITY-CRITICAL.
 //! - The secret goes to `wl-copy`/`xclip` via stdin, never as an argument
 //!   (arguments are visible to everyone in `ps`).
-//! - After copying, a detached helper process (`cakepass __clipboard-clear <tool>`)
-//!   clears the clipboard after 20 seconds. The helper only receives a
+//! - After copying, a detached helper process
+//!   (`cakepass __clipboard-clear <tool> <seconds>`) clears the clipboard
+//!   after the chosen time (20 seconds unless changed with
+//!   `cakepass config set clip-time`). The helper only receives a
 //!   BLAKE2b hash of the secret (via stdin) and only clears the clipboard if
 //!   it still holds that secret (compared in constant time). This way we never
 //!   wipe something you copied yourself afterwards.
+//! - The time is always kept inside [`CLEAR_SECS_RANGE`]: a damaged setting
+//!   or a bad helper argument can never mean "never" or "after a day".
 //!
 //! Limitation: clipboard managers (Klipper, cliphist, etc.) may keep their own
 //! history; we cannot clear that.
@@ -23,8 +27,21 @@ use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 
-/// The clipboard is cleared after this many seconds.
-pub const CLEAR_AFTER_SECS: u64 = 20;
+/// The clipboard is cleared after this many seconds, unless set otherwise.
+pub const DEFAULT_CLEAR_SECS: u64 = 20;
+/// Allowed clearing times, in seconds: at least long enough to paste, at
+/// most five minutes (a secret should not sit on the clipboard for long).
+pub const CLEAR_SECS_RANGE: std::ops::RangeInclusive<u64> = 5..=300;
+
+/// Parse a clearing time in seconds (`None` outside [`CLEAR_SECS_RANGE`]).
+pub fn parse_clear_secs(s: &str) -> Option<u64> {
+    s.trim().parse::<u64>().ok().filter(|n| CLEAR_SECS_RANGE.contains(n))
+}
+
+/// Keep a clearing time inside [`CLEAR_SECS_RANGE`].
+pub fn clamp_clear_secs(secs: u64) -> u64 {
+    secs.clamp(*CLEAR_SECS_RANGE.start(), *CLEAR_SECS_RANGE.end())
+}
 /// First argument with which `cakepass` starts as the clearing helper process.
 pub const HELPER_ARG: &str = "__clipboard-clear";
 const HASH_LEN: usize = 64;
@@ -146,22 +163,26 @@ pub fn clear(tool: Tool) -> Result<()> {
     Ok(())
 }
 
-/// Copy `secret` and start the helper process that clears it after 20 s.
-pub fn copy_with_auto_clear(tool: Tool, secret: &[u8]) -> Result<()> {
+/// Copy `secret` and start the helper process that clears it after
+/// `seconds` (kept inside [`CLEAR_SECS_RANGE`]).
+pub fn copy_with_auto_clear(tool: Tool, secret: &[u8], seconds: u64) -> Result<()> {
     copy(tool, secret)?;
     // If starting the clearing helper fails we clear immediately:
     // a password must never stay on the clipboard indefinitely.
-    if let Err(e) = spawn_clear_helper(tool, &hash(secret)) {
+    if let Err(e) = spawn_clear_helper(tool, &hash(secret), clamp_clear_secs(seconds)) {
         let _ = clear(tool);
         return Err(e);
     }
     Ok(())
 }
 
-fn spawn_clear_helper(tool: Tool, digest: &[u8; HASH_LEN]) -> Result<()> {
+fn spawn_clear_helper(tool: Tool, digest: &[u8; HASH_LEN], seconds: u64) -> Result<()> {
     let exe = std::env::current_exe()?;
     let mut cmd = Command::new(exe);
-    cmd.args([HELPER_ARG, tool.name()]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
+    cmd.args([HELPER_ARG, tool.name(), &seconds.to_string()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     // SAFETY: setsid() is async-signal-safe and touches no memory of the
     // parent. A session of its own makes sure Ctrl+C or closing the
     // terminal does not stop the helper process.
@@ -180,6 +201,7 @@ fn spawn_clear_helper(tool: Tool, digest: &[u8; HASH_LEN]) -> Result<()> {
 }
 
 /// Main routine of the hidden helper process `cakepass __clipboard-clear`.
+/// `seconds` is kept inside [`CLEAR_SECS_RANGE`].
 pub fn run_clear_helper(tool: Tool, seconds: u64) -> Result<()> {
     // SAFETY: ignoring a signal is always safe.
     unsafe {
@@ -187,7 +209,7 @@ pub fn run_clear_helper(tool: Tool, seconds: u64) -> Result<()> {
     }
     let mut expected = [0u8; HASH_LEN];
     std::io::stdin().read_exact(&mut expected)?;
-    std::thread::sleep(Duration::from_secs(seconds));
+    std::thread::sleep(Duration::from_secs(clamp_clear_secs(seconds)));
     let still_ours = match paste(tool) {
         Ok(current) => bool::from(hash(&current).ct_eq(&expected)),
         // Cannot check? Then we clear to be safe.
@@ -223,5 +245,20 @@ mod tests {
         assert!(!bool::from(hash(b"abc").ct_eq(&hash(b"abd"))));
         assert_eq!(Tool::from_name("xclip"), Some(Tool::Xclip));
         assert_eq!(Tool::from_name("something"), None);
+    }
+
+    #[test]
+    fn clearing_time_bounds() {
+        assert!(CLEAR_SECS_RANGE.contains(&DEFAULT_CLEAR_SECS));
+        assert_eq!(parse_clear_secs("20"), Some(20));
+        assert_eq!(parse_clear_secs(" 5 "), Some(5));
+        assert_eq!(parse_clear_secs("300"), Some(300));
+        for bad in ["0", "4", "301", "86400", "-5", "", "abc", "1e3", "20s"] {
+            assert_eq!(parse_clear_secs(bad), None, "{bad:?}");
+        }
+        // Whatever reaches the helper: never "never", never "after a day".
+        assert_eq!(clamp_clear_secs(0), 5);
+        assert_eq!(clamp_clear_secs(u64::MAX), 300);
+        assert_eq!(clamp_clear_secs(45), 45);
     }
 }

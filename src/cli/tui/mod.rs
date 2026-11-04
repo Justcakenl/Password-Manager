@@ -117,7 +117,9 @@ pub fn run(paths: &VaultPaths, cfg: &Config) -> Result<()> {
 pub fn run_unlocked(uv: UnlockedVault, notices: Vec<Notice>, cfg: &Config) -> Result<()> {
     let theme = Theme::detect(ui::color_on_stdout());
     let lock = lock_secs(cfg);
-    let copier: app::Copier = Box::new(commands::copy_secret);
+    // The clipboard is cleared after the configured time; the toast says the same.
+    let clear_secs = cfg.clip_time_secs;
+    let copier: app::Copier = Box::new(move |s: &str| commands::copy_secret(s, clear_secs));
     let now = Instant::now();
     let mut app = App::new(uv, cfg.clone(), config::path(), Duration::from_secs(lock), copier, now);
     app.key_file = commands::key_file_path();

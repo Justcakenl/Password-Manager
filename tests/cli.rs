@@ -638,7 +638,7 @@ fn config_show_and_set() {
     let cfg = std::fs::read_to_string(config_file(&v)).unwrap();
     assert_eq!(
         cfg.lines().filter(|l| !l.starts_with('#')).collect::<Vec<_>>(),
-        ["animation=off", "lock_timeout_minutes=12"]
+        ["animation=off", "lock_timeout_minutes=12", "clip_time_seconds=20"]
     );
 
     // On/off words are flexible; bad values and unknown keys are refused.
@@ -647,6 +647,16 @@ fn config_show_and_set() {
     v.run(&["config", "set", "lock-timeout", "0"], "").failure().stderr(contains("between 1 and 1440"));
     v.run(&["config", "set", "lock-timeout", "soon"], "").failure();
     v.run(&["config", "set", "colour", "red"], "").failure();
+    // The clipboard time: 5 to 300 seconds; 0 ("never") and a day are refused.
+    v.run(&["config", "set", "clip-time", "45"], "")
+        .success()
+        .stdout(contains("clip-time:     45 second(s)"));
+    for bad in ["0", "4", "301", "86400", "soon"] {
+        v.run(&["config", "set", "clip-time", bad], "")
+            .failure()
+            .stderr(contains("clip-time must be a whole number of seconds between 5 and 300"));
+    }
+    assert!(std::fs::read_to_string(config_file(&v)).unwrap().contains("clip_time_seconds=45\n"));
     // Failed changes left the file alone.
     assert!(std::fs::read_to_string(config_file(&v)).unwrap().contains("animation=on"));
 }
@@ -854,11 +864,11 @@ fn nothing_readable_is_written_to_disk() {
         let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode & 0o077, 0, "{} is not private ({mode:o})", path.display());
     }
-    // The settings file holds only the two settings, no user data.
+    // The settings file holds only the settings, no user data.
     let cfg = files.iter().find(|(p, _)| p.ends_with("cakepass/config")).expect("settings file");
     let cfg = String::from_utf8(cfg.1.clone()).unwrap();
     let data_lines: Vec<&str> = cfg.lines().filter(|l| !l.starts_with('#') && !l.is_empty()).collect();
-    assert_eq!(data_lines, ["animation=off", "lock_timeout_minutes=7"]);
+    assert_eq!(data_lines, ["animation=off", "lock_timeout_minutes=7", "clip_time_seconds=20"]);
 }
 
 #[test]
@@ -1611,4 +1621,222 @@ fn cards_ssh_keys_and_totp_leave_nothing_readable_on_disk() {
     for m in ["ZQPRIVATEKEYLINE4711", "zq-public-4711", "zq-passphrase-4711", "zq-host-4711"] {
         assert!(text.contains(m), "{m}: {text}");
     }
+}
+
+// ───────────────────────── step 13: identities, favorites, audit, clip-time, man page ─────────────────────────
+
+#[test]
+fn store_get_and_edit_identity_documents() {
+    let k = Vaulty::new().init();
+    // Full name, number (hidden), issued by, expiry date, notes, tags.
+    k.run(
+        &["add", "Passport", "--type", "identity"],
+        &format!("{PW}\nJane Q. Doe\nNX7731ZQ9\nGemeente Utrecht\n2031-05-14\nNationality: NL\ntravel\n"),
+    )
+    .success()
+    .stderr(contains("Identity 'Passport' saved (encrypted)"));
+    // Without --show: full name, issuer, expiry; the number hidden.
+    k.run(&["get", "passport", "--no-copy"], &format!("{PW}\n")).success().stdout(
+        contains("identity")
+            .and(contains(format!("{:<16} Jane Q. Doe", "Full name:")))
+            .and(contains(format!("{:<16} Gemeente Utrecht", "Issued by:")))
+            .and(contains(format!("{:<16} 2031-05-14", "Expiry date:")))
+            .and(contains(format!("{:<16} (hidden; use --show)", "Number:")))
+            .and(contains("NX7731ZQ9").not()),
+    );
+    // The number is "the secret": copied by default, shown with --show.
+    k.run(&["get", "passport"], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("no clipboard tool found").and(contains("NX7731ZQ9").not()));
+    k.run(&["get", "passport", "--show"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains(format!("{:<16} NX7731ZQ9", "Number:")).and(contains("Nationality: NL")));
+    // Listed and counted as an identity; searchable by name and issuer, not by number.
+    k.run(&["list", "--type", "identity"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("Passport").and(contains("Jane Q. Doe")).and(contains("NX7731ZQ9").not()))
+        .stderr(contains("1 item: 1 identity"));
+    k.run(&["search", "utrecht"], &format!("{PW}\n")).success().stdout(contains("Passport"));
+    k.run(&["search", "NX7731"], &format!("{PW}\n")).success().stderr(contains("Nothing found"));
+    // A bank account without an expiry date: one type for all of them.
+    k.run(
+        &["add", "Bank account", "--type", "iban", "-u", "J. Doe", "--url", "ING", "-t", "bank"],
+        &format!("{PW}\nNL91ABNA0417164300\n\n"),
+    )
+    .success();
+    k.run(&["list", "--type", "identity"], &format!("{PW}\n"))
+        .success()
+        .stderr(contains("2 items: 2 identities"));
+    // Edit: a new number and expiry date (asked for, never arguments), the issuer by option.
+    k.run(
+        &["edit", "passport", "--password", "--expiry", "--url", "Gemeente Amsterdam"],
+        &format!("{PW}\nPX1234567\n2036-01-01\n"),
+    )
+    .success();
+    k.run(&["get", "passport", "--show"], &format!("{PW}\n")).success().stdout(
+        contains("PX1234567")
+            .and(contains("2036-01-01"))
+            .and(contains("Gemeente Amsterdam"))
+            .and(contains("NX7731ZQ9").not()),
+    );
+    // Interactive edit: Enter keeps a field.
+    k.run(&["edit", "passport"], &format!("{PW}\n\nJane Doe\n\n\n\nn\nn\n")).success();
+    k.run(&["get", "passport", "--show"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("Jane Doe").and(contains("2036-01-01")).and(contains("PX1234567")));
+    // Options that do not fit an identity are refused; so is an empty number.
+    k.run(&["add", "X", "--type", "identity", "-e", "a@b.nl"], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("an identity has no e-mail address"));
+    k.run(&["add", "X", "--type", "identity", "--generate"], &format!("{PW}\n")).failure();
+    k.run(&["edit", "passport", "--cvv"], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("--cvv is for a card"));
+    k.run(&["edit", "passport", "--public-key"], &format!("{PW}\n")).failure();
+    k.run(&["edit", "passport", "-e", "x@y.nl"], &format!("{PW}\n")).failure();
+    k.run(&["add", "Empty", "--type", "identity", "-u", "x", "--url", "", "-t", ""], &format!("{PW}\n\n"))
+        .failure()
+        .stderr(contains("the number must not be empty"));
+    // --expiry now fits a card or an identity, still not a login.
+    k.add("GitHub", "john", ITEM_PW);
+    k.run(&["edit", "github", "--expiry"], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("--expiry is for a card or an identity"));
+}
+
+#[test]
+fn favorites_are_pinned_listed_and_unpinned() {
+    let k = Vaulty::new().init();
+    k.add("GitHub", "john", ITEM_PW);
+    k.add("Mail", "john", ITEM_PW);
+    k.run(&["list", "--favorites"], &format!("{PW}\n")).success().stderr(contains("No favorites yet"));
+    k.run(&["edit", "mail", "--favorite"], &format!("{PW}\n"))
+        .success()
+        .stderr(contains("Item 'Mail' updated").and(contains("Pinned as a favorite")));
+    k.run(&["list", "--favorites"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("Mail").and(contains("GitHub").not()))
+        .stderr(contains("1 item: 1 login"));
+    k.run(&["list", "-f", "--type", "api"], &format!("{PW}\n")).success().stderr(contains("No items match"));
+    k.run(&["get", "mail", "--no-copy"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains(format!("{:<16} yes", "Favorite:")));
+    k.run(&["get", "github", "--no-copy"], &format!("{PW}\n")).success().stdout(contains("Favorite:").not());
+    // Pinning changes nothing else, and nothing secret is asked for.
+    k.run(&["get", "mail", "--show"], &format!("{PW}\n")).success().stdout(contains(ITEM_PW));
+    k.run(&["edit", "mail", "--favorite", "--no-favorite"], &format!("{PW}\n")).failure();
+    k.run(&["edit", "mail", "--no-favorite"], &format!("{PW}\n"))
+        .success()
+        .stderr(contains("No longer a favorite"));
+    k.run(&["list", "--favorites"], &format!("{PW}\n")).success().stderr(contains("No favorites yet"));
+}
+
+#[test]
+fn audit_reports_item_names_and_never_a_secret() {
+    let k = Vaulty::new().init();
+    const WEAK: &str = "dragon12";
+    const SHARED: &str = "Shared-Strong-zq-4711!";
+    const UNIQUE: &str = "Unique-Strong-zq-0815?";
+    k.add("Forum", "john", WEAK);
+    k.add("Mail", "john", SHARED);
+    k.add("Shop", "john", SHARED);
+    k.add("Bank", "john", UNIQUE);
+    k.run(
+        &["add", "Cloud", "--type", "api", "-u", "", "-e", "", "--url", "", "-t", ""],
+        &format!("{PW}\n{SHARED}\n"),
+    )
+    .success();
+    // An empty password (a login without one, e.g. after an import).
+    k.add("Old", "john", UNIQUE);
+    k.run(&["edit", "old", "--password"], &format!("{PW}\n\n")).success();
+    // Not judged: a short card number, a note.
+    k.run(&["add", "Visa", "--type", "card", "-u", "x"], &format!("{PW}\n1234\n\n\n\n\n")).success();
+
+    let out = k.run(&["audit"], &format!("{PW}\n")).success(); // a report, not a gate: exit 0
+    let stdout = stdout_of(&out);
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(stdout.contains("Password health check: 6 logins and API keys"), "{stdout}");
+    assert!(stderr.contains("1 other item not checked"), "{stderr}");
+    assert!(stdout.contains("Weak: 1 (strength below 3 of 4") && stdout.contains("  - Forum\n"), "{stdout}");
+    assert!(stdout.contains("Reused: 3 (") && stdout.contains("; 1 group)"), "{stdout}");
+    assert!(stdout.contains("  - Cloud, Mail, Shop\n"), "{stdout}");
+    assert!(stdout.contains("Stale: 0 (not changed in more than 365 days)"), "{stdout}");
+    assert!(stdout.contains("Empty: 1 (no password or key)") && stdout.contains("  - Old\n"), "{stdout}");
+    assert!(!stdout.contains("Bank") && !stdout.contains("Visa"), "only items with a finding: {stdout}");
+    // SECURITY: no secret (or a piece of one) in anything it printed.
+    for secret in [WEAK, SHARED, UNIQUE, "1234", "Shared-Strong", "zq-4711", "dragon"] {
+        assert!(
+            !stdout.contains(secret) && !stderr.contains(secret),
+            "{secret} was printed:\n{stdout}\n{stderr}"
+        );
+    }
+    // The threshold for stale items; 0 days is refused (everything would be stale).
+    k.run(&["audit", "--older-than", "30"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("Stale: 0 (not changed in more than 30 days)"));
+    k.run(&["audit", "--older-than", "0"], &format!("{PW}\n")).failure();
+    k.run(&["health"], &format!("{PW}\n")).success().stdout(contains("Password health check"));
+    // A clean vault says so.
+    let clean = Vaulty::new().init();
+    clean.add("Bank", "john", UNIQUE);
+    clean.run(&["audit"], &format!("{PW}\n")).success().stderr(contains("Nothing to improve"));
+    // It is listed in the help.
+    clean.run(&["--help"], "").success().stdout(contains("audit").and(contains("Password health check")));
+}
+
+/// A stand-in for wl-clipboard: the "clipboard" is a file.
+fn fake_clipboard(dir: &Path) -> (PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = dir.join("fake-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let clip = dir.join("clipboard.txt");
+    for (name, body) in [
+        ("wl-copy", "if [ \"$1\" = \"--clear\" ]; then : > \"$FAKE_CLIP\"; else cat > \"$FAKE_CLIP\"; fi"),
+        ("wl-paste", "cat \"$FAKE_CLIP\" 2>/dev/null"),
+    ] {
+        let path = bin.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    (bin, clip)
+}
+
+#[test]
+fn the_clip_time_setting_decides_when_the_clipboard_is_cleared() {
+    let k = Vaulty::new().init();
+    k.add("GitHub", "john", ITEM_PW);
+    k.run(&["config", "set", "clip-time", "5"], "").success();
+    let (bin, clip) = fake_clipboard(k.dir());
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    k.cmd()
+        .args(["get", "github"])
+        .env("PATH", &path)
+        .env("WAYLAND_DISPLAY", "fake-0")
+        .env("FAKE_CLIP", &clip)
+        .write_stdin(format!("{PW}\n"))
+        .assert()
+        .success()
+        .stderr(contains("it will be cleared in 5 seconds"));
+    let copied = Instant::now();
+    assert_eq!(std::fs::read_to_string(&clip).unwrap(), ITEM_PW, "copied");
+    // Still there after 2 s; gone well before the default 20 s.
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(std::fs::read_to_string(&clip).unwrap(), ITEM_PW, "not cleared too early");
+    while std::fs::read_to_string(&clip).unwrap() == ITEM_PW {
+        assert!(copied.elapsed() < Duration::from_secs(15), "not cleared after the configured 5 seconds");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(copied.elapsed() >= Duration::from_secs(4), "cleared after {:?}", copied.elapsed());
+}
+
+#[test]
+fn the_man_page_is_generated_from_the_commands() {
+    let v = Vaulty::new();
+    let out = v.run(&["man"], "").success();
+    let man = stdout_of(&out);
+    assert!(man.starts_with(".ie") || man.contains(".TH cakepass 1"), "{}", &man[..man.len().min(300)]);
+    for text in ["cakepass", "audit", "completions", "CAKEPASS_VAULT"] {
+        assert!(man.contains(text), "{text} missing from the man page");
+    }
+    assert!(!v.path.exists(), "no vault needed or created");
 }
