@@ -1,6 +1,6 @@
 # Progress: `cakepass` (CakePass)
 
-Last updated: step 12 (bank cards, SSH keys and two-factor codes; content schema 5).
+Last updated: step 13 (password health check, identity documents, favorites, clipboard time, man page; content schema still 5).
 Repository: `Justcakenl/Password-Manager`, branch `main` (private until it is made public).
 
 ## Maintainer checklist: manual testing on a real Arch machine
@@ -239,6 +239,53 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
     written; screen-mode unit tests and a pseudo-terminal test (add a card and
     an SSH key with the arrow keys, read the TOTP code, check with `get`).
 
+- [x] **Step 13 – Password health check, identity documents, favorites,
+  clipboard time, man page** (no new content schema: still 5):
+  - **`cakepass audit`** (alias `health`): weak, reused, stale and empty
+    passwords and API keys, offline. Weak = the same zxcvbn estimate and
+    `MIN_SCORE` (3 of 4) as master passwords; reused = constant-time
+    comparison of the decrypted secrets, as `merge` does; stale = not
+    changed in more than 365 days (`--older-than DAYS`); empty = no
+    password. Logins and API keys only. Prints item names and counts only,
+    exit code 0. New library module `src/audit.rs`.
+  - **Identity documents** (`--type identity`; also `id`, `passport`,
+    `iban`, `licence`, `membership`): full name, the number (hidden prompt;
+    the secret that is copied and shown with `--show`), who issued it, an
+    expiry date, notes, tags. `edit --password`, `--expiry`, `-u`, `--url`;
+    the interactive edit asks per field. No new encrypted field: full name =
+    `username`, number = `password`, issuer = `url`, and the `expiry` field
+    of cards.
+  - **Favorites**: `edit --favorite` / `--no-favorite`, `list --favorites`
+    (`-f`), "Favorite: yes" in `get`. In the screen `f` pins or unpins; a ★
+    (`*` without UTF-8) before the name, favorites first in the list. A
+    plain flag next to the tags: old vaults simply have none.
+  - **Clipboard time**: `cakepass config set clip-time SECONDS` (5 to 300,
+    default 20), stored as `clip_time_seconds` in the settings file, used by
+    `get`, `generate` and the screen (its countdown too). The clearing helper
+    receives the time as an argument and clamps it again.
+  - **Man page**: `cakepass man` prints roff made by `clap_mangen` from the
+    clap definition; the PKGBUILD installs it as `cakepass.1`, next to the
+    shell completions it already installed.
+  - **Screen mode**: an IDs tab (the tab bar keeps its counts in 80 columns
+    with a narrower gap), the identity fields in the form, the details pane
+    and the help page; the type chooser fits six types in 60 columns.
+  - **New dependency**: `clap_mangen` 0.3 (the clap project's man page
+    generator, same family as `clap_complete`).
+  - Tests: audit (every category, exact reuse groups, a wrong key is an
+    error, the report holds no secret; through the CLI: no fed-in secret
+    anywhere in stdout or stderr), identity round trip / re-key / search,
+    favorites (not serialized while false, an old vault opens as is, pinning
+    keeps the date, kept through re-keying, not part of duplicate
+    detection), clip-time parsing, bounds and clamping, the settings file;
+    CLI tests for identities, favorites, audit, `config set clip-time` and
+    the man page, plus a test with a stand-in `wl-copy` that proves the
+    clipboard is cleared after the configured 5 s (not the default 20);
+    screen-mode tests (identity form, `f`, the star and its ASCII fallback,
+    the countdown with another clip time) and a pseudo-terminal test.
+  - Fixed a rare flaky test from step 12: it looked for the CVV "737" in the
+    vault JSON, which random base64 ciphertext can contain (about 0.6 % of
+    runs); short values are now matched as whole JSON strings.
+
 ## Still to do
 
 - [ ] Check the "Testing on Arch" list below on your own computer.
@@ -248,7 +295,9 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
 - [ ] **Decide whether/when to merge `feature/card-totp-sshkey` into `main`.**
   It is finished, reviewed and tested (see "Checks" below for step 12) but
   deliberately left unmerged until the maintainer says so.
-- [ ] **Step 13 (queued, not started) — agreed scope for the next round:**
+- [ ] **Step 13 is implemented on `feature/identity-favorites-audit`** (see
+  "Done" above), branched from `feature/card-totp-sshkey`, and waits for the
+  independent review and test pass. The agreed scope was:
   - **Password health check**: an offline report of weak (reuse the
     existing `zxcvbn` dependency), reused (compare decrypted secrets across
     items, same technique `Vault::merge`'s duplicate detection already
@@ -362,12 +411,44 @@ See `docs/DESIGN.md` for the explanation. In short:
 - CSV import: an unusable TOTP value drops only the TOTP secret (with a
   warning that counts them), never the item. The ambiguous headers `otp` and
   `2fa` are not read as TOTP columns.
+- Step 13: the identity number is typed in a **hidden** prompt, like a card
+  number. It is the item's main secret (dots in `get` and the screen,
+  copied by default), so showing it while typing would put it in the
+  terminal's scrollback, which everything else avoids. A typo is caught with
+  `get --show`, as for cards.
+- One `identity` type for passports, ID cards, licences, bank accounts and
+  memberships, with no new encrypted field (the expiry field of cards is
+  reused). It may carry a TOTP secret like every type since step 12; that is
+  not blocked (blocking it would be the only exception of its kind).
+- The audit's "stale" threshold is 365 days by default (`--older-than`,
+  1 to 36 500). It uses the item's modification date, which every edit
+  changes (also of the notes or tags); the vault does not record when the
+  password itself changed. An unknown date (0) counts as stale. An item
+  without a password is reported only as "empty". Pinning a favorite does
+  not change the date, so it cannot hide a stale password.
+- The audit always exits with 0 (a report, as asked). It shows names only;
+  not even the zxcvbn advice, which can describe the password ("this is a
+  top-10 common password").
+- Clipboard time bounds: 5 to 300 seconds. Below 5 s there is no time to
+  paste; above 5 minutes a secret sits on the clipboard longer than the
+  default auto-lock. `config set clip-time` refuses values outside the
+  range with a clear message; a bad value in the settings file falls back to
+  20 s, and the helper clamps whatever it is given. It is a setting only,
+  not also a per-command `--clip-time` option (the setting covers `get`,
+  `generate`, the line mode and the screen alike, and a flag on every copy
+  command would be more surface for little gain).
+- Favorites come first in the screen's list (a stable sort, trivial); the
+  `list` command keeps its plain name order (scripts may rely on it) and has
+  `--favorites` instead. Favorites are not part of duplicate detection on
+  import: a pinned copy of an item is still the same item.
+- `f` in the screen's list is now a shortcut, so typing `f` no longer starts
+  a search with that letter (a capital F still does).
 
 ## Checks (latest step)
 
 | Check | Result |
 |---|---|
-| `cargo test` | 283 passed (111 library, 82 CLI/screen unit, 56 CLI integration, 9 screen in a pseudo-terminal, 12 update, 13 installer) |
+| `cargo test` | 300 passed (119 library, 85 CLI/screen unit, 61 CLI integration, 10 screen in a pseudo-terminal, 12 update, 13 installer) |
 | Known-answer tests (step 12) | TOTP: RFC 6238 Appendix B (SHA-1, SHA-256, SHA-512, all six times) and RFC 4226 Appendix D; base32: RFC 4648 section 10; cross-checked with an independent Python implementation (`hmac`/`hashlib`/`base64`) |
 | Known-answer tests (step 11) | Argon2id with a secret: vectors from the reference C implementation (libargon2 via argon2-cffi; the harness reproduces RFC 9106 first); key-file pepper: vectors from Python's `hashlib.blake2b(digest_size=32)` |
 | Unlock times (release, 4-core 2.1 GHz Xeon VM, step 11) | Standard ≈ 0.18–0.21 s, High ≈ 0.8–0.9 s, Maximum ≈ 3.6–3.8 s (first run once 5.9 s); wiping Argon2's freed memory is ~5–10 % of that |
@@ -393,6 +474,18 @@ See `docs/DESIGN.md` for the explanation. In short:
 ## Testing on Arch
 
 Could NOT be tested in the cloud environment. Do this yourself and tick:
+
+### Identities, favorites, audit, clipboard time – new in step 13
+
+- [ ] `cakepass audit` on your real vault: the names it lists make sense
+      (weak, reused, stale), and nothing secret appears on screen
+- [ ] `cakepass config set clip-time 45`, then `cakepass get <item>`: the
+      message says 45 seconds, and the clipboard is empty after 45 s (not 20)
+- [ ] In the screen: `f` puts a ★ before an item and moves it to the top;
+      `cakepass list --favorites` shows it; `f` again unpins it
+- [ ] `cakepass add Passport --type identity`; the IDs tab shows it, the
+      number is dots until Enter
+- [ ] After `makepkg -si`: `man cakepass` opens the manual page
 
 ### Cards, SSH keys and TOTP – new in step 12
 

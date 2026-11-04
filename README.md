@@ -25,11 +25,15 @@ Free and open source under the [MIT license](LICENSE).
   useless on its own. [How strong is this, really?](#how-strong-is-this-really)
 - ⌨️ **Arrow-key screen.** Tabs, live search, add/edit forms, a password
   generator and settings: no typing of commands. [See it](#using-the-screen-arrow-keys).
-- 🗝️ **Logins, API keys, bank cards, SSH keys and notes** in one place, with
-  e-mail addresses and tags.
+- 🗝️ **Logins, API keys, bank cards, SSH keys, identity documents and notes** in
+  one place, with
+  e-mail addresses, tags and favorites.
+- 🩺 **Password health check** (`cakepass audit`): weak, reused, old and empty
+  passwords, offline, without ever printing one.
 - 🔢 **Two-factor codes (TOTP)** on any item: the six-digit code of your
   authenticator app, computed offline from the stored secret.
-- 📋 **Clipboard that cleans up.** Copied secrets are wiped after 20 seconds.
+- 📋 **Clipboard that cleans up.** Copied secrets are wiped after 20 seconds
+  (or the time you set: `cakepass config set clip-time`).
 - 🧹 **Careful with memory.** Secrets are wiped after use; core dumps are off;
   the screen and scrollback are cleared when you lock.
 - ⏲️ **Auto-lock** after the idle time you choose.
@@ -254,6 +258,14 @@ mkdir -p ~/.config/fish/completions
 cakepass completions fish > ~/.config/fish/completions/cakepass.fish
 ```
 
+The manual page (`man cakepass`) works the same way:
+
+```bash
+mkdir -p ~/.local/share/man/man1 && cakepass man > ~/.local/share/man/man1/cakepass.1
+```
+
+(The Arch package installs both for you.)
+
 #### Step 7: first run
 
 ```bash
@@ -326,7 +338,7 @@ Got it running somewhere that is not marked ✅? Please tell us in an issue.
 1. [First-time setup](#first-time-setup)
 2. [Using the screen (arrow keys)](#using-the-screen-arrow-keys)
 3. [Daily use (commands)](#daily-use-commands)
-4. [Item types: logins, API keys, cards, SSH keys and notes](#item-types-logins-api-keys-cards-ssh-keys-and-notes)
+4. [Item types: logins, API keys, cards, identities, SSH keys and notes](#item-types-logins-api-keys-cards-identities-ssh-keys-and-notes)
 5. [Generating passwords](#generating-passwords)
 6. [Login screen, settings and auto-lock](#login-screen-settings-and-auto-lock)
 7. [Security levels and key files](#security-levels-and-key-files)
@@ -415,7 +427,7 @@ and **`?`** shows them all.
 
 ```text
  CakePass  vault.enc                                              locks in 4:59
- All 3   Logins 1   API keys 1   Cards 0   SSH 0   Notes 1             / search
+ All 3  Logins 1  API keys 1  Cards 0  IDs 0  SSH 0  Notes 1           / search
 ┌─ Items ───────────────────────────────────┬─ Details ────────────────────────┐
 │▌ login  GitHub               john         │ Name        GitHub               │
 │  api    OpenAI               proj-1       │ Type        login                │
@@ -437,12 +449,13 @@ and **`?`** shows them all.
 | Key | What it does |
 |---|---|
 | ↑ ↓, PgUp PgDn, Home End | choose an item |
-| ← → (or Tab) | switch between All · Logins · API keys · Cards · SSH (keys) · Notes |
+| ← → (or Tab) | switch between All · Logins · API keys · Cards · IDs (identities) · SSH (keys) · Notes |
 | `/` | search in name, type, tags, username, e-mail and URL (never in passwords or notes). Any key that is not a shortcut (a capital letter, a digit) starts the search too. Esc clears it |
 | Enter or `v` | show / hide the password, API key, card number and CVV, private key and passphrase, and notes. They hide themselves after **10 seconds**, and when you choose another item or open another screen |
-| `c` | copy the password, API key, card number, private key or note to the clipboard; it is **cleared after 20 seconds** |
+| `c` | copy the password, API key, card number, private key, document number or note to the clipboard; it is **cleared after 20 seconds** (or your `clip-time`) |
 | `u` / `m` | copy the username (cardholder) / the e-mail address |
-| `t` | show the current two-factor (TOTP) code with its seconds left, and copy it (cleared after 20 seconds) |
+| `t` | show the current two-factor (TOTP) code with its seconds left, and copy it (cleared like a password) |
+| `f` | pin or unpin the item as a **favorite**: a ★ before its name, and favorites come first in the list |
 | `p` | copy the public key of an SSH key |
 | `a` or `n` | add an item |
 | `e` | edit the selected item |
@@ -516,14 +529,16 @@ password in a hidden prompt (you see nothing while typing, that is on purpose).
 |---|---|
 | Add an item (cakepass asks for each field) | `cakepass add GitHub` |
 | Add with options and a generated password | `cakepass add GitHub -u john -e john@example.org --url https://github.com -t work,code --generate` |
-| Copy the password to the clipboard (20 s) | `cakepass get GitHub` |
+| Copy the password to the clipboard (cleared after 20 s; change it with `cakepass config set clip-time 45`) | `cakepass get GitHub` |
 | Copy the username / the e-mail address instead | `cakepass get GitHub --copy-username` / `--copy-email` |
 | Show password and notes on screen | `cakepass get GitHub --show` |
 | The current two-factor (TOTP) code, copied | `cakepass get GitHub --totp` |
 | Add or replace / remove the TOTP secret | `cakepass edit GitHub --totp` / `--no-totp` |
 | List all items (no secrets) | `cakepass list` |
 | Only items with a tag / of a type | `cakepass list --tag work` / `cakepass list --type api` |
+| Pin an item as a favorite / unpin it / list only favorites | `cakepass edit GitHub --favorite` / `--no-favorite` / `cakepass list --favorites` |
 | Search name, type, tags, username, e-mail, URL | `cakepass search git` |
+| Check for weak, reused, old and empty passwords | `cakepass audit` (see [Password health check](#password-health-check)) |
 | Change an item (asks per field) | `cakepass edit GitHub` |
 | Only generate a new password | `cakepass edit GitHub --generate` |
 | Change only the e-mail address | `cakepass edit GitHub --email john@work.example` (`-e ""` clears it) |
@@ -536,7 +551,7 @@ password in a hidden prompt (you see nothing while typing, that is on purpose).
 | Make a key file / start using it / stop using it | `cakepass keyfile create PATH` / `cakepass security --new-keyfile PATH` / `cakepass security --no-keyfile` |
 | Open a vault with its key file | `cakepass --keyfile PATH list` (or `CAKEPASS_KEYFILE`, or `cakepass config set keyfile PATH`) |
 | Information about the vault and security (no password needed) | `cakepass info` |
-| Help | `cakepass --help` or `cakepass add --help` |
+| Help | `cakepass --help` or `cakepass add --help`; the manual page: `man cakepass` (or `cakepass man`) |
 
 Tips:
 
@@ -551,11 +566,47 @@ Tips:
   `my-generator | cakepass add Site -u john --url x -t y`. Do **not** use
   `echo secret | ...`, because then the secret is in your shell history.
 
+### Password health check
+
+`cakepass audit` (or `cakepass health`) looks at the passwords and API keys in
+your vault and tells you which ones to change. It works entirely offline: no
+"has this leaked?" lookup, nothing is sent anywhere.
+
+```text
+$ cakepass audit
+Master password:
+Password health check: 4 logins and API keys
+(1 other item not checked: cards, SSH keys, identities and notes have no password to judge.)
+
+Weak: 1 (strength below 3 of 4: easy to guess)
+  - Forum
+Reused: 2 (the same password or key in more than one item; 1 group)
+  - Mail, Shop
+Stale: 0 (not changed in more than 365 days)
+Empty: 0 (no password or key)
+
+Change a password with `cakepass edit <name> --generate` (and on the website), most urgent first: reused, then weak.
+```
+
+- **Weak** uses the same strength check (zxcvbn) and the same minimum as the
+  master password: a score of 3 out of 4.
+- **Reused**: when one site leaks such a password, every other account with it
+  is open too. Change these first.
+- **Stale**: not changed in more than a year; `--older-than 90` for another
+  number of days. It goes by the item's date of last change, so editing only
+  the notes or tags of an item also counts as a change.
+- **Empty**: a login or API key without a password.
+- Only logins and API keys are checked: a card number, private key or passport
+  number is not something you choose or renew like a password.
+- It only ever prints the **names** of items, never a password, its length or
+  anything derived from it, and it changes nothing. It always ends with exit
+  code 0: it is a report, not a test that fails.
+
 ---
 
-## Item types: logins, API keys, cards, SSH keys and notes
+## Item types: logins, API keys, cards, identities, SSH keys and notes
 
-You can store five kinds of things. All of them are encrypted equally strongly,
+You can store six kinds of things. All of them are encrypted equally strongly,
 field by field (see [How the security works](#how-the-security-works)).
 
 | Type | What | Add it with |
@@ -563,10 +614,12 @@ field by field (see [How the security works](#how-the-security-works)).
 | **login** | username, e-mail address, URL, password, notes | `cakepass add GitHub` |
 | **api** | account/key ID, e-mail address, service, the API key or token, notes | `cakepass add OpenAI --type api` |
 | **card** | cardholder name, card number, expiry date, security code (CVV), notes | `cakepass add Visa --type card` |
+| **identity** | full name, the number (passport, ID card, driving licence, bank account/IBAN, membership), who issued it, expiry date, notes | `cakepass add Passport --type identity` |
 | **ssh-key** | private key (several lines), public key, passphrase, host, notes | `cakepass add "GitHub key" --type ssh-key` |
 | **note** | multi-line text, e.g. recovery codes, PINs, Wi-Fi | `cakepass add "Recovery codes" --type note` |
 
-Any item can also carry a **TOTP secret** for two-factor codes; see
+Any item can be pinned as a **favorite** (`cakepass edit NAME --favorite`, or `f`
+in the screen) and can carry a **TOTP secret** for two-factor codes; see
 [Two-factor codes (TOTP)](#two-factor-codes-totp) below.
 
 ```text
@@ -628,6 +681,45 @@ Security code:   (hidden; use --show)
   `--cvv`. Each asks in a prompt; the number and the CVV are hidden.
 - There is no PIN field on purpose: put it in the notes if you must keep it
   here. The brand (Visa, Mastercard) can be a tag.
+
+### Identity documents
+
+One type for the numbers you look up now and then: a passport or ID card, a
+driving licence, a bank account (IBAN), a membership.
+
+```text
+$ cakepass add Passport --type identity
+Master password:
+Full name (optional): Jane Doe
+Number: document, account (IBAN) or membership number (hidden input; pasting is fine):
+Issued by, e.g. a government office or bank (optional): Gemeente Utrecht
+Expiry date, e.g. 2031-05-14 (optional): 2031-05-14
+Notes (optional, one line): Nationality: NL
+Tags, separated by commas (optional): travel
+✔ Identity 'Passport' saved (encrypted).
+
+$ cakepass get Passport --no-copy
+Name:            Passport
+Type:            identity
+Full name:       Jane Doe
+Issued by:       Gemeente Utrecht
+Expiry date:     2031-05-14
+Tags:            travel
+Modified:        2026-11-04 19:52 UTC
+Notes:           (hidden; use --show)
+Number:          (hidden; use --show)
+```
+
+- The number is the secret of an identity: `cakepass get Passport` copies it,
+  `--show` shows it. It is typed in a hidden prompt, like a card number, so it
+  does not end up in your terminal's scrollback; check it with `--show`.
+- Leave the expiry date empty for something that does not expire (a bank
+  account, a membership). Put anything else (country, BIC, licence classes)
+  in the notes.
+- Change parts: `cakepass edit Passport --password` (a new number),
+  `--expiry`, `-u` (the full name), `--url` (who issued it).
+- `--type id`, `passport`, `iban`, `licence` and `membership` all mean
+  `identity`.
 
 ### SSH keys
 
@@ -762,8 +854,16 @@ Change them on the settings screen (`s`) or with:
 cakepass config                           # show the settings
 cakepass config set animation off         # on / off
 cakepass config set lock-timeout 10       # minutes of inactivity before auto-lock
+cakepass config set clip-time 45          # clear the clipboard after 45 s (5 to 300; default 20)
 cakepass config set keyfile /run/media/$USER/USB/cakepass.key   # where your key file is (or: none)
 ```
+
+**Clipboard time.** A copied secret is wiped from the clipboard after 20
+seconds. If that is too short to paste it (or longer than you like), set it
+with `cakepass config set clip-time`: anything from 5 to 300 seconds; 0
+("never") is refused on purpose. It counts for `get`, `generate` and the
+screen alike (the screen shows the countdown). Only the setting is read: a
+damaged settings file falls back to 20 seconds, never to "never".
 
 **Auto-lock.** A single command asks for your master password every time; when
 it ends, no key is left in memory. That is the safest kind of "auto-lock". The
@@ -1260,7 +1360,8 @@ no known vulnerabilities.
    one field you just asked for, and Argon2's working memory are not locked and
    can end up in swap. Hibernation writes all memory to disk. Use encrypted swap
    (LUKS), zram, or no swap at all.
-3. **The clipboard.** While a password is on the clipboard (max. 20 s), any
+3. **The clipboard.** While a password is on the clipboard (20 s by default,
+   at most 300 s with `clip-time`), any
    program in your session can read it. Clipboard managers (KDE Klipper,
    cliphist, CopyQ, GNOME extensions) sometimes keep a **history** that `cakepass`
    cannot clear. Turn that off or exclude cakepass.
@@ -1346,9 +1447,7 @@ Deliberately not in this version (fewer features that work well beats many):
 - Editing notes in `$EDITOR`. Not in yet on purpose: an editor writes temporary
   files unencrypted to disk.
 - A translated interface and a non-English diceware word list.
-- Configurable clipboard time and a `--clip-time` option.
 - Telling clipboard managers that it is a password (`x-kde-passwordManagerHint`).
-- Man page (`clap_mangen`).
 - Synchronization between devices (e.g. via Syncthing, with conflict detection).
 
 ---
@@ -1368,6 +1467,7 @@ src/
 ├── vault.rs        items and operations; content encrypted      ← critical
 ├── totp.rs         two-factor codes (RFC 6238) and base32       ← critical
 ├── generator.rs    passwords and passphrases                    ← critical
+├── audit.rs        password health check (prints names only)    ← critical
 ├── import.rs       CSV import
 ├── clipboard.rs    clipboard with automatic clearing            ← critical
 ├── main.rs         start: allocator + process hardening
