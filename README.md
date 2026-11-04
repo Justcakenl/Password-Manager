@@ -76,7 +76,9 @@ first, as you should with any script you pipe into `bash`. It:
 2. Installs what it needs with `pacman` (`base-devel`, `git`, `rust`, and a
    clipboard tool for your session). Asks for your sudo password.
 3. Downloads the source code with `git` into `~/cakepass`.
-4. Builds, **tests** and installs the package with `makepkg`.
+4. Builds, **tests** and installs the package with `makepkg`. It also adds a
+   CakePass entry with its icon to your application launcher (it opens in a
+   terminal).
 5. Starts the **first-time setup**: intro animation yes/no, auto-lock minutes,
    **security level**, your **master password** (it offers to make a strong
    passphrase for you) and optionally a **key file**.
@@ -264,7 +266,15 @@ The manual page (`man cakepass`) works the same way:
 mkdir -p ~/.local/share/man/man1 && cakepass man > ~/.local/share/man/man1/cakepass.1
 ```
 
-(The Arch package installs both for you.)
+An entry with the CakePass icon in your application launcher (it opens
+CakePass in a terminal), from the CakePass folder:
+
+```bash
+install -Dm0644 packaging/cakepass.desktop ~/.local/share/applications/cakepass.desktop
+install -Dm0644 assets/icons/cakepass-app-icon.svg ~/.local/share/icons/hicolor/scalable/apps/cakepass.svg
+```
+
+(The Arch package installs all of these for you.)
 
 #### Step 7: first run
 
@@ -1487,9 +1497,10 @@ src/
                     update.rs: cakepass --update (via git and makepkg)
                     tui/: the screen with arrow keys (no extra libraries)  ← critical
 build.rs            records which git commit it was built from
-tests/              integration tests (cli, tui in a pseudo-terminal, update, installer)
+tests/              integration tests (cli, tui in a pseudo-terminal, update, installer, packaging)
 packaging/arch/     PKGBUILD + systemd timer for the update check
-assets/             EFF word list (CC BY 3.0 US)
+packaging/cakepass.desktop   desktop entry (application launchers)
+assets/             EFF word list (CC BY 3.0 US); icons/: the app icon
 docs/DESIGN.md      design and threat analysis
 PROGRESS.md         progress and what still needs testing on Arch
 ```

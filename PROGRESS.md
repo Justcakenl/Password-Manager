@@ -1,6 +1,6 @@
 # Progress: `cakepass` (CakePass)
 
-Last updated: step 14 (editable screen tabs; content schema still 5).
+Last updated: step 14 (editable screen tabs) and the desktop entry and app icon; content schema still 5.
 Repository: `Justcakenl/Password-Manager`, branch `main` (private until it is made public).
 
 ## Maintainer checklist: manual testing on a real Arch machine
@@ -309,6 +309,18 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
     test that reads the setting at start. Four existing settings-screen
     tests now step past the new row.
 
+- [x] **Desktop entry and app icon** (packaging only, with step 14):
+  `packaging/cakepass.desktop` (`Exec=cakepass`, `Terminal=true`,
+  `Icon=cakepass`) and the app icon in `assets/icons/` (SVG and 32/256/512 px
+  PNG, copied unmodified from the maintainer's `CakePass-logo/` set; source
+  and checksums in `assets/icons/README.md`). The PKGBUILD installs them
+  into `/usr/share/applications` and the hicolor icon theme and now depends
+  on `hicolor-icon-theme`, which owns those folders; pacman's
+  `gtk-update-icon-cache` and `update-desktop-database` hooks refresh the
+  caches. `tests/packaging.rs` checks that every file the PKGBUILD installs
+  exists with mode 0644, that each PNG has the size of its folder, and the
+  desktop entry's keys.
+
 ## Still to do
 
 - [ ] Check the "Testing on Arch" list below on your own computer.
@@ -322,7 +334,12 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   has shipped yet, so no real vault can hit this today) — deepseek's step
   13 review recommended filing it as a pre-release item specifically, not
   a merge gate.
-- [ ] **App icon / desktop integration (queued, not started).** Assets
+- [x] **App icon / desktop integration**: done on `feature/tabs-and-icon`
+  (see "Done" above). Only the `cakepass-app-icon*` files were used (there
+  is no `cakepass-app-icon-1024.png`; the 1024 px file in that folder is
+  the `cakepass-icon` variant). The branding logo in
+  `docs/cakepass-logo.png` was left as it is, as asked for this round.
+  The original scope note: Assets
   already exist at `/mnt/data/Claude code pr/CakePass-logo/`: SVG sources
   (`cakepass-logo*.svg`, `cakepass-icon*.svg`, dark and monochrome
   variants) and rasterized app icons at 32/256/512/1024 px
@@ -523,7 +540,7 @@ See `docs/DESIGN.md` for the explanation. In short:
 
 | Check | Result |
 |---|---|
-| `cargo test` | 305 passed (119 library, 88 CLI/screen unit, 62 CLI integration, 11 screen in a pseudo-terminal, 12 update, 13 installer) |
+| `cargo test` | 308 passed (119 library, 88 CLI/screen unit, 62 CLI integration, 11 screen in a pseudo-terminal, 12 update, 13 installer, 3 packaging) |
 | Known-answer tests (step 12) | TOTP: RFC 6238 Appendix B (SHA-1, SHA-256, SHA-512, all six times) and RFC 4226 Appendix D; base32: RFC 4648 section 10; cross-checked with an independent Python implementation (`hmac`/`hashlib`/`base64`) |
 | Known-answer tests (step 11) | Argon2id with a secret: vectors from the reference C implementation (libargon2 via argon2-cffi; the harness reproduces RFC 9106 first); key-file pepper: vectors from Python's `hashlib.blake2b(digest_size=32)` |
 | Unlock times (release, 4-core 2.1 GHz Xeon VM, step 11) | Standard ≈ 0.18–0.21 s, High ≈ 0.8–0.9 s, Maximum ≈ 3.6–3.8 s (first run once 5.9 s); wiping Argon2's freed memory is ~5–10 % of that |
@@ -537,6 +554,7 @@ See `docs/DESIGN.md` for the explanation. In short:
 | `cargo build --release --locked` | succeeded |
 | Setup wizard in a real pseudo-terminal | answers visible, passwords hidden, settings and vault created |
 | Installer | tested end to end with a fake GitHub and fake `pacman`/`sudo`/`makepkg`/`cakepass` (piped like `curl \| bash`, truncated download, re-run, local changes, failed build, uninstall) |
+| Package build (step 14, Arch, real `makepkg --nocheck` into a scratch folder) | `makepkg --printsrcinfo` and the build succeed; the package holds `usr/share/applications/cakepass.desktop`, `usr/share/icons/hicolor/{32x32,256x256,512x512}/apps/cakepass.png` and `scalable/apps/cakepass.svg` (all 0644, identical to `assets/icons/`), depends on `hicolor-icon-theme`; `desktop-file-validate` passes (one hint: `Security` could also be listed with `System`). Not installed with pacman |
 
 ### Tested in a clean Arch Linux container (earlier step, as a normal user)
 
@@ -550,8 +568,11 @@ See `docs/DESIGN.md` for the explanation. In short:
 
 Could NOT be tested in the cloud environment. Do this yourself and tick:
 
-### Screen tabs – new in step 14
+### Screen tabs, desktop entry and icon – new in step 14
 
+- [ ] After `makepkg -si`: CakePass shows up in your application launcher
+      (e.g. Walker on Omarchy) with the pink cake-padlock icon, and opens in
+      a terminal
 - [ ] In the screen, `s`, the Tabs row: hide API keys with → and Enter;
       back in the list the tab is gone, ← → skip it, and your API keys are
       still under All

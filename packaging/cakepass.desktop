@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=CakePass
+GenericName=Password Manager
+Comment=Offline, encrypted password manager for the terminal
+Exec=cakepass
+Icon=cakepass
+Terminal=true
+Categories=Utility;Security;
+Keywords=password;passwords;vault;2fa;totp;

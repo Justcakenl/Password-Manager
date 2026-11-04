@@ -21,7 +21,8 @@ pkgdesc="Offline, encrypted password manager for the terminal (CakePass)"
 arch=('x86_64' 'aarch64')
 url="https://github.com/Justcakenl/Password-Manager"
 license=('MIT')
-depends=('glibc' 'gcc-libs')
+# hicolor-icon-theme owns the icon folders the app icon goes into.
+depends=('glibc' 'gcc-libs' 'hicolor-icon-theme')
 makedepends=('cargo' 'git')
 optdepends=('wl-clipboard: clipboard on Wayland'
             'xclip: clipboard on X11'
@@ -74,6 +75,15 @@ package() {
   # (makepkg compresses it).
   install -dm0755 "$pkgdir/usr/share/man/man1"
   "$bin" man > "$pkgdir/usr/share/man/man1/cakepass.1"
+
+  # Desktop entry and app icon, so application launchers show CakePass (it
+  # opens in a terminal: Terminal=true). The icon caches are refreshed by
+  # pacman's own hook (gtk-update-icon-cache), not here.
+  install -Dm0644 packaging/cakepass.desktop "$pkgdir/usr/share/applications/cakepass.desktop"
+  install -Dm0644 assets/icons/cakepass-app-icon.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/cakepass.svg"
+  install -Dm0644 assets/icons/cakepass-app-icon-32.png "$pkgdir/usr/share/icons/hicolor/32x32/apps/cakepass.png"
+  install -Dm0644 assets/icons/cakepass-app-icon-256.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/cakepass.png"
+  install -Dm0644 assets/icons/cakepass-app-icon-512.png "$pkgdir/usr/share/icons/hicolor/512x512/apps/cakepass.png"
 
   # Where the source code is, for `cakepass --update`.
   install -dm0755 "$pkgdir/usr/share/cakepass"
