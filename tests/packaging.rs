@@ -4,16 +4,23 @@
 //! desktop entry that names another icon is caught before a real package
 //! build.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
 const PKGBUILD: &str = include_str!("../packaging/arch/PKGBUILD");
+const AUR_PKGBUILD: &str = include_str!("../packaging/aur/PKGBUILD");
+const AUR_SRCINFO: &str = include_str!("../packaging/aur/.SRCINFO");
 const DESKTOP: &str = include_str!("../packaging/cakepass.desktop");
 
 /// Every `install -Dm<mode> <source> "<destination>"` line of `package()`:
 /// (mode, source, destination with `$pkgdir` removed).
 fn installed_files() -> Vec<(String, String, String)> {
-    PKGBUILD
+    installed_files_of(PKGBUILD)
+}
+
+fn installed_files_of(pkgbuild: &str) -> Vec<(String, String, String)> {
+    pkgbuild
         .lines()
         .filter_map(|l| l.trim().strip_prefix("install -Dm"))
         .map(|rest| {
@@ -94,4 +101,105 @@ fn the_desktop_entry_starts_cakepass_in_a_terminal() {
     names.sort_unstable();
     names.dedup();
     assert_eq!(names.len(), keys.len());
+}
+
+/// Every file `package()` puts in the package: the `install` destinations and
+/// the generated ones (`... > "$pkgdir/..."`). The licence folder is named
+/// after the package (cakepass / cakepass-git), so it is compared as `<pkg>`.
+fn package_contents(pkgbuild: &str) -> BTreeSet<String> {
+    let mut files: BTreeSet<String> = installed_files_of(pkgbuild).into_iter().map(|(_, _, d)| d).collect();
+    for line in pkgbuild.lines() {
+        if let Some((_, dest)) = line.split_once("> \"$pkgdir") {
+            files.insert(dest.trim_end_matches('"').to_string());
+        }
+    }
+    files
+        .into_iter()
+        .map(|f| {
+            f.replace("/licenses/$pkgname/", "/licenses/<pkg>/")
+                .replace("/licenses/cakepass/", "/licenses/<pkg>/")
+        })
+        .collect()
+}
+
+#[test]
+fn the_aur_package_installs_what_the_local_one_does() {
+    let local = package_contents(PKGBUILD);
+    let aur = package_contents(AUR_PKGBUILD);
+    assert!(
+        local.len() >= 17 && aur.is_subset(&local),
+        "only in the AUR package: {:?}",
+        aur.difference(&local)
+    );
+    // Only what needs a local checkout (`cakepass --update`) is left out.
+    let only_local: Vec<&String> = local.difference(&aur).collect();
+    assert_eq!(
+        only_local,
+        [
+            "/usr/lib/systemd/user/cakepass-update.service",
+            "/usr/lib/systemd/user/cakepass-update.timer",
+            "/usr/share/cakepass/source-dir"
+        ]
+    );
+    // Every file it copies exists and is plain data.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for (mode, source, dest) in installed_files_of(AUR_PKGBUILD) {
+        if source.contains('$') {
+            continue;
+        }
+        assert!(root.join(&source).is_file(), "{source} does not exist");
+        assert_eq!(mode, "0644", "{source} -> {dest}");
+    }
+    // The real repository, not a local stand-in used for testing.
+    assert!(AUR_PKGBUILD.contains(
+        "source=(\"$pkgname::git+https://github.com/Justcakenl/Password-Manager.git#branch=main\")"
+    ));
+    assert!(AUR_PKGBUILD.contains("\npkgver() {\n"), "a -git package computes its version");
+}
+
+/// The items of a bash array `name=(...)` in a PKGBUILD (it may span lines).
+fn array(pkgbuild: &str, name: &str) -> Vec<String> {
+    let start = pkgbuild.find(&format!("\n{name}=(")).map(|i| i + name.len() + 3);
+    let Some(start) = start else { return Vec::new() };
+    let body = &pkgbuild[start..start + pkgbuild[start..].find(')').unwrap()];
+    body.split(['\'', '"'])
+        .skip(1)
+        .step_by(2)
+        .map(|s| s.replace("$_pkgname", "cakepass").replace("$pkgname", "cakepass-git"))
+        .collect()
+}
+
+#[test]
+fn the_aur_srcinfo_is_up_to_date() {
+    // .SRCINFO is what the AUR reads; it must be regenerated after every
+    // change to the PKGBUILD (`makepkg --printsrcinfo > .SRCINFO`).
+    let srcinfo = |key: &str| -> Vec<&str> {
+        AUR_SRCINFO.lines().filter_map(|l| l.trim().strip_prefix(&format!("{key} = "))).collect()
+    };
+    let var = |name: &str| {
+        AUR_PKGBUILD
+            .lines()
+            .find_map(|l| l.strip_prefix(&format!("{name}=")))
+            .unwrap()
+            .trim_matches('"')
+            .to_string()
+    };
+    assert_eq!(srcinfo("pkgbase"), ["cakepass-git"]);
+    assert_eq!(srcinfo("pkgname"), [var("pkgname")]);
+    assert_eq!(srcinfo("pkgver"), [var("pkgver")]);
+    assert_eq!(srcinfo("pkgrel"), [var("pkgrel")]);
+    assert_eq!(srcinfo("pkgdesc"), [var("pkgdesc")]);
+    assert_eq!(srcinfo("url"), [var("url")]);
+    for key in ["arch", "license", "depends", "makedepends", "optdepends", "provides", "conflicts", "source"]
+    {
+        assert_eq!(srcinfo(key), array(AUR_PKGBUILD, key), "{key}: run makepkg --printsrcinfo > .SRCINFO");
+    }
+    // Same program, same needs as the local package.
+    for key in ["arch", "license", "depends", "makedepends"] {
+        assert_eq!(array(AUR_PKGBUILD, key), array(PKGBUILD, key), "{key}");
+    }
+    assert_eq!(
+        var("pkgdesc"),
+        PKGBUILD.lines().find_map(|l| l.strip_prefix("pkgdesc=")).unwrap().trim_matches('"')
+    );
 }

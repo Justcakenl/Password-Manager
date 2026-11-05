@@ -1,0 +1,110 @@
+# Maintainer: Justin <38363843+Justcakenl@users.noreply.github.com>
+#
+# PKGBUILD for cakepass-git (CakePass) on the AUR: builds the newest commit of
+# the main branch from GitHub. The other PKGBUILD, packaging/arch/PKGBUILD,
+# builds from a local checkout instead (install.sh and `cakepass --update`).
+#
+# After ANY change to this file, regenerate .SRCINFO and commit both (the AUR
+# refuses a push without an up-to-date .SRCINFO):
+#
+#   cd packaging/aur && makepkg --printsrcinfo > .SRCINFO
+#
+# makepkg itself updates the pkgver line below when it builds (normal for a
+# -git package); that change may be committed with the next AUR update.
+
+pkgname=cakepass-git
+_pkgname=cakepass
+pkgver=0.4.0.r19.0650bc8
+pkgrel=1
+pkgdesc="Offline, encrypted password manager for the terminal (CakePass)"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Justcakenl/Password-Manager"
+license=('MIT')
+# hicolor-icon-theme owns the icon folders the app icon goes into.
+depends=('glibc' 'gcc-libs' 'hicolor-icon-theme')
+makedepends=('cargo' 'git')
+optdepends=('wl-clipboard: clipboard on Wayland'
+            'xclip: clipboard on X11')
+provides=("$_pkgname")
+# Not together with the plain cakepass package, nor with its old name, kluis.
+conflicts=("$_pkgname" 'kluis')
+options=('!debug')
+source=("$pkgname::git+https://github.com/Justcakenl/Password-Manager.git#branch=main")
+sha256sums=('SKIP')
+
+# Version = number from Cargo.toml + commit count (as packaging/arch/PKGBUILD)
+# + the short commit hash. This runs in makepkg's own clone, so unlike the
+# local PKGBUILD a pkgver() function dirties nothing of yours.
+pkgver() {
+  cd "$pkgname"
+  local ver
+  ver=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+  printf '%s.r%s.%s' "$ver" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  # This tells the program which version it was built from (cakepass --version).
+  CAKEPASS_GIT_COMMIT="$(git rev-parse --short=12 HEAD)"
+  export CAKEPASS_GIT_COMMIT
+  cargo build --frozen --release
+}
+
+check() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  CAKEPASS_GIT_COMMIT="$(git rev-parse --short=12 HEAD)"
+  export CAKEPASS_GIT_COMMIT
+  cargo test --frozen
+}
+
+# Keep in sync with packaging/arch/PKGBUILD's package(): the same files, except
+# what only makes sense for a local checkout (see the end of this function).
+# tests/packaging.rs compares the two.
+package() {
+  cd "$pkgname"
+  local bin="target/release/cakepass"
+  install -Dm0755 "$bin" "$pkgdir/usr/bin/cakepass"
+
+  # Shell completions
+  install -dm0755 "$pkgdir/usr/share/bash-completion/completions" \
+                  "$pkgdir/usr/share/zsh/site-functions" \
+                  "$pkgdir/usr/share/fish/vendor_completions.d"
+  "$bin" completions bash > "$pkgdir/usr/share/bash-completion/completions/cakepass"
+  "$bin" completions zsh  > "$pkgdir/usr/share/zsh/site-functions/_cakepass"
+  "$bin" completions fish > "$pkgdir/usr/share/fish/vendor_completions.d/cakepass.fish"
+
+  # Man page (`man cakepass`), generated from the same definition as --help
+  # (makepkg compresses it).
+  install -dm0755 "$pkgdir/usr/share/man/man1"
+  "$bin" man > "$pkgdir/usr/share/man/man1/cakepass.1"
+
+  # Desktop entry and app icon, so application launchers show CakePass (it
+  # opens in a terminal: Terminal=true). The icon caches are refreshed by
+  # pacman's own hook (gtk-update-icon-cache), not here.
+  install -Dm0644 packaging/cakepass.desktop "$pkgdir/usr/share/applications/cakepass.desktop"
+  install -Dm0644 assets/icons/cakepass-app-icon.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/cakepass.svg"
+  install -Dm0644 assets/icons/cakepass-app-icon-32.png "$pkgdir/usr/share/icons/hicolor/32x32/apps/cakepass.png"
+  install -Dm0644 assets/icons/cakepass-app-icon-256.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/cakepass.png"
+  install -Dm0644 assets/icons/cakepass-app-icon-512.png "$pkgdir/usr/share/icons/hicolor/512x512/apps/cakepass.png"
+
+  install -Dm0644 README.md "$pkgdir/usr/share/doc/cakepass/README.md"
+  install -Dm0644 docs/DESIGN.md "$pkgdir/usr/share/doc/cakepass/DESIGN.md"
+  install -Dm0644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm0644 assets/README.md "$pkgdir/usr/share/licenses/$pkgname/EFF-WORDLIST.md"
+
+  # Left out on purpose: /usr/share/cakepass/source-dir and the update-check
+  # timer. `cakepass --update` rebuilds a local checkout; here that would be
+  # makepkg's throwaway clone, and it would build the plain cakepass package.
+  # Your AUR helper updates this package (e.g. `yay -Syu --devel`), and the
+  # timer only runs when source-dir exists.
+}

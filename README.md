@@ -54,7 +54,7 @@ Pick the line that fits you:
 
 | You use… | Go to |
 |---|---|
-| Arch Linux, Manjaro, EndeavourOS, CachyOS | [**Arch family: one line**](#arch-family-one-line) |
+| Arch Linux, Manjaro, EndeavourOS, CachyOS | [**Arch family: one line**](#arch-family-one-line), or [from the AUR](#arch-family-from-the-aur-yay-paru) with yay or paru |
 | Ubuntu, Debian, Linux Mint, Pop!_OS, Zorin, Raspberry Pi OS | [**Any other Linux, step by step**](#any-other-linux-step-by-step) → Debian family |
 | Fedora, RHEL, AlmaLinux, Rocky Linux | [step by step](#any-other-linux-step-by-step) → Fedora family |
 | openSUSE | [step by step](#any-other-linux-step-by-step) → openSUSE |
@@ -109,6 +109,22 @@ When it is done, type `cakepass`. That is all. Skip to
 > **Used an early version?** The command used to be called `kluis`. Run the
 > installer again: the old package is replaced and your old `kluis` folders are
 > moved to `cakepass` automatically, so your vault is kept.
+
+### Arch family: from the AUR (yay, paru)
+
+Already use an AUR helper? CakePass is on the AUR as **`cakepass-git`** (it
+builds the newest version of the `main` branch, and runs the tests while
+building):
+
+```bash
+yay -S cakepass-git      # or: paru -S cakepass-git
+```
+
+Then type `cakepass` (the first time it starts the setup). Your AUR helper
+also does the updates: `yay -Syu --devel` (or `paru -Syu --devel`) picks up new
+commits. `cakepass --update` and its daily check are for an installation made
+with the one-line installer above, which remains the way to go without an AUR
+helper. The two cannot be installed side by side.
 
 ### Any other Linux, step by step
 
@@ -1095,7 +1111,9 @@ Good to know:
 
 > **Arch family only.** `cakepass --update` and the daily check build with
 > `makepkg`. On other Linux systems update with the four lines in
-> [Update to a newer version](#update-to-a-newer-version).
+> [Update to a newer version](#update-to-a-newer-version). Installed
+> `cakepass-git` from the AUR? Then your AUR helper updates it:
+> `yay -Syu --devel` (or `paru -Syu --devel`).
 
 When new changes are on GitHub, update with:
 
@@ -1508,7 +1526,8 @@ src/
                     tui/: the screen with arrow keys (no extra libraries)  ← critical
 build.rs            records which git commit it was built from
 tests/              integration tests (cli, tui in a pseudo-terminal, update, installer, packaging)
-packaging/arch/     PKGBUILD + systemd timer for the update check
+packaging/arch/     PKGBUILD (from this checkout) + systemd timer for the update check
+packaging/aur/      PKGBUILD + .SRCINFO of the AUR package cakepass-git
 packaging/cakepass.desktop   desktop entry (application launchers)
 assets/             EFF word list (CC BY 3.0 US); icons/: the app icon
 docs/DESIGN.md      design and threat analysis

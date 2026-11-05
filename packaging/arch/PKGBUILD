@@ -58,6 +58,8 @@ check() {
   cargo test --frozen
 }
 
+# Keep in sync with packaging/aur/PKGBUILD's package() (the AUR cakepass-git
+# package); tests/packaging.rs compares the two.
 package() {
   cd "$_root"
   local bin="$srcdir/target/release/cakepass"

@@ -355,8 +355,35 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   removed with `--no-shortcut`, and the question answered with Enter and
   with `n` in a real terminal.
 
+- [x] **AUR package `cakepass-git`** (`packaging/aur/PKGBUILD` +
+  `.SRCINFO`): builds the newest commit of `main` from GitHub
+  (`git+https://…#branch=main`), with a real `pkgver()` (Cargo.toml
+  version + commit count + short hash, e.g. `0.4.0.r20.98a672d`),
+  `provides=cakepass`, `conflicts=(cakepass kluis)`. Same build, tests and
+  files as `packaging/arch/PKGBUILD`, except `source-dir` and the update
+  timer (`cakepass --update` rebuilds a local checkout; for this package
+  the AUR helper updates, `yay -Syu --devel`). `tests/packaging.rs`
+  compares the two `package()` functions file by file and checks that
+  `.SRCINFO` matches the PKGBUILD. Proven end to end with a real `makepkg`
+  (with `check()`, and again `--nocheck` after a new commit) against a
+  `file://` copy of this repository; the GitHub URL itself only works once
+  `main` is pushed.
+
 ## Still to do
 
+- [ ] **Publish `cakepass-git` on the AUR** (after pushing `main`, which the
+  package builds from; the README already describes it as available):
+  1. `git push` `main`, then check the real build once:
+     `cd packaging/aur && makepkg -si` (makepkg updates the `pkgver=` line;
+     regenerate `.SRCINFO` with `makepkg --printsrcinfo > .SRCINFO` and
+     commit both).
+  2. An AUR account with your SSH public key, then
+     `git clone ssh://aur@aur.archlinux.org/cakepass-git.git`, copy
+     `PKGBUILD` and `.SRCINFO` into it (only those two), commit and push.
+  3. After every later change to `packaging/aur/PKGBUILD`: regenerate
+     `.SRCINFO` (`cargo test` fails until you do) and push both to the AUR
+     again. A new commit on `main` alone needs no AUR push: `--devel`
+     helpers rebuild from git.
 - [ ] Check the "Testing on Arch" list below on your own computer.
 - [ ] GitHub repository description still says "Beta-test"; change it in the
   repository settings.
@@ -574,7 +601,7 @@ See `docs/DESIGN.md` for the explanation. In short:
 
 | Check | Result |
 |---|---|
-| `cargo test` | 319 passed (121 library, 90 CLI/screen unit, 63 CLI integration, 13 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 3 packaging) |
+| `cargo test` | 321 passed (121 library, 90 CLI/screen unit, 63 CLI integration, 13 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
 | Known-answer tests (step 12) | TOTP: RFC 6238 Appendix B (SHA-1, SHA-256, SHA-512, all six times) and RFC 4226 Appendix D; base32: RFC 4648 section 10; cross-checked with an independent Python implementation (`hmac`/`hashlib`/`base64`) |
 | Known-answer tests (step 11) | Argon2id with a secret: vectors from the reference C implementation (libargon2 via argon2-cffi; the harness reproduces RFC 9106 first); key-file pepper: vectors from Python's `hashlib.blake2b(digest_size=32)` |
 | Unlock times (release, 4-core 2.1 GHz Xeon VM, step 11) | Standard ≈ 0.18–0.21 s, High ≈ 0.8–0.9 s, Maximum ≈ 3.6–3.8 s (first run once 5.9 s); wiping Argon2's freed memory is ~5–10 % of that |
@@ -589,6 +616,7 @@ See `docs/DESIGN.md` for the explanation. In short:
 | Setup wizard in a real pseudo-terminal | answers visible, passwords hidden, settings and vault created |
 | Installer | tested end to end with a fake GitHub and fake `pacman`/`sudo`/`makepkg`/`cakepass` (piped like `curl \| bash`, truncated download, re-run, local changes, failed build, uninstall, the desktop-shortcut question answered in a real terminal); `shellcheck` 0.10.0: no findings |
 | Package build (step 14, Arch, real `makepkg --nocheck` into a scratch folder) | `makepkg --printsrcinfo` and the build succeed; the package holds `usr/share/applications/cakepass.desktop`, `usr/share/icons/hicolor/{32x32,256x256,512x512}/apps/cakepass.png` and `scalable/apps/cakepass.svg` (all 0644, identical to `assets/icons/`), depends on `hicolor-icon-theme`; `desktop-file-validate` passes (one hint: `Security` could also be listed with `System`). Not installed with pacman |
+| AUR package `cakepass-git` (real `makepkg` against a `file://` bare clone of this repo, the PKGBUILD changed only in its URL) | `makepkg --printsrcinfo` OK; full build with `check()`: all 8 test groups passed, package `cakepass-git-0.4.0.r19.0650bc8-1`; after a throwaway commit, `--nocheck`: "Updated version: cakepass-git 0.4.0.r20.98a672d-1", binary reports `commit 98a672d89ff4`; the package holds the same files as the local one minus `source-dir` and the update timer, licence under `licenses/cakepass-git/`. Not yet built from the real GitHub URL (needs `main` pushed) |
 
 ### Tested in a clean Arch Linux container (earlier step, as a normal user)
 
