@@ -556,9 +556,11 @@ fn ask_new_passphrase() -> Result<Zeroizing<String>> {
     Ok(Zeroizing::new(p.expose_secret().to_string()))
 }
 
-/// The private key of an SSH key: multi-line, like a note, kept exactly.
+/// The private key of an SSH key: multi-line, like a note, kept exactly, and
+/// hidden while it is typed or pasted (like every other secret).
 fn ask_private_key() -> Result<Zeroizing<String>> {
-    let k = prompt::multiline("Paste the private key (PEM or OpenSSH format; it is stored encrypted):")?;
+    let k =
+        prompt::hidden_multiline("Paste the private key (PEM or OpenSSH format; it is stored encrypted):")?;
     if k.trim().is_empty() {
         return Err(Error::InvalidInput("the private key must not be empty".into()));
     }

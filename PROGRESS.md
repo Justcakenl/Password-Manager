@@ -333,6 +333,15 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
     cannot offer the hint next to the text (tested: a second `-t` replaces
     the first, so `TARGETS` then lacks every text type), so X11 stays a
     documented limitation.
+  - **The SSH private key is hidden while typed in the line mode.**
+    `add --type ssh-key` and `edit --password` read it with
+    `prompt::hidden_multiline`: echo and the terminal's line editing off
+    (as `rpassword` does for one line), each line only shows a `│`, the
+    terminal is restored afterwards and on Ctrl+C (which cancels). Same
+    end rules as notes (a line with only a dot, or Ctrl+D); from a pipe
+    nothing changes. The screen's form already hid it. Tests: the editing
+    rules byte by byte, and two pseudo-terminal tests (a pasted key never
+    appears in the output and is stored exactly; Ctrl+C leaves echo on).
 
 ## Still to do
 
@@ -553,7 +562,7 @@ See `docs/DESIGN.md` for the explanation. In short:
 
 | Check | Result |
 |---|---|
-| `cargo test` | 308 passed (119 library, 88 CLI/screen unit, 62 CLI integration, 11 screen in a pseudo-terminal, 12 update, 13 installer, 3 packaging) |
+| `cargo test` | 315 passed (121 library, 90 CLI/screen unit, 63 CLI integration, 13 screen and line mode in a pseudo-terminal, 12 update, 13 installer, 3 packaging) |
 | Known-answer tests (step 12) | TOTP: RFC 6238 Appendix B (SHA-1, SHA-256, SHA-512, all six times) and RFC 4226 Appendix D; base32: RFC 4648 section 10; cross-checked with an independent Python implementation (`hmac`/`hashlib`/`base64`) |
 | Known-answer tests (step 11) | Argon2id with a secret: vectors from the reference C implementation (libargon2 via argon2-cffi; the harness reproduces RFC 9106 first); key-file pepper: vectors from Python's `hashlib.blake2b(digest_size=32)` |
 | Unlock times (release, 4-core 2.1 GHz Xeon VM, step 11) | Standard ≈ 0.18–0.21 s, High ≈ 0.8–0.9 s, Maximum ≈ 3.6–3.8 s (first run once 5.9 s); wiping Argon2's freed memory is ~5–10 % of that |

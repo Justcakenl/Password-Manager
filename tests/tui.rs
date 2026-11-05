@@ -306,6 +306,21 @@ impl Pty {
         }
     }
 
+    /// Whether the terminal echoes typed text again (as a shell expects).
+    fn echo_is_on(&self) -> bool {
+        // SAFETY: plain libc calls on a descriptor we open and close here.
+        unsafe {
+            let mut name = [0 as libc::c_char; 128];
+            assert_eq!(libc::ptsname_r(self.master.as_raw_fd(), name.as_mut_ptr(), name.len()), 0);
+            let fd = libc::open(name.as_ptr(), libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC);
+            assert!(fd >= 0);
+            let mut t: libc::termios = std::mem::zeroed();
+            assert_eq!(libc::tcgetattr(fd, &mut t), 0);
+            libc::close(fd);
+            t.c_lflag & libc::ECHO != 0 && t.c_lflag & libc::ICANON != 0
+        }
+    }
+
     /// Log in and close the notice about the light (test) Argon2 settings.
     fn login(&mut self) {
         self.wait_for("Master password");
@@ -546,6 +561,63 @@ fn hidden_tabs_from_the_settings_file() {
     t.send("q");
     assert_eq!(t.wait_exit(), 0);
     assert_restored(&t.output());
+}
+
+#[test]
+fn a_private_key_typed_in_the_line_mode_is_hidden() {
+    let v = Vault::new();
+    let key = [
+        "-----BEGIN OPENSSH PRIVATE KEY-----",
+        "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW",
+        "  two leading spaces",
+        "",
+        "QyNTUxOQAAACBzZWNyZXQta2V5LW1hdGVyaWFsLW5vdC1yZWFsAAAAAAAAAAAAAAAAAA",
+        "-----END OPENSSH PRIVATE KEY-----",
+    ];
+    let args = ["add", "Server", "--type", "ssh-key", "--url", "git@example.org", "-t", ""];
+    let mut t = v.pty(&args, &[], 100, 30);
+    t.wait_raw("Master password");
+    t.send(&format!("{PW}\r"));
+    t.wait_raw("Paste the private key");
+    // As a terminal sends a paste: every line ends in \r.
+    t.send(&key.iter().map(|l| format!("{l}\r")).collect::<String>());
+    t.send(".\r");
+    t.wait_raw("Public key (optional");
+    // A normal question echoes again: the test would see a leaked key.
+    t.send("ssh-ed25519 AAAAzqPublic me@laptop\r");
+    t.wait_raw("ssh-ed25519 AAAAzqPublic me@laptop");
+    t.wait_raw("Passphrase of the private key");
+    t.send("\r");
+    assert_eq!(t.wait_exit(), 0, "{}", t.output());
+    let out = t.output();
+    assert!(out.contains("SSH key 'Server' saved"), "{out}");
+    for line in key.iter().filter(|l| l.len() > 3) {
+        assert!(!out.contains(line), "{line:?} was echoed:\n{out}");
+    }
+    assert!(out.contains("Hidden input: nothing appears"), "{out}");
+    assert!(t.echo_is_on(), "the terminal echoes again afterwards");
+    // Stored exactly as pasted.
+    let shown = v.cmd().args(["get", "server", "--show"]).write_stdin(format!("{PW}\n")).assert().success();
+    let stdout = String::from_utf8(shown.get_output().stdout.clone()).unwrap();
+    let printed = stdout.split_once("Private key:\n").map(|(_, rest)| rest).unwrap_or_default();
+    assert!(printed.starts_with(&format!("{}\n", key.join("\n"))), "{stdout}");
+}
+
+#[test]
+fn ctrl_c_in_the_hidden_private_key_restores_the_terminal() {
+    let v = Vault::new();
+    let mut t = v.pty(&["add", "Server", "--type", "ssh-key", "--url", "", "-t", ""], &[], 100, 30);
+    t.wait_raw("Master password");
+    t.send(&format!("{PW}\r"));
+    t.wait_raw("Paste the private key");
+    t.send("-----BEGIN zq half a key\r");
+    t.send("and a half line");
+    t.send("\x03");
+    assert_eq!(t.wait_exit(), 130, "{}", t.output());
+    let out = t.output();
+    assert!(out.contains("Cancelled.") && !out.contains("zq half") && !out.contains("half line"), "{out}");
+    assert!(t.echo_is_on(), "echo and line editing are back after Ctrl+C");
+    v.cmd().arg("list").write_stdin(format!("{PW}\n")).assert().success().stdout(contains("Server").not());
 }
 
 #[test]

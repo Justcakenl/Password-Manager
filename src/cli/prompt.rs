@@ -138,6 +138,188 @@ pub fn multiline(intro: &str) -> Result<Zeroizing<String>> {
     Ok(out)
 }
 
+/// Ask for a multi-line secret: the private key of an SSH key. Like
+/// [`multiline`] (finish with a line holding only a dot, or Ctrl+D), but in
+/// a terminal nothing typed or pasted is echoed, as for every other secret
+/// (`rpassword` only reads one line, so this does the same itself: echo and
+/// line editing off while reading, restored afterwards, also on Ctrl+C).
+/// Each finished line only shows a new `│` marker. From a pipe it reads like
+/// [`multiline`].
+pub fn hidden_multiline(intro: &str) -> Result<Zeroizing<String>> {
+    if !stdin_is_tty() {
+        return multiline(intro);
+    }
+    super::ui::info(intro);
+    super::ui::info(&super::ui::dim_err(
+        "  Hidden input: nothing appears while you type or paste. Finish with a line containing only a dot (.) or press Ctrl+D.",
+    ));
+    let marker = super::ui::pink("│");
+    eprint!("{marker} ");
+    io::stderr().flush()?;
+    let quiet = EchoOff::start()?;
+    let mut input = HiddenLines::default();
+    let step = loop {
+        let mut byte = [0u8; 1];
+        // SAFETY: we read at most 1 byte into a valid buffer of 1 byte.
+        let n = unsafe { libc::read(0, byte.as_mut_ptr().cast(), 1) };
+        if n < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err.into());
+        }
+        mark_activity();
+        // End of input: like Ctrl+D.
+        let step = input.feed(if n == 0 { CTRL_D } else { byte[0] })?;
+        match step {
+            Hidden::More => {}
+            Hidden::NextLine => {
+                eprint!("\n{marker} ");
+                io::stderr().flush()?;
+            }
+            Hidden::Done | Hidden::Cancel => break step,
+        }
+    };
+    drop(quiet);
+    eprintln!();
+    if step == Hidden::Cancel {
+        return Err(Error::Cancelled);
+    }
+    Ok(input.into_text())
+}
+
+const CTRL_C: u8 = 0x03;
+const CTRL_D: u8 = 0x04;
+const CTRL_U: u8 = 0x15;
+const ESC: u8 = 0x1b;
+
+/// The terminal with echo and line editing off (like `rpassword` does for
+/// one line); the old settings come back when this is dropped.
+struct EchoOff(libc::termios);
+
+impl EchoOff {
+    fn start() -> Result<EchoOff> {
+        // SAFETY: termios is a plain C struct that tcgetattr fills in.
+        let saved = unsafe {
+            let mut t: libc::termios = std::mem::zeroed();
+            if libc::tcgetattr(0, &mut t) != 0 {
+                return Err(io::Error::last_os_error().into());
+            }
+            t
+        };
+        let mut quiet = saved;
+        // Ctrl+C arrives as a byte (ISIG off), so we can restore the
+        // terminal before cancelling instead of dying with echo off.
+        quiet.c_lflag &= !(libc::ECHO | libc::ECHONL | libc::ICANON | libc::ISIG);
+        quiet.c_cc[libc::VMIN] = 1;
+        quiet.c_cc[libc::VTIME] = 0;
+        // SAFETY: a termios derived from the one we read.
+        if unsafe { libc::tcsetattr(0, libc::TCSANOW, &quiet) } != 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        Ok(EchoOff(saved))
+    }
+}
+
+impl Drop for EchoOff {
+    fn drop(&mut self) {
+        // SAFETY: the termios we read in `start`.
+        unsafe { libc::tcsetattr(0, libc::TCSANOW, &self.0) };
+    }
+}
+
+/// What a byte of hidden multi-line input did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hidden {
+    More,
+    NextLine,
+    Done,
+    Cancel,
+}
+
+/// The editing rules of hidden multi-line input, byte by byte (the
+/// terminal's own line editing is off): Enter ends a line, a line with only
+/// `.` or Ctrl+D on an empty line ends the input, Backspace removes a
+/// character, Ctrl+U the line, Ctrl+C cancels, and escape sequences (arrow
+/// keys, the bracketed-paste markers) are dropped.
+#[derive(Default)]
+struct HiddenLines {
+    text: Zeroizing<String>,
+    line: Zeroizing<Vec<u8>>,
+    /// Inside an escape sequence: 1 after ESC, 2 inside `ESC [` / `ESC O`.
+    esc: u8,
+}
+
+impl HiddenLines {
+    fn feed(&mut self, b: u8) -> Result<Hidden> {
+        match self.esc {
+            1 => {
+                self.esc = if b == b'[' || b == b'O' { 2 } else { 0 };
+                return Ok(Hidden::More);
+            }
+            2 => {
+                if (0x40..=0x7e).contains(&b) {
+                    self.esc = 0;
+                }
+                return Ok(Hidden::More);
+            }
+            _ => {}
+        }
+        match b {
+            b'\r' | b'\n' => self.end_line(),
+            0x7f | 0x08 => {
+                // One whole UTF-8 character.
+                while self.line.pop().is_some_and(|c| c & 0xc0 == 0x80) {}
+                Ok(Hidden::More)
+            }
+            CTRL_U => {
+                self.line.zeroize();
+                Ok(Hidden::More)
+            }
+            CTRL_C => Ok(Hidden::Cancel),
+            CTRL_D if self.line.is_empty() => Ok(Hidden::Done),
+            CTRL_D => self.end_line().map(|_| Hidden::Done),
+            ESC => {
+                self.esc = 1;
+                Ok(Hidden::More)
+            }
+            b'\t' => self.push(b),
+            b if b < 0x20 => Ok(Hidden::More),
+            b => self.push(b),
+        }
+    }
+
+    fn push(&mut self, b: u8) -> Result<Hidden> {
+        if self.text.len() + self.line.len() >= 64 * 1024 {
+            return Err(Error::InvalidInput("the text is too long (max. 64 KiB)".into()));
+        }
+        self.line.push(b);
+        Ok(Hidden::More)
+    }
+
+    fn end_line(&mut self) -> Result<Hidden> {
+        if self.line.as_slice() == b"." {
+            self.line.zeroize();
+            return Ok(Hidden::Done);
+        }
+        let line = match std::str::from_utf8(&self.line) {
+            Ok(s) => s,
+            Err(_) => return Err(Error::InvalidInput("input is not valid UTF-8 text".into())),
+        };
+        if !self.text.is_empty() {
+            self.text.push('\n');
+        }
+        self.text.push_str(line);
+        self.line.zeroize();
+        Ok(Hidden::NextLine)
+    }
+
+    fn into_text(mut self) -> Zeroizing<String> {
+        std::mem::take(&mut self.text)
+    }
+}
+
 /// Ask yes/no. The default is "no".
 pub fn confirm(prompt: &str) -> Result<bool> {
     ask_yes_no(prompt, false)
@@ -242,6 +424,55 @@ mod tests {
         assert!(strength("tq8#vLp2!mZr9wXe").0 >= MIN_SCORE);
         assert!(strength("grape-lantern-oyster-bulky-scenic-dwarf").0 >= MIN_SCORE);
         assert!(strength(&"a".repeat(5000)).0 < MIN_SCORE, "long input is fast and weak");
+    }
+
+    /// Feed bytes to hidden multi-line input until it is done.
+    fn hidden(bytes: &[u8]) -> (Result<Hidden>, String) {
+        let mut h = HiddenLines::default();
+        let mut last = Ok(Hidden::More);
+        for &b in bytes {
+            last = h.feed(b);
+            if !matches!(last, Ok(Hidden::More | Hidden::NextLine)) {
+                break;
+            }
+        }
+        (last, h.into_text().to_string())
+    }
+
+    #[test]
+    fn hidden_multiline_input_keeps_the_text_exactly() {
+        let key = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n  two leading spaces\n\nAAAA\n-----END OPENSSH PRIVATE KEY-----";
+        // Typed or pasted line by line, then a dot: exactly what `multiline` gives.
+        let (r, text) = hidden(format!("{key}\n.\n").as_bytes());
+        assert_eq!(r.unwrap(), Hidden::Done);
+        assert_eq!(text, key);
+        // A terminal sends Enter as \r; Ctrl+D on an empty line also ends it.
+        let (r, text) = hidden(b"line 1\rline 2\r\x04");
+        assert_eq!((r.unwrap(), text.as_str()), (Hidden::Done, "line 1\nline 2"));
+        // Ctrl+D after text ends the line and the input.
+        assert_eq!(hidden(b"one\x04").1, "one");
+        // Only a line with just a dot ends it; a dot inside a key is text.
+        assert_eq!(hidden(b"a.\n.b\n .\n.\n").1, "a.\n.b\n .");
+        // UTF-8 and tabs stay.
+        assert_eq!(hidden("wachtwoord €\tx\n.\n".as_bytes()).1, "wachtwoord €\tx");
+    }
+
+    #[test]
+    fn hidden_multiline_input_editing_keys() {
+        // Backspace (DEL or ^H) removes one whole character, also a multi-byte one.
+        assert_eq!(hidden("abc\x7f\x7fx€\x7fy\x08z\n.\n".as_bytes()).1, "axz");
+        assert_eq!(hidden(b"\x7f\x7fok\n.\n").1, "ok", "backspace on an empty line is harmless");
+        // Ctrl+U clears the line being typed, not the lines before it.
+        assert_eq!(hidden(b"keep\nwrong\x15right\n.\n").1, "keep\nright");
+        // Arrow keys and the bracketed-paste markers are not text.
+        assert_eq!(hidden(b"\x1b[200~ab\x1b[D\x1bOAc\x1b[201~\n.\n").1, "abc");
+        // Other control characters are dropped.
+        assert_eq!(hidden(b"a\x01\x1ab\n.\n").1, "ab");
+        // Ctrl+C cancels at once.
+        assert_eq!(hidden(b"secret\nhalf\x03more\n").0.unwrap(), Hidden::Cancel);
+        // Not UTF-8, or far too long: an error, not a mangled key.
+        assert!(hidden(b"\xff\xfe\n").0.is_err());
+        assert!(hidden(&vec![b'a'; 70 * 1024]).0.is_err());
     }
 
     #[test]

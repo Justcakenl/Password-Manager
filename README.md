@@ -746,11 +746,11 @@ Number:          (hidden; use --show)
 $ cakepass add "GitHub key" --type ssh-key
 Master password:
 Paste the private key (PEM or OpenSSH format; it is stored encrypted):
-  Finish with a line containing only a dot (.) or press Ctrl+D.
-│ -----BEGIN OPENSSH PRIVATE KEY-----
-│ …
-│ -----END OPENSSH PRIVATE KEY-----
-│ .
+  Hidden input: nothing appears while you type or paste. Finish with a line containing only a dot (.) or press Ctrl+D.
+│
+│
+│
+│
 Public key (optional, one line, e.g. ssh-ed25519 AAAA… me@laptop): ssh-ed25519 AAAAC3Nza me@laptop
 Passphrase of the private key (hidden input, optional):
 Host (optional, e.g. git@github.com): git@github.com
@@ -759,6 +759,10 @@ Tags, separated by commas (optional): work
 ✔ SSH key 'GitHub key' saved (encrypted).
 ```
 
+- The private key is **hidden while you paste it**, like every other secret: each
+  line you paste or type only shows a new `│`, and you finish with a line holding
+  only a dot. Check what was stored with `--show`. (The screen's form hides it
+  too, until Ctrl+R.)
 - `cakepass get "GitHub key"` copies the private key; `--copy-public` copies the
   public key instead; `--show` shows the private key and the passphrase.
 - Change parts: `cakepass edit "GitHub key" --password` (a new private key),
