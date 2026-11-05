@@ -12,9 +12,14 @@
 //!   wipe something you copied yourself afterwards.
 //! - The time is always kept inside [`CLEAR_SECS_RANGE`]: a damaged setting
 //!   or a bad helper argument can never mean "never" or "after a day".
+//! - With `wl-copy` (wl-clipboard 2.3 or newer) the content is marked
+//!   sensitive (`--sensitive`, the `x-kde-passwordManagerHint` type), so
+//!   clipboard histories that follow that convention (KDE Klipper, Omarchy's
+//!   clipboard history) do not store it.
 //!
-//! Limitation: clipboard managers (Klipper, cliphist, etc.) may keep their own
-//! history; we cannot clear that.
+//! Limitation: clipboard managers that ignore that hint (and anything under
+//! X11 with `xclip`, which cannot set it) may keep their own history; we
+//! cannot clear that.
 
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
@@ -102,16 +107,54 @@ fn hash(data: &[u8]) -> [u8; HASH_LEN] {
     Blake2b512::digest(data).into()
 }
 
-/// Put `secret` on the clipboard.
-pub fn copy(tool: Tool, secret: &[u8]) -> Result<()> {
-    let mut cmd = match tool {
-        Tool::WlCopy => Command::new("wl-copy"),
+/// The command that puts a secret on the clipboard (the secret itself goes
+/// in via stdin). With `sensitive`, `wl-copy` also offers the
+/// `x-kde-passwordManagerHint` type, the convention that tells clipboard
+/// histories (KDE Klipper, Omarchy's, and others) not to store the entry.
+/// Everything CakePass copies is a secret, so this is not an option.
+/// `xclip` has no way to offer that type next to the text: it advertises a
+/// single target (`-t`), and making that the hint would leave other programs
+/// without a text type to paste.
+fn copy_command(tool: Tool, sensitive: bool) -> Command {
+    match tool {
+        Tool::WlCopy => {
+            let mut c = Command::new("wl-copy");
+            if sensitive {
+                c.arg("--sensitive");
+            }
+            c
+        }
         Tool::Xclip => {
             let mut c = Command::new("xclip");
             c.args(["-selection", "clipboard", "-in"]);
             c
         }
-    };
+    }
+}
+
+/// Whether the installed `wl-copy` knows `--sensitive` (wl-clipboard 2.3 and
+/// newer). Older versions refuse an unknown option, so passing it blindly
+/// would make copying fail there; they just copy without the hint. Asked
+/// once per process.
+fn wl_copy_is_sensitive_aware() -> bool {
+    static AWARE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AWARE.get_or_init(|| {
+        Command::new("wl-copy")
+            .arg("--help")
+            .stdin(Stdio::null())
+            .output()
+            .is_ok_and(|o| help_mentions_sensitive(&o.stdout) || help_mentions_sensitive(&o.stderr))
+    })
+}
+
+fn help_mentions_sensitive(help: &[u8]) -> bool {
+    help.windows(b"--sensitive".len()).any(|w| w == b"--sensitive")
+}
+
+/// Put `secret` on the clipboard, marked as sensitive where the tool can.
+pub fn copy(tool: Tool, secret: &[u8]) -> Result<()> {
+    let sensitive = tool == Tool::WlCopy && wl_copy_is_sensitive_aware();
+    let mut cmd = copy_command(tool, sensitive);
     let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
     {
         let mut stdin = child.stdin.take().expect("stdin is piped");
@@ -145,9 +188,9 @@ fn paste(tool: Tool) -> Result<Zeroizing<Vec<u8>>> {
     Ok(out)
 }
 
-/// Empty the clipboard.
-pub fn clear(tool: Tool) -> Result<()> {
-    let mut cmd = match tool {
+/// The command that empties the clipboard (no content, so no hint).
+fn clear_command(tool: Tool) -> Command {
+    match tool {
         Tool::WlCopy => {
             let mut c = Command::new("wl-copy");
             c.arg("--clear");
@@ -158,7 +201,12 @@ pub fn clear(tool: Tool) -> Result<()> {
             c.args(["-selection", "clipboard", "-in"]);
             c
         }
-    };
+    }
+}
+
+/// Empty the clipboard.
+pub fn clear(tool: Tool) -> Result<()> {
+    let mut cmd = clear_command(tool);
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status()?;
     Ok(())
 }
@@ -245,6 +293,38 @@ mod tests {
         assert!(!bool::from(hash(b"abc").ct_eq(&hash(b"abd"))));
         assert_eq!(Tool::from_name("xclip"), Some(Tool::Xclip));
         assert_eq!(Tool::from_name("something"), None);
+    }
+
+    fn args(cmd: &Command) -> Vec<&str> {
+        cmd.get_args().map(|a| a.to_str().unwrap()).collect()
+    }
+
+    #[test]
+    fn copied_secrets_are_marked_sensitive_for_wl_copy() {
+        let c = copy_command(Tool::WlCopy, true);
+        assert_eq!(c.get_program(), "wl-copy");
+        assert_eq!(args(&c), ["--sensitive"]);
+        // An older wl-copy (without the option) copies without the hint.
+        assert!(args(&copy_command(Tool::WlCopy, false)).is_empty());
+        // xclip cannot offer the hint next to the text.
+        assert_eq!(args(&copy_command(Tool::Xclip, true)), ["-selection", "clipboard", "-in"]);
+        // Clearing copies nothing, so it carries no hint.
+        assert_eq!(args(&clear_command(Tool::WlCopy)), ["--clear"]);
+        assert_eq!(args(&clear_command(Tool::Xclip)), ["-selection", "clipboard", "-in"]);
+        // The secret is never an argument.
+        for cmd in [copy_command(Tool::WlCopy, true), copy_command(Tool::Xclip, true)] {
+            assert!(args(&cmd).iter().all(|a| a.starts_with('-') || *a == "clipboard"));
+        }
+    }
+
+    #[test]
+    fn knowing_whether_wl_copy_has_sensitive() {
+        // From `wl-copy --help` of wl-clipboard 2.3.0; an older one lacks the first line.
+        assert!(help_mentions_sensitive(b"\t    --sensitive\t\tHint that the content is sensitive.\n"));
+        assert!(!help_mentions_sensitive(
+            b"\t-o, --paste-once\tOnly serve one paste request and then exit.\n\t-c, --clear\t\tInstead of copying, clear the clipboard.\n"
+        ));
+        assert!(!help_mentions_sensitive(b""));
     }
 
     #[test]

@@ -1384,7 +1384,11 @@ no known vulnerabilities.
    at most 300 s with `clip-time`), any
    program in your session can read it. Clipboard managers (KDE Klipper,
    cliphist, CopyQ, GNOME extensions) sometimes keep a **history** that `cakepass`
-   cannot clear. Turn that off or exclude cakepass.
+   cannot clear. Under Wayland `cakepass` marks what it copies as sensitive
+   (`wl-copy --sensitive`, wl-clipboard 2.3 or newer), so histories that respect
+   that hint (`x-kde-passwordManagerHint`), such as KDE Klipper and Omarchy's
+   clipboard history, do not store it. Others may, and under X11 (`xclip`)
+   there is no such hint: turn their history off or exclude cakepass.
 4. **Onlookers and scrollback.** `--show` puts the password on your screen and
    in your terminal's scrollback. On the screen (arrow keys) a revealed password
    is visible for up to 10 seconds; it is not in the scrollback, but a terminal
@@ -1467,7 +1471,8 @@ Deliberately not in this version (fewer features that work well beats many):
 - Editing notes in `$EDITOR`. Not in yet on purpose: an editor writes temporary
   files unencrypted to disk.
 - A translated interface and a non-English diceware word list.
-- Telling clipboard managers that it is a password (`x-kde-passwordManagerHint`).
+- Telling clipboard managers under X11 that it is a password: `xclip` cannot
+  offer `x-kde-passwordManagerHint` next to the text (Wayland does this already).
 - Synchronization between devices (e.g. via Syncthing, with conflict detection).
 
 ---

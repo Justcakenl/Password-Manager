@@ -85,7 +85,7 @@ The CLI is a thin layer. All security logic lives in the library.
 | Concurrency | `flock` + a check whether the file changed in the meantime | Two terminals do not overwrite each other's work |
 | Contents | JSON (inside the encryption) | Simple, easy to migrate |
 | Locking | Every single command asks for the master password; `cakepass shell` locks after inactivity (default 5 min, configurable) | No background service with the key in memory |
-| Clipboard | `wl-copy` (Wayland) or `xclip` (X11); a detached helper clears after 20 s (`config set clip-time`: 5–300 s, passed to the helper as an argument and clamped again there), but only if the clipboard still holds our password (BLAKE2b hash, constant-time comparison) | Your password does not linger, and we never wipe something you copied yourself later. A bad setting or argument can never mean "never" or "after a day" |
+| Clipboard | `wl-copy` (Wayland) or `xclip` (X11); a detached helper clears after 20 s (`config set clip-time`: 5–300 s, passed to the helper as an argument and clamped again there), but only if the clipboard still holds our password (BLAKE2b hash, constant-time comparison). With `wl-copy` 2.3 or newer the content is marked sensitive (`--sensitive`: it also offers the `x-kde-passwordManagerHint` type; an older `wl-copy`, found from its `--help`, copies without it) | Your password does not linger, and we never wipe something you copied yourself later. A bad setting or argument can never mean "never" or "after a day". Clipboard histories that respect the hint (KDE Klipper, Omarchy's clipboard history) do not store the password at all; `xclip` cannot offer the hint next to the text (it advertises one target only), so X11 lacks this |
 | Password input | Hidden prompt via `/dev/tty` (rpassword) or stdin in a pipe; never via arguments or environment variables | Not visible in `ps`, shell history or `/proc/<pid>/environ` |
 | Installer | `install.sh` wrapped in `main()` and run on its last line; uses the user's own GitHub access; never touches the vault | A truncated download cannot run half a script; no tokens are stored |
 | Updates | `cakepass --update` = `git fetch` + `git merge --ff-only` + `makepkg` (with tests), extra vault backup first, restore on failure | Safe, reviewable updates without network code in the program |
@@ -122,8 +122,12 @@ The CLI is a thin layer. All security logic lives in the library.
   locked and may end up in swap while in use. Use encrypted swap or no swap.
 - **Theft of the vault file together with the key file** (both on the same
   disk or backup): then only the master password protects it.
-- **Clipboard managers** (KDE Klipper, cliphist, etc.) may keep a history.
-  `cakepass` clears the clipboard, but not their history.
+- **Clipboard managers** may keep a history. `cakepass` clears the clipboard,
+  but not their history. Under Wayland it marks what it copies as sensitive
+  (`wl-copy --sensitive`, the `x-kde-passwordManagerHint` convention), and
+  histories that respect that (KDE Klipper, Omarchy's) skip it; histories
+  that ignore it, and every history under X11 (`xclip` cannot set the
+  hint) may still keep it.
 - **Two-factor authentication, when its TOTP secret is stored here.** The
   secret is as well protected as the password next to it, but someone who
   opens the vault then has both factors of that account. That is the user's

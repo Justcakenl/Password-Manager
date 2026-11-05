@@ -1784,21 +1784,57 @@ fn audit_reports_item_names_and_never_a_secret() {
     clean.run(&["--help"], "").success().stdout(contains("audit").and(contains("Password health check")));
 }
 
-/// A stand-in for wl-clipboard: the "clipboard" is a file.
-fn fake_clipboard(dir: &Path) -> (PathBuf, PathBuf) {
+/// A stand-in for wl-clipboard: the "clipboard" is a file, and the options
+/// of the last copy are written next to it (`<clipboard>.args`). `modern`:
+/// like wl-clipboard 2.3 (knows `--sensitive`); otherwise like an older one,
+/// which does not mention it in `--help` and refuses it.
+fn fake_clipboard_like(dir: &Path, modern: bool) -> (PathBuf, PathBuf) {
     use std::os::unix::fs::PermissionsExt;
     let bin = dir.join("fake-bin");
     std::fs::create_dir_all(&bin).unwrap();
     let clip = dir.join("clipboard.txt");
-    for (name, body) in [
-        ("wl-copy", "if [ \"$1\" = \"--clear\" ]; then : > \"$FAKE_CLIP\"; else cat > \"$FAKE_CLIP\"; fi"),
-        ("wl-paste", "cat \"$FAKE_CLIP\" 2>/dev/null"),
-    ] {
+    let (help, sensitive) = if modern {
+        ("echo '    --sensitive    Hint that the content is sensitive.'", "")
+    } else {
+        ("echo '    -c, --clear    Instead of copying, clear the clipboard.'", "--sensitive) exit 1 ;;")
+    };
+    let wl_copy = format!(
+        "case \"$1\" in\n--help) {help} ;;\n--clear) : > \"$FAKE_CLIP\" ;;\n{sensitive}\n\
+         *) printf '%s\\n' \"$*\" > \"$FAKE_CLIP.args\"; cat > \"$FAKE_CLIP\" ;;\nesac"
+    );
+    for (name, body) in [("wl-copy", wl_copy.as_str()), ("wl-paste", "cat \"$FAKE_CLIP\" 2>/dev/null")] {
         let path = bin.join(name);
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     (bin, clip)
+}
+
+fn fake_clipboard(dir: &Path) -> (PathBuf, PathBuf) {
+    fake_clipboard_like(dir, true)
+}
+
+#[test]
+fn copied_secrets_are_marked_sensitive_for_clipboard_histories() {
+    let k = Vaulty::new().init();
+    k.add("GitHub", "john", ITEM_PW);
+    for modern in [true, false] {
+        let (bin, clip) = fake_clipboard_like(k.dir(), modern);
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+        k.cmd()
+            .args(["get", "github"])
+            .env("PATH", &path)
+            .env("WAYLAND_DISPLAY", "fake-0")
+            .env("FAKE_CLIP", &clip)
+            .write_stdin(format!("{PW}\n"))
+            .assert()
+            .success()
+            .stderr(contains("copied to the clipboard"));
+        assert_eq!(std::fs::read_to_string(&clip).unwrap(), ITEM_PW, "copied (modern: {modern})");
+        let args = std::fs::read_to_string(clip.with_extension("txt.args")).unwrap();
+        // wl-clipboard 2.3 gets the hint; an older one still copies, without it.
+        assert_eq!(args, if modern { "--sensitive\n" } else { "\n" }, "modern: {modern}");
+    }
 }
 
 #[test]

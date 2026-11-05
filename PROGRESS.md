@@ -321,6 +321,19 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   exists with mode 0644, that each PNG has the size of its folder, and the
   desktop entry's keys.
 
+- [x] **Security-audit fixes** (after the security audit of this branch):
+  - **Copied secrets are marked sensitive.** `wl-copy --sensitive` offers
+    the `x-kde-passwordManagerHint` type, so clipboard histories that
+    respect it (KDE Klipper; Omarchy's, whose `capture.sh` otherwise saved
+    every copied password into a 0644 JSON file before CakePass cleared
+    the clipboard) skip the entry. Checked on Omarchy: the type is listed,
+    a watcher sees `CLIPBOARD_STATE=sensitive`, and the history file does
+    not change. Only wl-clipboard 2.3+ knows the option; an older `wl-copy`
+    (found from its `--help`) copies without it instead of failing. `xclip`
+    cannot offer the hint next to the text (tested: a second `-t` replaces
+    the first, so `TARGETS` then lacks every text type), so X11 stays a
+    documented limitation.
+
 ## Still to do
 
 - [ ] Check the "Testing on Arch" list below on your own computer.
@@ -673,7 +686,9 @@ Could NOT be tested in the cloud environment. Do this yourself and tick:
 - [ ] Clipboard and closing the terminal: start `cakepass get`, close the window
       at once; after 20 s the clipboard must still be empty
 - [ ] Clipboard history (Klipper/cliphist/CopyQ): check whether the password
-      stays in there. If so: turn the history off or exclude cakepass
+      stays in there. If so: turn the history off or exclude cakepass. On
+      Wayland, `wl-paste --list-types` right after `cakepass get` lists
+      `x-kde-passwordManagerHint` (Omarchy's history then skips it)
 - [ ] Hidden prompt: no characters appear while typing the master password,
       and Ctrl+C restores the terminal
 - [ ] Colors: green ✔ and yellow warnings; no color codes with `cakepass list | cat`
