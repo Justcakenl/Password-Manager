@@ -371,6 +371,25 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
 
 ## Still to do
 
+- [ ] **Push `main` to GitHub.** Confirmed by tester-haiku: `origin/main`
+  is still at `220f272` (the pre-step-12 state), 16 commits behind local
+  `main`. Until this is pushed, both `install.sh` (clones `main` by
+  default) and the `cakepass-git` AUR package (builds from `main`) would
+  silently install the OLD CakePass, missing everything from step 12
+  onward. This is the one remaining blocker for the AUR package and the
+  installer to actually deliver what they describe.
+- [ ] **Minor test-coverage gap (not a functional bug)**: no installer
+  test proves `--yes` suppresses the shortcut question specifically when
+  a real terminal is present (the existing `--yes` test runs without a
+  terminal, where the question can't appear regardless of `--yes`).
+  Reading `install.sh` directly confirms the actual logic is correct
+  (`$YES` is checked before asking); only the test coverage for that one
+  combination is missing. Add a terminal test with `--yes --no-setup`
+  and a typed `n` that expects no question and the file kept.
+- [ ] **Leftover branch on GitHub**: `claude/blissful-dijkstra-etqobs`
+  (one commit, "Docs: repository is public, remove private-repo
+  instructions", not merged into `main`). Harmless, just needs a
+  decision: merge it or delete the remote branch.
 - [ ] **Publish `cakepass-git` on the AUR** (after pushing `main`, which the
   package builds from; the README already describes it as available):
   1. `git push` `main`, then check the real build once:
