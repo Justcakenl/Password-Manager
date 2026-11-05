@@ -1523,4 +1523,6 @@ security problem? Do **not** open a public issue; follow [SECURITY.md](SECURITY.
 
 CakePass is released under the MIT license,
 see [`LICENSE`](LICENSE). The EFF word list is under CC BY 3.0 US,
-see [`assets/README.md`](assets/README.md).
+see [`assets/README.md`](assets/README.md). The CakePass name and logo
+are **not** covered by the MIT license — they identify this project
+specifically; see [`assets/icons/README.md`](assets/icons/README.md).
