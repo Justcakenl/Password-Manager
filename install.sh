@@ -9,7 +9,8 @@
 #   2. installs the build tools it needs with pacman (asks for your sudo password)
 #   3. downloads the CakePass source code with git into ~/cakepass
 #      (it uses YOUR GitHub access: gh, an SSH key, or a login prompt)
-#   4. builds, tests and installs the package with makepkg
+#   4. builds, tests and installs the package with makepkg, then asks whether
+#      to keep CakePass in your application menu (a desktop icon; default yes)
 #   5. starts the first-time setup (`cakepass setup`): animation on/off and your
 #      master password
 #
@@ -17,12 +18,13 @@
 # CakePass (the same thing `cakepass --update` does).
 #
 # Options:
-#   -y, --yes        do not ask for confirmations (sudo still asks for your password)
-#       --no-setup   install only; skip the first-time setup
-#       --dir DIR    where to keep the source code (default: ~/cakepass)
-#       --branch B   which branch to install (default: main)
-#       --uninstall  remove the CakePass program (your vault is kept)
-#   -h, --help       show this help
+#   -y, --yes          do not ask for confirmations (sudo still asks for your password)
+#       --no-setup     install only; skip the first-time setup
+#       --no-shortcut  no entry in the application menu (no desktop icon)
+#       --dir DIR      where to keep the source code (default: ~/cakepass)
+#       --branch B     which branch to install (default: main)
+#       --uninstall    remove the CakePass program (your vault is kept)
+#   -h, --help         show this help
 #
 # Environment: CAKEPASS_REPO (owner/name, default Justcakenl/Password-Manager),
 #              CAKEPASS_DIR, CAKEPASS_BRANCH.
@@ -38,12 +40,13 @@ Usage: curl -fsSL <link-to-install.sh> | bash [-s -- OPTIONS]
        bash install.sh [OPTIONS]
 
 Options:
-  -y, --yes        do not ask for confirmations (sudo still asks for your password)
-      --no-setup   install only; skip the first-time setup
-      --dir DIR    where to keep the source code (default: ~/cakepass)
-      --branch B   which branch to install (default: main)
-      --uninstall  remove the CakePass program (your vault is kept)
-  -h, --help       show this help
+  -y, --yes          do not ask for confirmations (sudo still asks for your password)
+      --no-setup     install only; skip the first-time setup
+      --no-shortcut  no entry in the application menu (no desktop icon)
+      --dir DIR      where to keep the source code (default: ~/cakepass)
+      --branch B     which branch to install (default: main)
+      --uninstall    remove the CakePass program (your vault is kept)
+  -h, --help         show this help
 
 Environment: CAKEPASS_REPO (owner/name), CAKEPASS_DIR, CAKEPASS_BRANCH.
 USAGE
@@ -55,7 +58,7 @@ main() {
   local REPO="${CAKEPASS_REPO:-Justcakenl/Password-Manager}"
   local DIR="${CAKEPASS_DIR:-$HOME/cakepass}"
   local BRANCH="${CAKEPASS_BRANCH:-main}"
-  local YES=0 SETUP=1 UNINSTALL=0
+  local YES=0 SETUP=1 SHORTCUT=1 UNINSTALL=0
 
   # ── pretty output (colors only on a terminal) ──
   local PINK="" GREEN="" YELLOW="" RED="" DIM="" BOLD="" OFF=""
@@ -74,6 +77,7 @@ main() {
     case "$1" in
       -y|--yes) YES=1 ;;
       --no-setup) SETUP=0 ;;
+      --no-shortcut) SHORTCUT=0 ;;
       --uninstall) UNINSTALL=1 ;;
       --dir) [ $# -ge 2 ] || die "--dir needs a folder"; DIR="$2"; shift ;;
       --branch) [ $# -ge 2 ] || die "--branch needs a name"; BRANCH="$2"; shift ;;
@@ -157,6 +161,26 @@ main() {
     || die "the build or installation failed. Nothing was changed about an existing CakePass."
   command -v cakepass >/dev/null 2>&1 || die "cakepass was not found after installing. Open a new terminal and try again."
   ok "installed: $(cakepass --version 2>/dev/null || echo cakepass)"
+
+  # The package always brings a desktop entry (an icon in the application
+  # menu); pacman cannot leave one file out per user, so the choice is made
+  # here. The icon files stay: harmless without the entry that points at them.
+  # (CAKEPASS_TEST_ROOT is only for the installer's own tests.)
+  local DESKTOP_FILE="${CAKEPASS_TEST_ROOT:-}/usr/share/applications/cakepass.desktop"
+  if [ "$SHORTCUT" -eq 1 ] && [ "$YES" -eq 0 ] && [ "$HAVE_TTY" -eq 1 ]; then
+    local answer=""
+    printf '  Add CakePass to your application menu (a desktop icon)? [Y/n] '
+    read -r answer </dev/tty || answer=""
+    case "$answer" in [nN]*) SHORTCUT=0 ;; esac
+  fi
+  if [ "$SHORTCUT" -eq 1 ]; then
+    ok "CakePass is in your application menu (it opens in a terminal)"
+  else
+    tty_run sudo rm -f "$DESKTOP_FILE"
+    ok "no application menu entry; start CakePass by typing cakepass"
+    say "${DIM}An update installs the entry again. To leave it out for good, add this line to /etc/pacman.conf:${OFF}"
+    say "${DIM}  NoExtract = usr/share/applications/cakepass.desktop${OFF}"
+  fi
 
   # ── 5. first-time setup ──
   step "[5/5] First-time setup"

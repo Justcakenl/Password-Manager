@@ -343,6 +343,18 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
     rules byte by byte, and two pseudo-terminal tests (a pasted key never
     appears in the output and is stored exactly; Ctrl+C leaves echo on).
 
+- [x] **Installer: a choice about the desktop shortcut.** After installing,
+  `install.sh` asks "Add CakePass to your application menu (a desktop
+  icon)? [Y/n]" (Enter = yes; asked only in a terminal and without
+  `--yes`, which keeps it). No, or `--no-shortcut`: it removes
+  `/usr/share/applications/cakepass.desktop` with sudo (the icon files
+  stay) and says how to keep it out for good: an update reinstalls the
+  file, unless `NoExtract = usr/share/applications/cakepass.desktop` is in
+  `/etc/pacman.conf`. `--uninstall` already removes the whole package,
+  this file included. Tests: kept with `--yes` and without a terminal,
+  removed with `--no-shortcut`, and the question answered with Enter and
+  with `n` in a real terminal.
+
 ## Still to do
 
 - [ ] Check the "Testing on Arch" list below on your own computer.
@@ -562,7 +574,7 @@ See `docs/DESIGN.md` for the explanation. In short:
 
 | Check | Result |
 |---|---|
-| `cargo test` | 315 passed (121 library, 90 CLI/screen unit, 63 CLI integration, 13 screen and line mode in a pseudo-terminal, 12 update, 13 installer, 3 packaging) |
+| `cargo test` | 319 passed (121 library, 90 CLI/screen unit, 63 CLI integration, 13 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 3 packaging) |
 | Known-answer tests (step 12) | TOTP: RFC 6238 Appendix B (SHA-1, SHA-256, SHA-512, all six times) and RFC 4226 Appendix D; base32: RFC 4648 section 10; cross-checked with an independent Python implementation (`hmac`/`hashlib`/`base64`) |
 | Known-answer tests (step 11) | Argon2id with a secret: vectors from the reference C implementation (libargon2 via argon2-cffi; the harness reproduces RFC 9106 first); key-file pepper: vectors from Python's `hashlib.blake2b(digest_size=32)` |
 | Unlock times (release, 4-core 2.1 GHz Xeon VM, step 11) | Standard ≈ 0.18–0.21 s, High ≈ 0.8–0.9 s, Maximum ≈ 3.6–3.8 s (first run once 5.9 s); wiping Argon2's freed memory is ~5–10 % of that |
@@ -575,7 +587,7 @@ See `docs/DESIGN.md` for the explanation. In short:
 | `cargo audit` | no vulnerabilities |
 | `cargo build --release --locked` | succeeded |
 | Setup wizard in a real pseudo-terminal | answers visible, passwords hidden, settings and vault created |
-| Installer | tested end to end with a fake GitHub and fake `pacman`/`sudo`/`makepkg`/`cakepass` (piped like `curl \| bash`, truncated download, re-run, local changes, failed build, uninstall) |
+| Installer | tested end to end with a fake GitHub and fake `pacman`/`sudo`/`makepkg`/`cakepass` (piped like `curl \| bash`, truncated download, re-run, local changes, failed build, uninstall, the desktop-shortcut question answered in a real terminal); `shellcheck` 0.10.0: no findings |
 | Package build (step 14, Arch, real `makepkg --nocheck` into a scratch folder) | `makepkg --printsrcinfo` and the build succeed; the package holds `usr/share/applications/cakepass.desktop`, `usr/share/icons/hicolor/{32x32,256x256,512x512}/apps/cakepass.png` and `scalable/apps/cakepass.svg` (all 0644, identical to `assets/icons/`), depends on `hicolor-icon-theme`; `desktop-file-validate` passes (one hint: `Security` could also be listed with `System`). Not installed with pacman |
 
 ### Tested in a clean Arch Linux container (earlier step, as a normal user)

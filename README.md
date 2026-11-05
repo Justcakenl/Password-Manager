@@ -76,16 +76,17 @@ first, as you should with any script you pipe into `bash`. It:
 2. Installs what it needs with `pacman` (`base-devel`, `git`, `rust`, and a
    clipboard tool for your session). Asks for your sudo password.
 3. Downloads the source code with `git` into `~/cakepass`.
-4. Builds, **tests** and installs the package with `makepkg`. It also adds a
-   CakePass entry with its icon to your application launcher (it opens in a
-   terminal).
+4. Builds, **tests** and installs the package with `makepkg`, and asks whether
+   you want CakePass in your application menu (an icon that opens it in a
+   terminal; Enter = yes). Rather just type `cakepass`? Answer `n`, or pass
+   `--no-shortcut`.
 5. Starts the **first-time setup**: intro animation yes/no, auto-lock minutes,
    **security level**, your **master password** (it offers to make a strong
    passphrase for you) and optionally a **key file**.
 
 Your vault is never touched by the installer. Run it again any time to update.
 Options go after `bash -s --`, e.g. `... | bash -s -- --yes --no-setup`:
-`--yes` (no confirmations), `--no-setup`, `--dir DIR`, `--branch B`,
+`--yes` (no confirmations), `--no-setup`, `--no-shortcut`, `--dir DIR`, `--branch B`,
 `--uninstall` (removes the program, keeps your vault), `--help`.
 
 <details>
