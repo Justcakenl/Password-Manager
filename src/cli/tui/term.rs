@@ -12,6 +12,10 @@
 //!   runs first), and SIGINT, SIGTERM, SIGHUP and SIGQUIT. The signal handlers
 //!   only set a flag (async-signal-safe); `poll` is interrupted, so the main
 //!   loop sees the flag at once and cleans up properly.
+//! - The old signal actions only come back after the frames are wiped (the
+//!   vault is wiped before that), and after a hangup SIGHUP stays ignored:
+//!   its SIGHUP can arrive after `poll` already reported the hangup (see
+//!   `restore_actions`).
 //! - Restoring discards keys typed ahead (TCSAFLUSH), so they never reach
 //!   the shell; that matters when a password was being pasted.
 //! - A watchdog thread locks even when the main loop is stuck (for example on
@@ -38,6 +42,9 @@ const CLEAR_ALL: &[u8] = b"\x1b[2J\x1b[3J\x1b[H";
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static SIGNAL: AtomicI32 = AtomicI32::new(0);
 static RESIZED: AtomicBool = AtomicBool::new(false);
+/// The terminal hung up (SIGHUP, or `poll`/`read` saw it close). See
+/// `restore_actions`: the SIGHUP of a hangup may still be on its way.
+static HUNG_UP: AtomicBool = AtomicBool::new(false);
 static LOCK_SECS: AtomicU64 = AtomicU64::new(u64::MAX);
 /// The terminal settings from before, for the panic hook and the watchdog.
 static SAVED: Mutex<Option<libc::termios>> = Mutex::new(None);
@@ -49,6 +56,9 @@ extern "C" fn on_signal(sig: libc::c_int) {
     if sig == libc::SIGWINCH {
         RESIZED.store(true, Ordering::SeqCst);
     } else {
+        if sig == libc::SIGHUP {
+            HUNG_UP.store(true, Ordering::SeqCst);
+        }
         SIGNAL.store(sig, Ordering::SeqCst);
     }
 }
@@ -268,24 +278,39 @@ impl Terminal {
             return Ok(Input::Timeout);
         }
         if p.revents & libc::POLLIN == 0 {
+            HUNG_UP.store(true, Ordering::SeqCst);
             return Ok(Input::Closed); // POLLHUP / POLLERR: the terminal is gone
         }
         // SAFETY: we read at most buf.len() bytes into buf.
         let n = unsafe { libc::read(0, buf.as_mut_ptr().cast(), buf.len()) };
         match n {
-            0 => Ok(Input::Closed),
+            0 => {
+                HUNG_UP.store(true, Ordering::SeqCst);
+                Ok(Input::Closed)
+            }
             n if n > 0 => Ok(Input::Data(n as usize)),
             _ => {
                 let err = io::Error::last_os_error();
                 match err.kind() {
                     io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock => Ok(Input::Interrupted),
-                    _ => Err(err),
+                    _ => {
+                        if err.raw_os_error() == Some(libc::EIO) {
+                            HUNG_UP.store(true, Ordering::SeqCst); // the other side closed
+                        }
+                        Err(err)
+                    }
                 }
             }
         }
     }
 
+    /// Put the terminal back. The frames on screen are wiped first, before
+    /// the old signal actions return: from then on a signal may end the
+    /// process at once, and nothing that was shown may still be in memory.
     fn restore(&mut self) {
+        self.front.clear();
+        self.back.clear();
+        self.out.zeroize();
         if ACTIVE.swap(false, Ordering::SeqCst) {
             let _ = write_all(1, LEAVE);
             // SAFETY: the termios we read in `enter`.
@@ -304,8 +329,24 @@ impl Terminal {
     }
 }
 
+/// Put the signal actions from before back.
+///
+/// Except SIGHUP after a hangup: closing a terminal wakes our `poll` with
+/// POLLHUP *before* the kernel sends the SIGHUP that belongs to it (a pty
+/// master's close marks the other side closed and wakes its readers, then
+/// hangs it up and signals the session). The main loop may then already be
+/// on its way out (the vault wiped, the frames wiped) when that SIGHUP
+/// arrives; with the default action back it would kill the process in the
+/// middle of the rest of its clean exit (seen as an exit by signal 1 under
+/// load). The terminal is gone and we are leaving anyway, so that late
+/// SIGHUP is ignored instead.
 fn restore_actions(old: &mut Vec<(libc::c_int, libc::sigaction)>) {
     for (sig, act) in old.drain(..) {
+        if sig == libc::SIGHUP && HUNG_UP.load(Ordering::SeqCst) {
+            // SAFETY: ignoring a signal is always safe.
+            unsafe { libc::signal(libc::SIGHUP, libc::SIG_IGN) };
+            continue;
+        }
         // SAFETY: an action we received from sigaction earlier.
         unsafe { libc::sigaction(sig, &act, std::ptr::null_mut()) };
     }

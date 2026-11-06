@@ -660,6 +660,40 @@ fn ctrl_c_and_signals_restore_the_terminal() {
 }
 
 #[test]
+fn a_late_sighup_after_closing_the_window_does_not_kill_the_clean_exit() {
+    // Closing a terminal wakes the program's poll (POLLHUP) before the kernel
+    // sends the SIGHUP of that hangup, so the SIGHUP can arrive after the
+    // program left the screen mode and put the old signal actions back. A
+    // test hook holds the program exactly there; the SIGHUP sent then used to
+    // kill it with the default action (exit by signal 1) instead of letting
+    // it finish its clean exit.
+    use std::os::unix::process::ExitStatusExt;
+    let v = Vault::new();
+    let marker = v.dir.path().join("left-the-screen");
+    let mut t = v.pty(&[], &[("CAKEPASS_TEST_AFTER_LEAVE", marker.to_str().unwrap())], 80, 24);
+    t.login();
+    t.wait_for("Your vault is empty");
+    t.master = std::fs::File::open("/dev/null").unwrap(); // close the window
+    let start = Instant::now();
+    while !marker.exists() {
+        assert!(start.elapsed() < Duration::from_secs(30), "the program never left the screen mode");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // SAFETY: signalling our own child.
+    unsafe { libc::kill(t.child.id() as i32, libc::SIGHUP) };
+    std::thread::sleep(Duration::from_millis(100));
+    let _ = std::fs::remove_file(&marker); // let it go on
+    let status = loop {
+        if let Some(status) = t.child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(start.elapsed() < Duration::from_secs(30), "the program kept running");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!((status.code(), status.signal()), (Some(0), None), "a late SIGHUP must not kill it");
+}
+
+#[test]
 fn resizing_and_a_too_small_window() {
     let v = Vault::new();
     let mut t = v.pty(&[], &[], 80, 24);

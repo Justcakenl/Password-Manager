@@ -355,6 +355,33 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   removed with `--no-shortcut`, and the question answered with Enter and
   with `n` in a real terminal.
 
+- [x] **Fixed: closing the window could end in a kill by SIGHUP** (a race
+  that existed before step 12; seen as a rare failure of
+  `ctrl_c_and_signals_restore_the_terminal` when `makepkg` ran the whole
+  suite). Root cause, measured with temporary instrumentation (signal and
+  exit-path order recorded in atomics, the handler's thread id via
+  `gettid`): closing a pty wakes the program's `poll` with POLLHUP
+  *before* the kernel sends the SIGHUP of that hangup. Usually the SIGHUP
+  is already pending when `poll` returns, and the handler runs first; under
+  load it can come later. In every killed run the loop had ended on POLLHUP
+  with no SIGHUP handled, the vault had been wiped, the old (default)
+  actions had been put back, and the late SIGHUP then killed the process in
+  the rest of its exit, before it was done (the screen buffers were only
+  wiped after that point, so they may not have been). The
+  watchdog thread was ruled out: every handled SIGHUP ran on the main
+  thread, and the handler is process-wide anyway (`start_watchdog` runs
+  before `Terminal::enter`, so the signal mask plays no part).
+  Fix (`src/cli/tui/term.rs`): a hangup (POLLHUP, EOF, EIO or SIGHUP) is
+  remembered and SIGHUP is then left ignored instead of reset to the
+  default; and the screen buffers are wiped *before* any old signal action
+  comes back. Test: `a_late_sighup_after_closing_the_window_does_not_kill_the_clean_exit`
+  holds the program (debug-only hook `CAKEPASS_TEST_AFTER_LEAVE`) right
+  after it left the screen mode and sends a SIGHUP then: before the fix
+  it died by signal 1 every time, now it exits 0. Stress test of all of
+  `tests/tui.rs`: before, 1 failure in 24 runs one at a time, and 14 of 151
+  hangups killed with three loops side by side; after, 150 of 150 runs
+  with three loops side by side and 100 of 100 one at a time.
+
 - [x] **AUR package `cakepass-git`** (`packaging/aur/PKGBUILD` +
   `.SRCINFO`): builds the newest commit of `main` from GitHub
   (`git+https://…#branch=main`), with a real `pkgver()` (Cargo.toml
@@ -620,7 +647,7 @@ See `docs/DESIGN.md` for the explanation. In short:
 
 | Check | Result |
 |---|---|
-| `cargo test` | 321 passed (121 library, 90 CLI/screen unit, 63 CLI integration, 13 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
+| `cargo test` | 322 passed (121 library, 90 CLI/screen unit, 63 CLI integration, 14 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
 | Known-answer tests (step 12) | TOTP: RFC 6238 Appendix B (SHA-1, SHA-256, SHA-512, all six times) and RFC 4226 Appendix D; base32: RFC 4648 section 10; cross-checked with an independent Python implementation (`hmac`/`hashlib`/`base64`) |
 | Known-answer tests (step 11) | Argon2id with a secret: vectors from the reference C implementation (libargon2 via argon2-cffi; the harness reproduces RFC 9106 first); key-file pepper: vectors from Python's `hashlib.blake2b(digest_size=32)` |
 | Unlock times (release, 4-core 2.1 GHz Xeon VM, step 11) | Standard ≈ 0.18–0.21 s, High ≈ 0.8–0.9 s, Maximum ≈ 3.6–3.8 s (first run once 5.9 s); wiping Argon2's freed memory is ~5–10 % of that |
