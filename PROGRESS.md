@@ -398,13 +398,17 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
 
 ## Still to do
 
-- [ ] **Push `main` to GitHub.** Confirmed by tester-haiku: `origin/main`
-  is still at `220f272` (the pre-step-12 state), 16 commits behind local
-  `main`. Until this is pushed, both `install.sh` (clones `main` by
-  default) and the `cakepass-git` AUR package (builds from `main`) would
-  silently install the OLD CakePass, missing everything from step 12
-  onward. This is the one remaining blocker for the AUR package and the
-  installer to actually deliver what they describe.
+- [x] **Pushed `main` to GitHub** (now at `f91117e`). HTTPS with a GitHub
+  account password no longer works (GitHub rejects it: use a token or
+  SSH); an SSH key for this account already existed on this machine and
+  wasn't wired up, so `origin` on both this checkout and `~/cakepass`
+  (the one `cakepass --update` uses) was switched to
+  `git@github.com:Justcakenl/Password-Manager.git`. `install.sh` and the
+  `cakepass-git` AUR package now actually build what they describe.
+- [ ] **Run `cakepass update --yes` to update the real installed
+  package** (needs the maintainer's sudo password at the terminal, which
+  no agent session can supply — this is the one remaining step for the
+  machine this was developed on to actually run the new version).
 - [ ] **Minor test-coverage gap (not a functional bug)**: no installer
   test proves `--yes` suppresses the shortcut question specifically when
   a real terminal is present (the existing `--yes` test runs without a
@@ -417,16 +421,13 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   (one commit, "Docs: repository is public, remove private-repo
   instructions", not merged into `main`). Harmless, just needs a
   decision: merge it or delete the remote branch.
-- [ ] **Publish `cakepass-git` on the AUR** (after pushing `main`, which the
-  package builds from; the README already describes it as available):
-  1. `git push` `main`, then check the real build once:
-     `cd packaging/aur && makepkg -si` (makepkg updates the `pkgver=` line;
-     regenerate `.SRCINFO` with `makepkg --printsrcinfo > .SRCINFO` and
-     commit both).
-  2. An AUR account with your SSH public key, then
+- [ ] **Publish `cakepass-git` on the AUR** (`main` is pushed, so the
+  package already builds the real thing; this step is only about making
+  it visible on the AUR itself, whenever you want that):
+  1. An AUR account with your SSH public key, then
      `git clone ssh://aur@aur.archlinux.org/cakepass-git.git`, copy
      `PKGBUILD` and `.SRCINFO` into it (only those two), commit and push.
-  3. After every later change to `packaging/aur/PKGBUILD`: regenerate
+  2. After every later change to `packaging/aur/PKGBUILD`: regenerate
      `.SRCINFO` (`cargo test` fails until you do) and push both to the AUR
      again. A new commit on `main` alone needs no AUR push: `--devel`
      helpers rebuild from git.
