@@ -1385,13 +1385,19 @@ The project went through its own code and found and fixed these problems:
 | If the clipboard-clearing helper could not start, the password stayed on the clipboard indefinitely | The clipboard is then cleared immediately |
 | A malicious import or CSV file could contain control characters (ANSI escapes) that manipulate your terminal | They are rejected or replaced on import, and made visible as `\u{1b}` with `--show` |
 | A password you displayed could stay behind in Rust's output buffer | Secrets are written to the terminal without a buffer, and wiped |
+| In the line mode, an SSH private key was the one secret typed without being hidden (every other secret field already was) | `add --type ssh-key` and `edit --password` now hide it too, the same way as a password |
+| A copied secret could end up in a clipboard-history tool's own, unencrypted history (noticed via Omarchy's own history on the maintainer's machine) | CakePass marks what it copies as sensitive (`wl-copy --sensitive`); tools that respect that hint skip it (see "Remaining risks" below for the ones that don't) |
 
 Also checked and fine: no option accepts a password as an argument (there is a
 test for it). A wrong password and a tampered file give the same message on
 purpose. Comparisons of secrets are constant-time. Broken files give clean errors
 (tested with every bit flip and every truncated length). Symlinks are refused.
 Writing from two terminals at the same time is detected. `cargo audit` reports
-no known vulnerabilities.
+no known vulnerabilities (147 dependencies checked against the RustSec
+database). Beyond that automated scan, the project ran a dedicated round
+specifically trying to extract a secret from a running vault, its files, its
+processes and its clipboard (the two rows above came out of that); nothing
+else turned up.
 
 **Remaining risks** (no password manager can fully protect against these):
 
