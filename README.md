@@ -117,7 +117,7 @@ builds the newest version of the `main` branch, and runs the tests while
 building):
 
 ```bash
-yay -S cakepass-git  <soon>     # or: paru -S cakepass-git
+yay -S cakepass-git  soon     # or: paru -S cakepass-git
 ```
 
 Then type `cakepass` (the first time it starts the setup). Your AUR helper
