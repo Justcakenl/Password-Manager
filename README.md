@@ -112,15 +112,18 @@ When it is done, type `cakepass`. That is all. Skip to
 
 ### Arch family: from the AUR (yay, paru)
 
-Already use an AUR helper? CakePass is on the AUR as **`cakepass-git`** (it
-builds the newest version of the `main` branch, and runs the tests while
-building):
+The package is built and tested (`packaging/aur/PKGBUILD` +
+`.SRCINFO`); it is **not published on the AUR yet** (coming soon).
+Already use an AUR helper? Once it's published, CakePass will be on the
+AUR as **`cakepass-git`** (it builds the newest version of the `main`
+branch, and runs the tests while building):
 
 ```bash
-yay -S cakepass-git  soon     # or: paru -S cakepass-git
+yay -S cakepass-git      # or: paru -S cakepass-git
 ```
 
-Then type `cakepass` (the first time it starts the setup). Your AUR helper
+Until then, use the one-line installer above. Then type `cakepass` (the
+first time it starts the setup). Your AUR helper
 also does the updates: `yay -Syu --devel` (or `paru -Syu --devel`) picks up new
 commits. `cakepass --update` and its daily check are for an installation made
 with the one-line installer above, which remains the way to go without an AUR
