@@ -499,6 +499,8 @@ fn settings_are_saved() {
 #[test]
 fn change_the_master_password() {
     let mut t = T::sample();
+    // A copy made before an update follows the new password too.
+    let copy = cakepass::storage::backup_before_update(&paths(&t.dir)).unwrap().unwrap();
     t.key(Key::Char('s'));
     t.keys(&[Key::Down, Key::Down, Key::Down, Key::Enter]); // past the Tabs row
     assert!(t.screen().contains("current master password"));
@@ -516,9 +518,12 @@ fn change_the_master_password() {
     t.key(Key::Enter);
     t.typ(PW2);
     t.key(Key::Enter);
-    assert!(t.screen().contains("Master password changed"), "{}", t.screen());
+    let s = t.screen();
+    assert!(s.contains("Master password changed") && s.contains("1 copy made before updates"), "{s}");
     t.key(Key::Enter);
     assert!(UnlockedVault::open(paths(&t.dir), Credentials::password(PW.as_bytes())).is_err());
+    let read = |pw: &str| cakepass::storage::read_vault_file(&copy, Credentials::password(pw.as_bytes()));
+    assert!(read(PW).is_err() && read(PW2).is_ok(), "the pre-update copy was re-keyed");
     let uv = t.reopen(PW2);
     assert_eq!(get(&uv, "github").password(uv.item_key()).unwrap().as_str(), "gh-Secret-1");
     // The open vault keeps working with the new key.

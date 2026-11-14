@@ -1,6 +1,6 @@
 # Progress: `cakepass` (CakePass)
 
-Last updated: step 16a, plus the version on the opening screen; content schema still 5.
+Last updated: step 16b (pre-update copies follow a re-key), plus the version on the opening screen; content schema still 5.
 Repository: `Justcakenl/Password-Manager`, branch `main` (private until it is made public).
 
 ## Maintainer checklist: manual testing on a real Arch machine
@@ -504,13 +504,56 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
 
 ## Still to do
 
-- [ ] **Step 16b (next, before any new feature)**, the second open
-  finding from security-opus's audit, on its own branch:
-  2. The `vault.enc.pre-update-<time>` copies made by `cakepass --update`
-     still open with the OLD master password after it is changed: decide
-     with security review whether a password change re-keys, deletes or
-     at least clearly warns about them (as it already does for `.bak`).
-  Work out the exact scope from the audit text before implementing.
+- [x] **Step 16b: pre-update copies follow a re-key** (branch
+  `fix/16b-rekey-pre-update-copies`, from `fix/16a-import-escape-codes`;
+  finding 2 of security-opus's audit, medium). After `passwd` or
+  `security`, the `vault.enc.pre-update-<time>` copies made by
+  `cakepass --update` still opened with the OLD password or key file.
+  - `UnlockedVault::rekey` now returns a `CopiesReport`: after the vault
+    (and `.bak`) is safely re-keyed, `rekey_update_copies` re-encrypts
+    every copy whose header has exactly the old key's salt, Argon2 settings
+    and key-file flag (`format::written_with`). It is decrypted with the
+    old key without Argon2 (`format::open_with_key`, same checks as
+    `open`; a damaged copy is an error, not "another key"), every
+    `*_sealed` field is re-sealed with the new item key and NOTHING else in
+    the JSON changes (`vault::reseal_json`: schema, unknown fields, the old
+    contents stay), and it is written in its own file layout where that can
+    say what the key needs (`format::seal_like`: a version 2 copy stays
+    version 2 so cakepass 0.3 can still open it; a key file forces 3), with
+    `write_atomic` (0600) under the vault's write lock.
+  - Copies of a still older key are reported, not touched (`stale`); a
+    copy that fails is reported with the reason (`failed`) and nothing is
+    rolled back. Already under the new key = skipped (idempotent).
+  - Which files: `update_copies` (shared with `backup_before_update`):
+    regular files named exactly `<vault>.pre-update-<digits>`; no
+    temporary files, other endings, `+5`, symlinks or folders.
+  - CLI (`report_copies`): says how many were re-encrypted, warns about
+    failures, lists older copies and in a terminal asks "Overwrite and
+    delete them now? [y/N]" (`import::overwrite_and_remove`). The screen:
+    the same facts in the "Master password changed" / "Security level
+    changed" dialog (warning style when something is left), no deleting.
+  - Texts now promise only what is true: "Exports and copies you made
+    yourself" keep their own password; the README says so, and names the
+    remaining risk (a crash between the vault and the copies).
+  Tests: storage.rs `rekeying_also_rekeys_the_pre_update_copies_keeping_their_contents`
+  (old password opens nothing, new one opens the OLD contents, 0600,
+  look-alike names untouched, idempotent, older copy listed and unchanged,
+  damaged copy = failed), `a_new_key_file_also_locks_the_old_one_out_of_the_copies`,
+  `a_copy_keeps_its_old_layout_and_schema_when_re_keyed` (version 2 and an
+  unknown JSON field survive); tests/tui.rs
+  `passwd_rekeys_the_pre_update_copies_and_offers_to_delete_older_ones`
+  (piped: listed, not deleted; in a pseudo-terminal: yes deletes it); the
+  screen's `change_the_master_password` checks the copy and the dialog.
+  After review (reviewer-sonnet, security-opus): `backup_before_update`
+  takes the write lock (a copy is never made half-way through a save or
+  while a re-key converts the copies); `seal_like` writes a version 1 copy
+  in the current layout (version 1 used the master key itself for the
+  file), version 2 stays 2 unless a key file needs 3; in `report_copies`
+  Ctrl+C or a read error at "Overwrite and delete them now?" counts as no
+  and the remaining messages still follow. Tests:
+  `a_version_1_copy_is_re_keyed_into_the_current_layout`,
+  `a_version_2_copy_given_a_key_file_moves_to_the_current_layout`.
+
 - [x] **Pushed `main` to GitHub** (now at `f91117e`). HTTPS with a GitHub
   account password no longer works (GitHub rejects it: use a token or
   SSH); an SSH key for this account already existed on this machine and
@@ -784,6 +827,7 @@ See `docs/DESIGN.md` for the explanation. In short:
 
 | Check | Result |
 |---|---|
+| `cargo test` (step 16b) | 333 passed (126 library, 94 CLI/screen unit, 64 CLI integration, 15 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
 | `cargo test` (step 16a) | 329 passed (123 library, 94 CLI/screen unit, 64 CLI integration, 14 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
 | `cargo test` (step 15) | 327 passed (122 library, 94 CLI/screen unit, 63 CLI integration, 14 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
 | Setting up 2FA in a real terminal (step 15, tmux, throwaway vault) | 2FA tab → `a` → typed "disc" → Enter → Discord's edit form on the 2FA secret → typed a test secret → Ctrl+S: "Item 'Discord' updated. Its 2FA code is in the 2FA tab." and its code in the list; at 80×24 and 60×16 |

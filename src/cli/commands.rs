@@ -1720,13 +1720,55 @@ fn passwd(uv: &mut UnlockedVault, a: &KdfChangeArgs) -> Result<()> {
     warn_if_weak_kdf(&kdf);
     ui::info("Choose a new master password. The same warning applies: forgotten = everything lost.");
     let new_pw: SecretString = prompt::new_strong_password("master password")?;
-    uv.rekey(credentials(&new_pw, &kf), kdf)?;
+    let copies = uv.rekey(credentials(&new_pw, &kf), kdf)?;
     drop(kf);
     ui::success("Master password changed. All items and the backup now use the new key.");
+    report_copies(&copies)?;
     ui::warn(
-        "Copies and exports you made yourself earlier still open with the OLD password. \
+        "Exports and copies you made yourself earlier still open with the OLD password. \
          Delete them if you think the old password has leaked.",
     );
+    Ok(())
+}
+
+/// After re-keying: what happened to the `pre-update` copies. Copies that
+/// open with an even older password or key file are offered for deletion in
+/// a terminal (default no) and only listed otherwise.
+fn report_copies(r: &storage::CopiesReport) -> Result<()> {
+    if r.rekeyed > 0 {
+        ui::info(&format!(
+            "{} made before updates re-encrypted with the new key (their contents unchanged).",
+            plural(r.rekeyed, "copy", "copies")
+        ));
+    }
+    for (path, why) in &r.failed {
+        ui::warn(&format!(
+            "Could not re-encrypt {} ({why}); it still opens the old way. Delete it if the old password or \
+             key file may have leaked.",
+            path.display()
+        ));
+    }
+    if r.stale.is_empty() {
+        return Ok(());
+    }
+    ui::warn(&format!(
+        "{} made before updates still open with an EARLIER password or key file (from before a previous \
+         change), so they could not be re-encrypted:",
+        plural(r.stale.len(), "older copy", "older copies")
+    ));
+    for path in &r.stale {
+        ui::warn(&format!("  {}", path.display()));
+    }
+    // Ctrl+C or a read error here counts as "no": the re-key itself is done
+    // and its remaining messages must still be shown.
+    if prompt::stdin_is_tty() && prompt::confirm("Overwrite and delete them now?").unwrap_or(false) {
+        for path in &r.stale {
+            match import::overwrite_and_remove(path) {
+                Ok(()) => ui::success(&format!("Deleted {}.", path.display())),
+                Err(e) => ui::warn(&format!("Could not delete {}: {e}", path.display())),
+            }
+        }
+    }
     Ok(())
 }
 
@@ -2113,7 +2155,7 @@ fn security_change(paths: &VaultPaths, open: Option<&mut UnlockedVault>, a: &Sec
     };
     ui::info(&format!("Re-encrypting the vault ({}, a fresh salt)…", target_kdf.describe()));
     let start = Instant::now();
-    uv.rekey(Credentials::new(pw.expose_secret().as_bytes(), pepper), target_kdf)?;
+    let copies = uv.rekey(Credentials::new(pw.expose_secret().as_bytes(), pepper), target_kdf)?;
     let took = start.elapsed();
     drop(pw);
     drop(kf);
@@ -2142,10 +2184,11 @@ fn security_change(paths: &VaultPaths, open: Option<&mut UnlockedVault>, a: &Sec
         forget_key_file(cur_path.as_deref());
     }
     ui::info("All items and the .bak backup now use the new key.");
+    report_copies(&copies)?;
     if new_path.is_some() || (a.no_keyfile && cur_kf) {
         ui::warn(
-            "Copies of the vault you made yourself earlier still open the old way (the old key file, \
-             or without one). Make new copies, and delete the old ones if they could fall into the wrong hands.",
+            "Exports and copies of the vault you made yourself earlier still open the old way (the old key \
+             file, or without one). Make new copies, and delete the old ones if they could fall into the wrong hands.",
         );
     }
     Ok(())
