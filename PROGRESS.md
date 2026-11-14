@@ -1,6 +1,6 @@
 # Progress: `cakepass` (CakePass)
 
-Last updated: step 16b (pre-update copies follow a re-key), plus the version on the opening screen; content schema still 5.
+Last updated: step 17 (sharing items with another CakePass), plus the version on the opening screen; content schema still 5.
 Repository: `Justcakenl/Password-Manager`, branch `main` (private until it is made public).
 
 ## Maintainer checklist: manual testing on a real Arch machine
@@ -502,6 +502,72 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   tagline (login, setup, `cakepass logo`), and in the title bar as
   "v0.4.0 · locks in 4:59" when the subtitle keeps its full width.
 
+- [x] **Step 17: sharing items with another CakePass** (branch
+  `feature/share-items`, from `fix/16b-rekey-pre-update-copies`). Asked
+  for by the user, with the file sent by hand ("Signal, mail, USB");
+  CakePass stays offline.
+  - `cakepass share NAME... --to FILE` and `x` in the screen: a NEW file
+    (never overwrites, 0600) with only those items, in the export format
+    (`UnlockedVault::share_to` → `Vault::subset`, sharing
+    `write_with_password` with `export_to`; Argon2 at `export_params`, so
+    never lighter than Standard). The password is a generated 6-word
+    diceware passphrase (about 77 bits), shown once; you cannot choose one.
+    Warnings when an item carries a 2FA secret or a private SSH key.
+  - Receiving: the existing `cakepass import` (with step 16a's checks), and
+    `i` in the screen (file, then its password; Argon2 runs as a task with
+    "Opening the file…"; a wrong password keeps the dialog; a file that
+    needs a key file is sent to the command line).
+  - `x` and `i` are now shortcuts in the list, so they no longer start a
+    search (capitals still do), like `f` before.
+  Tests: tests/cli.rs `share_some_items_with_another_cakepass` (unknown
+  name refused before writing, duplicates once, 2FA warning, 6 words, no
+  plaintext in the file, 0600, no overwrite, master password does not open
+  it, share password does, only the chosen items arrive, again = 0 added);
+  app/tests.rs `share_an_item_and_add_it_in_another_cakepass` (screen: x,
+  path, the password dialog, existing file refused; i in another vault,
+  wrong then right password, the item arrives, nothing else).
+  Review (security-opus, reviewer-sonnet) asked for changes, now done:
+  - 2FA secrets stay home by default (`Vault::share_subset` seals an empty
+    one); `--with-totp`, or in the screen a question before writing with
+    "Leave it out" as the default.
+  - `cakepass share` refuses without a terminal on stdout/stdin (nothing on
+    stdout, no file); in a terminal: Enter, then screen and scrollback are
+    cleared. The screen's `Message` wipes its lines on drop.
+  - Favorite off, created/modified = now; suggested file name with the date;
+    Argon2 always `KdfParams::STANDARD`; after an import (CLI and `i`) an
+    offer to overwrite and delete the file (default keep); paths through
+    `ui::safe`; README notes that `x`/`i` no longer start a search.
+  Tests: vault.rs `a_share_holds_only_the_chosen_items_without_personal_marks`,
+  tests/cli.rs `share_refuses_to_print_its_password_into_a_pipe`,
+  tests/tui.rs `share_items_in_a_terminal_and_add_them_elsewhere` (pty:
+  2FA left out, password gone after the scrollback clear, import elsewhere),
+  app/tests.rs `share_an_item_and_add_it_in_another_cakepass` (no item name
+  in the file name, favorite not shared, delete offer: keep / delete) and
+  `sharing_leaves_the_2fa_secret_out_unless_you_say_so` (both answers,
+  Standard KDF). The flaky wrapped-text assertion now checks the prompt's
+  own lines.
+  Second round (security-opus, reviewer-sonnet), after merging the 16b
+  follow-up into this branch:
+  - `ClearScreenGuard` (commands.rs) is made before the password is
+    printed: on drop, and on Ctrl+C while it lives (a SIGINT handler that
+    only calls write(2) and _exit(130)), screen and scrollback are cleared.
+  - `share` also needs stderr in the terminal (the clearing goes there), so
+    `2>/dev/null` is refused before anything is made or shown.
+  - `VaultPaths::owns` (keyfile::same_file against the vault, `.bak` and
+    every pre-update copy): after importing one of those, CLI and screen
+    do not offer to overwrite and delete it.
+  Tests: tests/tui.rs `share_items_in_a_terminal_and_add_them_elsewhere`
+  (also Ctrl+C at the question: exit 130, password gone after the last
+  clear; and `2>/dev/null`: refused, no file), `Pty::spawn_with`;
+  `importing_the_vaults_own_backup_does_not_offer_to_delete_it` in
+  tests/tui.rs and app/tests.rs (both checked to fail without `owns`).
+  Remaining risk (accepted by security-opus): only SIGINT clears the share
+  password; after Ctrl+\\ (SIGQUIT) or `kill` it stays in the scrollback.
+  Test fix (found by reviewer-sonnet): the two "6 words" checks split on
+  `-`, but four list words have a dash themselves (`drop-down`, `felt-tip`,
+  `t-shirt`, `yo-yo`), so about 0.3% of runs counted 7. They now accept 6
+  to 12 parts.
+
 ## Still to do
 
 - [x] **Step 16b: pre-update copies follow a re-key** (branch
@@ -827,6 +893,7 @@ See `docs/DESIGN.md` for the explanation. In short:
 
 | Check | Result |
 |---|---|
+| `cargo test` (step 17) | 335 passed (126 library, 95 CLI/screen unit, 65 CLI integration, 15 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
 | `cargo test` (step 16b) | 333 passed (126 library, 94 CLI/screen unit, 64 CLI integration, 15 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
 | `cargo test` (step 16a) | 329 passed (123 library, 94 CLI/screen unit, 64 CLI integration, 14 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
 | `cargo test` (step 15) | 327 passed (122 library, 94 CLI/screen unit, 63 CLI integration, 14 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |

@@ -388,13 +388,39 @@ impl UnlockedVault {
 
     /// Export the vault as a new encrypted file with its own password.
     pub fn export_to(&self, path: &Path, password: &[u8], kdf: KdfParams) -> Result<()> {
-        let key = VaultKey::create(Credentials::password(password), kdf)?;
-        let mut copy = self.vault.clone();
-        copy.rekey(self.key.item_key(), key.item_key())?;
-        let plaintext = copy.to_json()?;
-        let bytes = format::seal(&key, plaintext.as_slice())?;
-        write_new_file(path, &bytes)
+        write_with_password(self.vault.clone(), self.key.item_key(), path, password, kdf)
     }
+
+    /// Share some items: a new encrypted file with only these items and a
+    /// password of its own, in the export format, so the other person adds
+    /// them with `cakepass import` (which checks every item first). The
+    /// master password and key file never go into it; 2FA secrets only with
+    /// `with_totp` (see [`Vault::share_subset`]). Argon2 runs at the Standard
+    /// level whatever this vault uses: the password is a generated passphrase,
+    /// and a smaller computer must be able to open the file. Returns how
+    /// many items.
+    pub fn share_to(&self, path: &Path, names: &[&str], password: &[u8], with_totp: bool) -> Result<usize> {
+        let part = self.vault.share_subset(names, self.key.item_key(), with_totp)?;
+        let n = part.len();
+        write_with_password(part, self.key.item_key(), path, password, KdfParams::STANDARD)?;
+        Ok(n)
+    }
+}
+
+/// Re-encrypt `vault` (now under `from`) with a new key from `password`
+/// alone and write it to a NEW file (0600; never overwrites).
+fn write_with_password(
+    mut vault: Vault,
+    from: &ItemKey,
+    path: &Path,
+    password: &[u8],
+    kdf: KdfParams,
+) -> Result<()> {
+    let key = VaultKey::create(Credentials::password(password), kdf)?;
+    vault.rekey(from, key.item_key())?;
+    let plaintext = vault.to_json()?;
+    let bytes = format::seal(&key, plaintext.as_slice())?;
+    write_new_file(path, &bytes)
 }
 
 /// How many "pre-update" copies we keep.
@@ -403,6 +429,18 @@ const KEEP_UPDATE_BACKUPS: usize = 3;
 /// The `pre-update` copies of this vault, oldest first: regular files named
 /// exactly `<vault>.pre-update-<digits>` (no temporary files, no other
 /// endings, no symlinks or folders).
+impl VaultPaths {
+    /// Whether `file` is this vault's own file: the vault itself, its backup
+    /// or a copy made before an update (same file on disk, so also through
+    /// another name). Never offer to delete those after an import.
+    pub fn owns(&self, file: &Path) -> bool {
+        use crate::keyfile::same_file;
+        same_file(file, &self.file)
+            || same_file(file, &self.backup)
+            || update_copies(self).is_ok_and(|c| c.iter().any(|(_, p)| same_file(file, p)))
+    }
+}
+
 fn update_copies(paths: &VaultPaths) -> Result<Vec<(u64, PathBuf)>> {
     let base = paths.file.file_name().ok_or_else(|| Error::InvalidInput("invalid path".into()))?;
     let prefix = format!("{}.pre-update-", base.to_string_lossy());

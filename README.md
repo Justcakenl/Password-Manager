@@ -480,13 +480,15 @@ and **`?`** shows them all.
 |---|---|
 | ↑ ↓, PgUp PgDn, Home End | choose an item |
 | ← → (or Tab) | switch between All · Logins · API keys · Cards · IDs (identities) · SSH (keys) · Notes · 2FA; tabs you do not use can be hidden (see Settings below) |
-| `/` | search in name, type, tags, username, e-mail and URL (never in passwords or notes). Any key that is not a shortcut (a capital letter, a digit) starts the search too. Esc clears it |
+| `/` | search in name, type, tags, username, e-mail and URL (never in passwords or notes). Any key that is not a shortcut (a capital letter, a digit; note that `f`, `x` and `i` are shortcuts) starts the search too. Esc clears it |
 | Enter or `v` | show / hide the password, API key, card number and CVV, private key and passphrase, and notes. They hide themselves after **10 seconds**, and when you choose another item or open another screen |
 | `c` | copy the password, API key, card number, private key, document number or note to the clipboard; it is **cleared after 20 seconds** (or your `clip-time`) |
 | `u` / `m` | copy the username (cardholder) / the e-mail address |
 | `t` | show the current two-factor (TOTP) code with its seconds left, and copy it (cleared like a password) |
 | 2FA tab | every item with a TOTP secret and its **current code**, live, with the seconds left (red in the last 5), like an authenticator app; the details also show the next code. There **Enter** or `c` copies the code, and **`a` adds one**: choose the account (or a new login) and paste the secret. ← from All goes straight to it |
 | `f` | pin or unpin the item as a **favorite**: a ★ before its name, and favorites come first in the list |
+| `x` | **share** the item with someone else: an encrypted file plus a generated password (see [Sharing items with someone else](#sharing-items-with-someone-else)) |
+| `i` | add the items of a file someone **shared** with you (or an export of your own) |
 | `p` | copy the public key of an SSH key |
 | `a` or `n` | add an item |
 | `e` | edit the selected item |
@@ -1068,6 +1070,47 @@ A TOTP column (Bitwarden's `login_totp`, KeePassXC's `TOTP`, `otpauth`) is
 imported as the item's TOTP secret. A value CakePass cannot use (for example a
 Steam Guard `steam://` secret) is left out with a warning; the item itself is
 still imported.
+
+### Sharing items with someone else
+
+Give someone a password (or a card, an API key, a note) without typing it
+into a chat: CakePass puts **only the items you choose** in an encrypted file
+with a password of its own. CakePass itself sends nothing (it never goes
+online); you send the file.
+
+```bash
+cakepass share GitHub Netflix --to for-jane.cakepass
+```
+
+In the screen: select the item and press **`x`**. Then:
+
+1. CakePass shows a **share password** (6 random words) **once**. It makes it
+   itself, so the file cannot have a weak password. On the command line it
+   only works in a terminal (never into a file or a pipe), and after Enter
+   the password is cleared from the screen and the scrollback.
+2. Send the file: Signal, e-mail, a USB stick, AirDrop, …
+3. Tell the share password **another way** (in person, by phone), never in
+   the same message as the file.
+4. The other person adds the items to their own CakePass: in the screen with
+   **`i`**, or `cakepass import for-jane.cakepass`, and types the share
+   password. The items are then in their vault and they can view them as
+   their own. (An item they already have is skipped; a name they already use
+   gets a number, "GitHub (2)".)
+5. After the import CakePass offers to overwrite and delete the file.
+
+Good to know:
+- Your master password and key file never go into the file.
+- **2FA secrets stay home** unless you choose otherwise: in the screen `x`
+  asks ("Leave it out" is the default), on the command line add
+  `--with-totp`. Whoever has your 2FA secret can make your codes for good.
+- A private SSH key is shared with its item (CakePass warns).
+- Your favorite pin does not travel, and the dates are the moment of sharing.
+- The suggested file name has the date, not the item's name (chat apps show
+  file names in their previews).
+- The file always uses the Standard Argon2 level, so a smaller computer can
+  open it even if your own vault uses Maximum.
+- Sharing is a copy: if you change the password later, share it again. The
+  file is checked completely before anything is added, like every import.
 
 ### Encrypted export and import (between your own computers)
 

@@ -297,6 +297,20 @@ fn an_export_with_escape_codes_is_refused_and_never_printed() {
 }
 
 #[test]
+fn share_refuses_to_print_its_password_into_a_pipe() {
+    // The share password is all that protects the file: it is shown only in
+    // a terminal (see tests/tui.rs for the real thing), never into a log.
+    let a = Vaulty::new().init();
+    a.add("GitHub", "john", ITEM_PW);
+    let file = a.dir().join("for-jane.cakepass");
+    let out = a.run(&["share", "github", "--to", file.to_str().unwrap()], &format!("{PW}\n")).failure();
+    let o = out.get_output();
+    assert!(o.stdout.is_empty(), "nothing on stdout: {}", String::from_utf8_lossy(&o.stdout));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("only in a terminal"));
+    assert!(!file.exists(), "no file without a password anyone saw");
+}
+
+#[test]
 fn export_and_import() {
     let a = Vaulty::new().init();
     a.add("GitHub", "john", ITEM_PW);
