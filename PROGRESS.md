@@ -1,6 +1,6 @@
 # Progress: `cakepass` (CakePass)
 
-Last updated: step 15 (the 2FA tab, and setting up 2FA in the screen); content schema still 5.
+Last updated: step 16a (escape codes from an imported export); content schema still 5.
 Repository: `Justcakenl/Password-Manager`, branch `main` (private until it is made public).
 
 ## Maintainer checklist: manual testing on a real Arch machine
@@ -449,14 +449,48 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   on CSV import, and a login with only a 2FA code and no password (a login
   still needs a password, as before).
 
+- [x] **Step 16a: escape codes via an imported export** (branch
+  `fix/16a-import-escape-codes`, from `feature/2fa-tab`; finding 1 of
+  security-opus's audit, rated medium). A crafted `cakepass import` file
+  (not CSV: CSV import already strips control characters) could put
+  terminal escape codes (e.g. OSC 0 window title, OSC 52 "write the
+  clipboard") into username/URL, which `list` and `search` printed raw.
+  Fixed on both sides:
+  - **In**: `Vault::merge` first checks every incoming item with
+    `Entry::check_incoming` (the setters' rules: name and tags as in
+    `validate`, `validate_line` for username, e-mail, URL, expiry, CVV,
+    public key; notes only `\n`/`\t`; `MAX_FIELD_LEN` for password,
+    passphrase, notes; TOTP `validate_line` + lenient `Totp::parse`). One
+    bad item refuses the whole import ("item 'X' has an invalid
+    username; nothing was imported", never the value), and merge restores
+    the vault if anything fails half-way, so the file is not touched.
+    `Vault::from_json` for our own vault is NOT stricter: a vault that
+    already holds such a value must still open.
+  - **Out**: every place that prints a decrypted one-line value, checked
+    by grepping every decrypted accessor in `src/cli` and `src`:
+    `print_table` (`list`, `search`, `list --favorites`): username and URL
+    now through `ui::safe` before measuring/cutting; `edit`'s questions
+    ("Username [current]:" etc.): the current username, e-mail, URL,
+    expiry and public key through `ui::safe`. Already safe: `get` (`value`,
+    `field_block`, `field_verbatim`), the e-mail warning, the audit
+    (names only, validated), copy messages (no value), the line mode (uses
+    the same commands), the screen (`Grid::print` turns control
+    characters into `?`).
+  Tests: `an_import_with_escape_codes_or_other_bad_values_is_refused_whole`
+  (vault.rs: every sealed field found from the JSON; password and
+  passphrase may hold any character; too long; bad TOTP; all-or-nothing),
+  `an_export_with_escape_codes_is_refused_and_never_printed` (tests/cli.rs:
+  a real export re-sealed with OSC 0/OSC 52 in username/URL; import fails,
+  no 0x1b in the output, vault file byte-identical; the same file opened as
+  a vault: `list`, `search`, `get`, `edit` print no 0x1b). Both checked to
+  fail without the fix (import succeeded; `list` printed the escape).
+  `every_encrypted_field_is_validated_resealed_and_merged` now uses a real
+  TOTP secret as the "different" value (imports check it).
+
 ## Still to do
 
-- [ ] **Step 16 (next, before any new feature): two open findings from
-  security-opus's audit**, each on its own branch from `main` after
-  `feature/2fa-tab` is merged:
-  1. `cakepass list` can print terminal escape codes that came in with
-     an import (item names/fields from a CSV or export): control
-     characters must be neutralised wherever such text is printed.
+- [ ] **Step 16b (next, before any new feature)**, the second open
+  finding from security-opus's audit, on its own branch:
   2. The `vault.enc.pre-update-<time>` copies made by `cakepass --update`
      still open with the OLD master password after it is changed: decide
      with security review whether a password change re-keys, deletes or
@@ -735,6 +769,7 @@ See `docs/DESIGN.md` for the explanation. In short:
 
 | Check | Result |
 |---|---|
+| `cargo test` (step 16a) | 329 passed (123 library, 94 CLI/screen unit, 64 CLI integration, 14 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
 | `cargo test` (step 15) | 327 passed (122 library, 94 CLI/screen unit, 63 CLI integration, 14 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
 | Setting up 2FA in a real terminal (step 15, tmux, throwaway vault) | 2FA tab → `a` → typed "disc" → Enter → Discord's edit form on the 2FA secret → typed a test secret → Ctrl+S: "Item 'Discord' updated. Its 2FA code is in the 2FA tab." and its code in the list; at 80×24 and 60×16 |
 | 2FA tab in a real terminal (step 15, debug build in tmux, throwaway vault from a CSV with RFC test seeds) | at 100×28, 80×24 and 60×16: 6- and 8-digit codes with seconds left, next code in the details, Enter copies ("The TOTP code copied (wl-copy)"); all eight tabs with counts at 80 columns |
