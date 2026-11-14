@@ -501,6 +501,12 @@ pub fn rekey_update_copies(paths: &VaultPaths, old: &VaultKey, new: &VaultKey) -
 /// The copy is an ordinary encrypted vault file and opens with your master
 /// password: `cakepass --vault <copy> list`.
 pub fn backup_before_update(paths: &VaultPaths) -> Result<Option<PathBuf>> {
+    if !paths.file.exists() {
+        return Ok(None);
+    }
+    // Not while a save or a re-key is busy: the copy must be a whole file,
+    // and a re-key must see (and convert) every copy.
+    let _lock = WriteLock::acquire(&paths.lock)?;
     let data = match read_file(&paths.file) {
         Ok(d) => d,
         Err(Error::VaultNotFound(_)) => return Ok(None),
@@ -858,6 +864,46 @@ mod tests {
         assert_eq!(after["schema"], json["schema"]);
         let (v, _) = Vault::from_json(plain.as_slice(), key.item_key()).unwrap();
         assert_eq!(v.get("x").unwrap().password(key.item_key()).unwrap().as_str(), "secret");
+    }
+
+    #[test]
+    fn a_version_1_copy_is_re_keyed_into_the_current_layout() {
+        // Version 1 used the master key itself for the file: never write it again.
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(&dir);
+        let mut uv = UnlockedVault::create(p.clone(), PWC, P).unwrap();
+        add(&mut uv, "x");
+        uv.save().unwrap();
+        let (vault, vk) = read_vault_file(&p.file, PWC).unwrap();
+        let v1 = format::seal_as_version_for_tests(&vk, 1, vault.to_json().unwrap().as_slice()).unwrap();
+        let copy = p.dir().join("vault.enc.pre-update-1");
+        write_atomic(&copy, &v1).unwrap();
+        assert_eq!(read_header(&copy).unwrap().version, 1);
+        let r = uv.rekey(creds(b"a whole new passphrase"), P).unwrap();
+        assert_eq!(r.rekeyed, 1, "{r:?}");
+        assert_eq!(read_header(&copy).unwrap().version, format::CURRENT_VERSION);
+        assert_eq!(names_in(&copy, creds(b"a whole new passphrase")).unwrap(), ["x"]);
+    }
+
+    #[test]
+    fn a_version_2_copy_given_a_key_file_moves_to_the_current_layout() {
+        // Version 2 cannot say "needs a key file": then the current layout.
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(&dir);
+        let mut uv = UnlockedVault::create(p.clone(), PWC, P).unwrap();
+        add(&mut uv, "x");
+        uv.save().unwrap();
+        let (vault, vk) = read_vault_file(&p.file, PWC).unwrap();
+        let v2 = format::seal_as_version_for_tests(&vk, 2, vault.to_json().unwrap().as_slice()).unwrap();
+        let copy = p.dir().join("vault.enc.pre-update-1");
+        write_atomic(&copy, &v2).unwrap();
+        let kf = KeyFilePepper::derive(b"a new key file").unwrap();
+        let r = uv.rekey(Credentials::new(PW, Some(&kf)), P).unwrap();
+        assert_eq!(r.rekeyed, 1, "{r:?}");
+        let h = read_header(&copy).unwrap();
+        assert_eq!((h.version, h.key_file), (format::CURRENT_VERSION, true));
+        assert_eq!(names_in(&copy, Credentials::new(PW, Some(&kf))).unwrap(), ["x"]);
+        assert!(read_vault_file(&copy, PWC).is_err(), "no longer without the key file");
     }
 
     #[test]

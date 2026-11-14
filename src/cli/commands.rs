@@ -1759,7 +1759,9 @@ fn report_copies(r: &storage::CopiesReport) -> Result<()> {
     for path in &r.stale {
         ui::warn(&format!("  {}", path.display()));
     }
-    if prompt::stdin_is_tty() && prompt::confirm("Overwrite and delete them now?")? {
+    // Ctrl+C or a read error here counts as "no": the re-key itself is done
+    // and its remaining messages must still be shown.
+    if prompt::stdin_is_tty() && prompt::confirm("Overwrite and delete them now?").unwrap_or(false) {
         for path in &r.stale {
             match import::overwrite_and_remove(path) {
                 Ok(()) => ui::success(&format!("Deleted {}.", path.display())),
