@@ -672,6 +672,33 @@ fn same_name(a: &str, b: &str) -> bool {
     a.trim().to_lowercase() == b.trim().to_lowercase()
 }
 
+/// Re-encrypt every per-field secret (`*_sealed`) in a vault's JSON from one
+/// item key to another, and change nothing else: not the schema, not the
+/// order, not unknown fields. For CakePass's own `pre-update` copies, which
+/// must keep their old contents and stay readable by the version that made
+/// them (whatever schema that is; schema 1 has no sealed fields at all).
+pub fn reseal_json(json: &[u8], from: &ItemKey, to: &ItemKey) -> Result<SecureBuf> {
+    let mut doc: serde_json::Value = serde_json::from_slice(json).map_err(|_| Error::CorruptPayload)?;
+    let entries = doc.get_mut("entries").and_then(|e| e.as_array_mut()).ok_or(Error::CorruptPayload)?;
+    for entry in entries {
+        let fields = entry.as_object_mut().ok_or(Error::CorruptPayload)?;
+        for (name, value) in fields.iter_mut() {
+            let Some(field) = name.strip_suffix("_sealed") else { continue };
+            let sealed = value.as_str().ok_or(Error::CorruptPayload)?;
+            if sealed.is_empty() {
+                continue;
+            }
+            let plain = from.open(field, sealed)?;
+            *value = to.seal(field, &plain)?.into();
+        }
+    }
+    let mut counter = CountingWriter::default();
+    serde_json::to_writer(&mut counter, &doc).map_err(|_| Error::CorruptPayload)?;
+    let mut buf = SecureBuf::with_capacity(counter.0);
+    serde_json::to_writer(&mut buf, &doc).map_err(|_| Error::CorruptPayload)?;
+    Ok(buf)
+}
+
 // ───────────────────────── older schemas (migration) ─────────────────────────
 
 /// Only to read the schema number before the real processing.

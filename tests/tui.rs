@@ -10,7 +10,7 @@
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -566,6 +566,55 @@ fn hidden_tabs_from_the_settings_file() {
     t.send("q");
     assert_eq!(t.wait_exit(), 0);
     assert_restored(&t.output());
+}
+
+#[test]
+fn passwd_rekeys_the_pre_update_copies_and_offers_to_delete_older_ones() {
+    const PW2: &str = "grape-lantern-oyster-bulky-scenic-dwarf";
+    const PW3: &str = "violet-anchor-pebble-mango-tundra-whisk";
+    let v = Vault::new();
+    let dir = v.dir.path();
+    let older = dir.join("vault.enc.pre-update-1");
+    let copy = dir.join("vault.enc.pre-update-2");
+    // An "older" copy: the vault under the first password, put in place
+    // after the password was changed once.
+    let first = std::fs::read(v.path()).unwrap();
+    v.cmd().arg("passwd").write_stdin(format!("{PW}\n{PW2}\n{PW2}\n")).assert().success();
+    std::fs::write(&older, &first).unwrap();
+    std::fs::copy(v.path(), &copy).unwrap();
+    // Without a terminal: the copy of the current key is re-encrypted; the
+    // older one is only listed (nothing is deleted without asking).
+    v.cmd()
+        .arg("passwd")
+        .write_stdin(format!("{PW2}\n{PW3}\n{PW3}\n"))
+        .assert()
+        .success()
+        .stderr(contains("1 copy made before updates re-encrypted").and(contains("pre-update-1")));
+    assert!(older.exists() && std::fs::read(&older).unwrap() == first);
+    let opens = |file: &Path, pw: &str| {
+        Cmd::new(env!("CARGO_BIN_EXE_cakepass"))
+            .args(["--vault", file.to_str().unwrap(), "list"])
+            .env("XDG_CONFIG_HOME", dir.join("config-home"))
+            .write_stdin(format!("{pw}\n"))
+            .output()
+            .unwrap()
+            .status
+            .success()
+    };
+    assert!(!opens(&copy, PW2) && opens(&copy, PW3), "the copy follows the new password");
+    // In a terminal: asked, and yes deletes the older copy.
+    let mut t = v.pty(&["passwd"], &[], 100, 30);
+    t.wait_for("assword");
+    t.send(&format!("{PW3}\r"));
+    t.wait_for("New master password");
+    t.send(&format!("{PW}\r"));
+    t.wait_for("Repeat master password");
+    t.send(&format!("{PW}\r"));
+    t.wait_for("Overwrite and delete them now?");
+    t.send("y\r");
+    assert_eq!(t.wait_exit(), 0);
+    assert!(!older.exists(), "deleted after yes");
+    assert!(opens(&copy, PW) && !opens(&copy, PW3));
 }
 
 #[test]
