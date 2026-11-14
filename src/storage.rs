@@ -10,7 +10,8 @@
 //!   stops two terminals from overwriting each other's changes.
 //! - Symlinks are refused (`O_NOFOLLOW`).
 //! - Re-keying (new master password, key file or security level) also
-//!   re-encrypts the backup, so the old secrets open no file any more.
+//!   re-encrypts the backup and the `pre-update` copies, so the old secrets
+//!   open no file CakePass keeps (copies of a still older key are reported).
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -340,10 +341,15 @@ impl UnlockedVault {
     /// or key file).
     ///
     /// Every item is re-encrypted with the new item key, and the backup is
-    /// then encrypted with the NEW secrets as well, so a possibly leaked old
-    /// password or key file no longer opens any file CakePass keeps.
-    /// All or nothing: on an error the vault (memory and file) is unchanged.
-    pub fn rekey(&mut self, new: Credentials<'_>, kdf: KdfParams) -> Result<()> {
+    /// then encrypted with the NEW secrets as well. All or nothing: on an
+    /// error the vault (memory and file) is unchanged.
+    ///
+    /// Then the `pre-update` copies are re-encrypted too (see
+    /// [`rekey_update_copies`]), keeping their old contents: the report
+    /// says which could not be (a copy of a still older key, or an error).
+    /// That part comes after the vault is safely re-keyed and never undoes
+    /// it. Exports and copies you made yourself keep their own password.
+    pub fn rekey(&mut self, new: Credentials<'_>, kdf: KdfParams) -> Result<CopiesReport> {
         kdf.validate()?;
         let new_key = VaultKey::create(new, kdf)?;
         // Re-encrypt every individual secret with the new item key.
@@ -354,8 +360,8 @@ impl UnlockedVault {
         drop(plaintext);
         self.replace_file(new_bytes, true)?;
         self.vault = rekeyed;
-        self.key = new_key;
-        Ok(())
+        let old_key = std::mem::replace(&mut self.key, new_key);
+        Ok(rekey_update_copies(&self.paths, &old_key, &self.key))
     }
 
     fn replace_file(&mut self, new_bytes: Vec<u8>, backup_is_new: bool) -> Result<()> {
@@ -394,6 +400,100 @@ impl UnlockedVault {
 /// How many "pre-update" copies we keep.
 const KEEP_UPDATE_BACKUPS: usize = 3;
 
+/// The `pre-update` copies of this vault, oldest first: regular files named
+/// exactly `<vault>.pre-update-<digits>` (no temporary files, no other
+/// endings, no symlinks or folders).
+fn update_copies(paths: &VaultPaths) -> Result<Vec<(u64, PathBuf)>> {
+    let base = paths.file.file_name().ok_or_else(|| Error::InvalidInput("invalid path".into()))?;
+    let prefix = format!("{}.pre-update-", base.to_string_lossy());
+    let mut found: Vec<(u64, PathBuf)> = fs::read_dir(paths.dir())?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            let digits = name.strip_prefix(&prefix)?;
+            if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            Some((digits.parse::<u64>().ok()?, e.path()))
+        })
+        .collect();
+    found.sort();
+    Ok(found)
+}
+
+/// What happened to the `pre-update` copies when the vault was re-keyed.
+#[derive(Debug, Default)]
+pub struct CopiesReport {
+    /// Re-encrypted with the new key; their contents are unchanged.
+    pub rekeyed: usize,
+    /// Encrypted with a key from before the previous change (they open with
+    /// an even older password or key file): left as they are.
+    pub stale: Vec<PathBuf>,
+    /// Could not be re-encrypted, with the reason (never a secret).
+    pub failed: Vec<(PathBuf, String)>,
+}
+
+/// Re-encrypt the `pre-update` copies made under `old` with `new`, keeping
+/// their contents (the old vault, for going back to an older CakePass), their
+/// schema and their file layout where possible. Written with `write_atomic`
+/// (0600; a crash leaves the old or the new file, never half of one).
+///
+/// Idempotent: a copy is only touched when its header carries exactly the
+/// old key's salt, settings and key-file flag; once re-encrypted it has the
+/// new salt, which no later old key can match again.
+pub fn rekey_update_copies(paths: &VaultPaths, old: &VaultKey, new: &VaultKey) -> CopiesReport {
+    let mut report = CopiesReport::default();
+    let copies = match update_copies(paths) {
+        Ok(c) => c,
+        Err(e) => {
+            report.failed.push((paths.dir().to_path_buf(), e.to_string()));
+            return report;
+        }
+    };
+    if copies.is_empty() {
+        return report;
+    }
+    let _lock = match WriteLock::acquire(&paths.lock) {
+        Ok(l) => l,
+        Err(e) => {
+            report.failed.extend(copies.into_iter().map(|(_, p)| (p, e.to_string())));
+            return report;
+        }
+    };
+    for (_, path) in copies {
+        let result = read_file(&path).and_then(|data| {
+            // Already under the new key (re-keying again after a failure
+            // half-way): nothing to do, and not an "older" copy either.
+            if format::written_with(&data, new)? {
+                return Ok(None);
+            }
+            Ok(Some(data))
+        });
+        let result = result.and_then(|data| match data {
+            None => Ok(None),
+            Some(data) => match format::open_with_key(&data, old)? {
+                Some((plaintext, version)) => {
+                    let json =
+                        crate::vault::reseal_json(plaintext.as_slice(), old.item_key(), new.item_key())?;
+                    drop(plaintext);
+                    let bytes = format::seal_like(new, version, json.as_slice())?;
+                    write_atomic(&path, &bytes).map(|()| Some(true))
+                }
+                // Not this key's copy: from before an earlier change.
+                None => Ok(Some(false)),
+            },
+        });
+        match result {
+            Ok(None) => {}
+            Ok(Some(true)) => report.rekeyed += 1,
+            Ok(Some(false)) => report.stale.push(path),
+            Err(e) => report.failed.push((path, e.to_string())),
+        }
+    }
+    report
+}
+
 /// Make an extra copy of the vault file before an update
 /// (`vault.enc.pre-update-<time>`, permissions 600) and delete the oldest if
 /// there are more than three. Returns `None` if there is no vault (yet).
@@ -408,26 +508,14 @@ pub fn backup_before_update(paths: &VaultPaths) -> Result<Option<PathBuf>> {
     };
     let base = paths.file.file_name().ok_or_else(|| Error::InvalidInput("invalid path".into()))?;
     let prefix = format!("{}.pre-update-", base.to_string_lossy());
-    let stamps = |prefix: &str| -> Result<Vec<(u64, PathBuf)>> {
-        let mut found: Vec<(u64, PathBuf)> = fs::read_dir(paths.dir())?
-            .filter_map(|e| e.ok())
-            .filter_map(|e| {
-                let name = e.file_name().to_string_lossy().into_owned();
-                let stamp = name.strip_prefix(prefix)?.parse::<u64>().ok()?;
-                Some((stamp, e.path()))
-            })
-            .collect();
-        found.sort();
-        Ok(found)
-    };
     // The number is the time, but always higher than that of existing copies,
     // so the order is right and a deleted name never comes back.
-    let n = stamps(&prefix)?.last().map_or(0, |(s, _)| s + 1).max(crate::vault::now());
+    let n = update_copies(paths)?.last().map_or(0, |(s, _)| s + 1).max(crate::vault::now());
     let target = paths.dir().join(format!("{prefix}{n}"));
     write_new_file(&target, &data)?;
 
     // Clean up old copies (only files with exactly this name pattern).
-    let mut old = stamps(&prefix)?;
+    let mut old = update_copies(paths)?;
     while old.len() > KEEP_UPDATE_BACKUPS {
         let (_, path) = old.remove(0);
         let _ = fs::remove_file(path);
@@ -658,6 +746,118 @@ mod tests {
         assert_eq!(left.len(), 3);
         assert!(!made[0].exists() && !made[1].exists());
         assert_eq!(fs::read(&p.file).unwrap(), original);
+    }
+
+    /// The names of the items in a vault file.
+    fn names_in(path: &Path, c: Credentials<'_>) -> Result<Vec<String>> {
+        let (v, _) = read_vault_file(path, c)?;
+        Ok(v.entries().iter().map(|e| e.name().to_string()).collect())
+    }
+
+    #[test]
+    fn rekeying_also_rekeys_the_pre_update_copies_keeping_their_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(&dir);
+        let mut uv = UnlockedVault::create(p.clone(), PWC, P).unwrap();
+        add(&mut uv, "before");
+        uv.save().unwrap();
+        let copy = backup_before_update(&p).unwrap().unwrap();
+        add(&mut uv, "after");
+        uv.save().unwrap();
+        // Files that only look like copies are never touched.
+        let base = p.file.file_name().unwrap().to_string_lossy().into_owned();
+        let lookalikes: Vec<PathBuf> = ["pre-update-12.tmp", "pre-update-+5", "pre-update-", "pre-update-7x"]
+            .iter()
+            .map(|t| p.dir().join(format!("{base}.{t}")))
+            .chain([p.dir().join(format!(".{base}.pre-update-3.tmp-ab"))])
+            .collect();
+        for l in &lookalikes {
+            fs::copy(&copy, l).unwrap();
+        }
+        let copy_before = fs::read(&copy).unwrap();
+
+        let r = uv.rekey(creds(b"a whole new passphrase"), P).unwrap();
+        assert_eq!((r.rekeyed, r.stale.len(), r.failed.len()), (1, 0, 0), "{r:?}");
+        // The old password opens no copy CakePass keeps; the new one opens it,
+        // with its OLD contents (it is the vault from before the update).
+        assert!(matches!(read_vault_file(&copy, PWC), Err(Error::Decrypt)));
+        assert_eq!(names_in(&copy, creds(b"a whole new passphrase")).unwrap(), ["before"]);
+        assert_eq!(fs::metadata(&copy).unwrap().mode() & 0o777, 0o600, "still 0600 after re-keying");
+        for l in &lookalikes {
+            assert_eq!(fs::read(l).unwrap(), copy_before, "{} was touched", l.display());
+        }
+        // Idempotent: once more with the new key as the target changes nothing
+        // (and an already re-keyed copy is not called "older" either).
+        let now = fs::read(&copy).unwrap();
+        let other = VaultKey::create(PWC, P).unwrap();
+        let r = rekey_update_copies(&p, &other, &uv.key);
+        assert_eq!((r.rekeyed, r.stale.len(), r.failed.len()), (0, 0, 0), "{r:?}");
+        assert_eq!(fs::read(&copy).unwrap(), now);
+        // A copy of a still older key is reported and left alone; a damaged
+        // copy of the current key is an error, not "older".
+        let older = p.dir().join(format!("{base}.pre-update-5"));
+        fs::copy(&lookalikes[0], &older).unwrap();
+        let mut damaged = fs::read(&copy).unwrap();
+        let last = damaged.len() - 1;
+        damaged[last] ^= 1;
+        let broken = p.dir().join(format!("{base}.pre-update-6"));
+        write_atomic(&broken, &damaged).unwrap();
+        let r = uv.rekey(creds(b"and yet another passphrase"), P).unwrap();
+        assert_eq!(r.rekeyed, 1, "{r:?}");
+        assert_eq!(r.stale, std::slice::from_ref(&older));
+        assert_eq!(r.failed.len(), 1, "{r:?}");
+        assert_eq!(r.failed[0].0, broken);
+        assert_eq!(fs::read(&older).unwrap(), copy_before, "an older copy is not changed");
+        assert_eq!(names_in(&copy, creds(b"and yet another passphrase")).unwrap(), ["before"]);
+    }
+
+    #[test]
+    fn a_new_key_file_also_locks_the_old_one_out_of_the_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(&dir);
+        let kf1 = KeyFilePepper::derive(b"key file one").unwrap();
+        let kf2 = KeyFilePepper::derive(b"key file two").unwrap();
+        let mut uv = UnlockedVault::create(p.clone(), Credentials::new(PW, Some(&kf1)), P).unwrap();
+        add(&mut uv, "x");
+        uv.save().unwrap();
+        let copy = backup_before_update(&p).unwrap().unwrap();
+        let r = uv.rekey(Credentials::new(PW, Some(&kf2)), P).unwrap();
+        assert_eq!(r.rekeyed, 1, "{r:?}");
+        assert!(matches!(read_vault_file(&copy, Credentials::new(PW, Some(&kf1))), Err(Error::Decrypt)));
+        assert_eq!(names_in(&copy, Credentials::new(PW, Some(&kf2))).unwrap(), ["x"]);
+        assert_eq!(fs::metadata(&copy).unwrap().mode() & 0o777, 0o600);
+        // And without a key file at all: the copy no longer needs one either.
+        uv.rekey(PWC, P).unwrap();
+        assert_eq!(names_in(&copy, PWC).unwrap(), ["x"]);
+        assert!(!read_header(&copy).unwrap().key_file);
+    }
+
+    #[test]
+    fn a_copy_keeps_its_old_layout_and_schema_when_re_keyed() {
+        // A version 2 copy (as cakepass 0.3 wrote it) stays version 2, so
+        // that version can still open it to go back.
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(&dir);
+        let mut uv = UnlockedVault::create(p.clone(), PWC, P).unwrap();
+        add(&mut uv, "x");
+        uv.save().unwrap();
+        let (vault, vk) = read_vault_file(&p.file, PWC).unwrap();
+        let mut json: serde_json::Value =
+            serde_json::from_slice(vault.to_json().unwrap().as_slice()).unwrap();
+        json["unknown_later_field"] = 7.into();
+        let v2 = format::seal_as_version_for_tests(&vk, 2, json.to_string().as_bytes()).unwrap();
+        let copy = p.dir().join("vault.enc.pre-update-1");
+        write_atomic(&copy, &v2).unwrap();
+        let r = uv.rekey(creds(b"a whole new passphrase"), P).unwrap();
+        assert_eq!(r.rekeyed, 1, "{r:?}");
+        assert_eq!(read_header(&copy).unwrap().version, 2);
+        let (plain, key, _) =
+            format::open(&fs::read(&copy).unwrap(), creds(b"a whole new passphrase")).unwrap();
+        let after: serde_json::Value = serde_json::from_slice(plain.as_slice()).unwrap();
+        assert_eq!(after["unknown_later_field"], 7, "nothing but the sealed fields changes");
+        assert_eq!(after["schema"], json["schema"]);
+        let (v, _) = Vault::from_json(plain.as_slice(), key.item_key()).unwrap();
+        assert_eq!(v.get("x").unwrap().password(key.item_key()).unwrap().as_str(), "secret");
     }
 
     #[test]

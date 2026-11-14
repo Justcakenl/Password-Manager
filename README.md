@@ -1124,10 +1124,19 @@ How:
 
 Good to know:
 
-- A backup opens with the master password (and key file, and level) that
-  applied **when you made it**. After `cakepass passwd` or `cakepass security`,
-  an old copy still opens the old way. If your old password leaked, throw away
-  old copies and make new ones. (The automatic `.bak` is re-encrypted right away.)
+- A backup **you made yourself** (and an export) opens with the master password
+  (and key file, and level) that applied **when you made it**: after
+  `cakepass passwd` or `cakepass security` it still opens the old way. If your
+  old password leaked, throw away old copies and make new ones.
+- The copies CakePass keeps itself follow the change: the `.bak` is
+  re-encrypted right away, and so are the `pre-update` copies (their contents
+  stay the vault from before the update; only the password/key file/level to
+  open them changes). A `pre-update` copy that still opens with an even older
+  password (from before an earlier change, or made by an older CakePass) is
+  listed, and in a terminal `passwd`/`security` offer to delete it.
+- Known limit: if the computer crashes in the moment between re-encrypting
+  the vault and re-encrypting the `pre-update` copies, those copies keep the
+  old password; the next change then lists them as older copies.
 - **Using a key file?** Back up the **key file separately** from the vault: a
   copy of the vault is useless without the key file, and a key file stored on
   the same stick as a vault copy protects nothing. Test a backup with
@@ -1460,9 +1469,11 @@ else turned up.
    See [How strong is this, really?](#how-strong-is-this-really).
 6. **Physical access to a running, unlocked computer.** Lock your screen.
    Cold-boot and DMA attacks are out of scope.
-7. **Backups with an old password** still open with that old password (see
-   [Backups](#backups)); copies made before you turned on a key file open
-   without it.
+7. **Backups with an old password**: copies and exports you made yourself
+   still open with that old password (see [Backups](#backups)); copies made
+   before you turned on a key file open without it. CakePass's own `.bak` and
+   `pre-update` copies are re-encrypted with every change (barring a crash in
+   between).
 8. **File system.** On SSDs and copy-on-write systems (btrfs, ZFS), old
    unencrypted data (such as a CSV export) may remain. Disk encryption (LUKS) solves that.
 9. **Root and the operating system.** Root can do anything, including `ptrace`

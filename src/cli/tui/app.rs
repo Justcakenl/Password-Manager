@@ -1000,16 +1000,17 @@ impl App {
                     self.uv.rekey(Credentials::new(new.as_bytes(), kf.as_ref().map(|k| &k.pepper)), kdf)
                 });
                 match changed {
-                    Ok(()) => self.modals.push(Modal::Message(Message::new(
-                        "Master password changed",
-                        vec![
-                            "All items and the .bak backup now use the new master password.".into(),
-                            "Copies and exports you made yourself earlier still open with the OLD \
+                    Ok(copies) => {
+                        let mut lines =
+                            vec!["All items and the .bak backup now use the new master password.".into()];
+                        let warn = copies_lines(&copies, &mut lines);
+                        lines.push(
+                            "Exports and copies you made yourself earlier still open with the OLD \
                              password. Delete them if you think the old password has leaked."
                                 .into(),
-                        ],
-                        false,
-                    ))),
+                        );
+                        self.modals.push(Modal::Message(Message::new("Master password changed", lines, warn)))
+                    }
                     Err(e) => {
                         let mut lines =
                             vec![format!("The master password was NOT changed: {}", error_text(&e))];
@@ -1098,15 +1099,15 @@ impl App {
             self.uv.rekey(Credentials::new(pw.as_bytes(), kf.as_ref().map(|k| &k.pepper)), level.params())
         });
         let message = match changed {
-            Ok(()) => Message::new(
-                "Security level changed",
-                vec![
+            Ok(copies) => {
+                let mut lines = vec![
                     format!("The vault now uses the {} level: {}.", level.title(), level.params().describe()),
                     format!("Unlocking takes about {} on this computer.", commands::seconds(start.elapsed())),
                     "Your master password did not change. The .bak backup was re-encrypted as well.".into(),
-                ],
-                false,
-            ),
+                ];
+                let warn = copies_lines(&copies, &mut lines);
+                Message::new("Security level changed", lines, warn)
+            }
             Err(e) => Message::new(
                 "Not changed",
                 vec![format!("The security level was NOT changed: {}", error_text(&e))],
@@ -1171,6 +1172,32 @@ impl App {
         screens::status_line(g, self, now);
         screens::hint_bar(g, &hints);
     }
+}
+
+/// After re-keying, what happened to the `pre-update` copies, as dialog
+/// lines. Returns whether there is something to warn about. The screen only
+/// lists copies it could not re-encrypt; deleting them is `cakepass passwd`'s
+/// question or the user's own choice.
+fn copies_lines(r: &cakepass::storage::CopiesReport, lines: &mut Vec<String>) -> bool {
+    if r.rekeyed > 0 {
+        let n = r.rekeyed;
+        lines.push(format!(
+            "{n} {} made before updates re-encrypted as well (contents unchanged).",
+            if n == 1 { "copy" } else { "copies" }
+        ));
+    }
+    for (path, why) in &r.failed {
+        lines.push(format!("Could not re-encrypt {} ({why}); it still opens the old way.", path.display()));
+    }
+    if !r.stale.is_empty() {
+        lines.push(
+            "These copies still open with an EARLIER password or key file (from before a previous change); \
+             delete them if that could have leaked:"
+                .into(),
+        );
+        lines.extend(r.stale.iter().map(|p| format!("  {}", p.display())));
+    }
+    !r.failed.is_empty() || !r.stale.is_empty()
 }
 
 /// The position of `level` in `SecurityLevel::ALL` (and `App::level_times`).

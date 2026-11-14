@@ -1127,7 +1127,7 @@ fn security_levels_and_key_files_can_be_changed_and_keep_everything() {
         contains("now needs the key file")
             .and(contains("Saved in your settings"))
             .and(contains("no recovery"))
-            .and(contains("Copies of the vault you made yourself earlier")),
+            .and(contains("copies of the vault you made yourself earlier")),
     );
     v.run(&["get", "github", "--show"], &format!("{PW}\n")).success().stdout(contains(ITEM_PW));
     v.run(&["security"], "").success().stdout(contains("Key file:         required:"));

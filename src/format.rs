@@ -323,6 +323,46 @@ pub fn open(data: &[u8], creds: Credentials<'_>) -> Result<(SecureBuf, VaultKey,
     Ok((plaintext, vk, header.version))
 }
 
+/// Decrypt a vault file with a key that is already derived (no Argon2),
+/// for a file written under that same key: the same salt, Argon2 settings
+/// and key-file flag in its header. Used to re-key CakePass's own copies of
+/// the vault (`pre-update`) when the vault itself is re-keyed. A file of
+/// another key gives `Ok(None)` without trying; otherwise the same checks as
+/// [`open`] (header, length, authentication tag: a damaged or altered file
+/// is an error, not "another key").
+///
+/// Returns the plaintext and the format version of the file.
+pub fn open_with_key(data: &[u8], vk: &VaultKey) -> Result<Option<(SecureBuf, u16)>> {
+    let (header, header_len) = Header::decode(data)?;
+    let ciphertext = &data[header_len..];
+    if ciphertext.len() < TAG_LEN {
+        return Err(Error::Truncated);
+    }
+    if !written_with(data, vk)? {
+        return Ok(None);
+    }
+    // Version 1 used the master key directly for the file.
+    let key = if header.version == 1 { &vk.master } else { &vk.file_key };
+    let plaintext = crypto::decrypt(key, &header.nonce, &data[..header_len], ciphertext)?;
+    Ok(Some((plaintext, header.version)))
+}
+
+/// Whether the file's header says it was written under `vk` (the same
+/// salt, Argon2 settings and key-file flag). Reads the header only.
+pub fn written_with(data: &[u8], vk: &VaultKey) -> Result<bool> {
+    let (h, _) = Header::decode(data)?;
+    Ok(h.salt == vk.salt && h.kdf == vk.kdf && h.key_file == vk.key_file)
+}
+
+/// Encrypt in the layout of `version` (so an older CakePass can still read
+/// a copy it made), unless that layout cannot say what `vk` needs: a key
+/// file needs version 3 or newer. Then, or for an unknown version, the
+/// current layout is used.
+pub fn seal_like(vk: &VaultKey, version: u16, plaintext: &[u8]) -> Result<Vec<u8>> {
+    let usable = (1..=CURRENT_VERSION).contains(&version) && !(version < 3 && vk.key_file);
+    seal_version(vk, if usable { version } else { CURRENT_VERSION }, plaintext)
+}
+
 /// Encrypt with `vk` in an older layout (1 or 2) or the current one, for
 /// migration tests only.
 #[doc(hidden)]
