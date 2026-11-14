@@ -38,8 +38,10 @@ use super::super::prompt;
 use super::grid::{Grid, Rect, wrap};
 use super::input::TextInput;
 use super::keys::{Event, Key};
-use super::screens::dialog::{Confirm, ConfirmAction, Help, HelpPage, Message, Prompt, PromptPurpose};
-use super::screens::form::Form;
+use super::screens::dialog::{
+    Confirm, ConfirmAction, Help, HelpPage, Message, Picked, Picker, Prompt, PromptPurpose,
+};
+use super::screens::form::{Field, Form};
 use super::screens::generator::{GenPrefs, GenTarget, Generator};
 use super::screens::settings::Settings;
 use super::screens::{self, Hint};
@@ -170,6 +172,8 @@ pub enum Modal {
     Confirm(Confirm),
     Prompt(Prompt),
     Generator(Box<Generator>),
+    /// The 2FA tab's "add a code": which item gets it.
+    Picker(Picker),
 }
 
 /// A message in the status line.
@@ -615,6 +619,37 @@ impl App {
         self.copy_value(code.as_str(), "The TOTP code");
     }
 
+    /// `a` on the 2FA tab: ask which item gets a 2FA code (or a new login).
+    pub fn ask_add_totp(&mut self) {
+        let names: Vec<String> =
+            self.entries().iter().filter(|e| !e.has_totp()).map(|e| e.name().to_string()).collect();
+        self.reveal_until = None;
+        self.modals.push(Modal::Picker(Picker::new(
+            "Add a 2FA code",
+            vec![
+                "Which account is it for? On the site, turn on two-factor login with an \
+                 authenticator app; under the QR code it shows a secret (\"can't scan it?\"). \
+                 Next you paste that secret."
+                    .into(),
+            ],
+            "+ New login",
+            names,
+        )));
+    }
+
+    /// Open the form for the chosen item, on its 2FA secret field.
+    fn add_totp_to(&mut self, picked: Picked) {
+        match picked {
+            Picked::New => {
+                self.reveal_until = None;
+                self.screen = Screen::Form(Box::new(Form::add(Kind::Login)));
+                self.info("Fill in the name and password, then paste the 2FA secret.");
+            }
+            // The field's own help line says what to paste.
+            Picked::Name(name) => self.open_edit_at(&name, Field::Totp),
+        }
+    }
+
     /// `f`: pin the selected item as a favorite, or unpin it. Saved at once
     /// (all or nothing, like every other change).
     pub fn toggle_favorite(&mut self) {
@@ -709,6 +744,16 @@ impl App {
                     }
                 }
                 Some(false) => {
+                    self.modals.pop();
+                }
+                None => {}
+            },
+            Modal::Picker(p) => match p.handle(ev) {
+                Some(Some(picked)) => {
+                    self.modals.pop();
+                    self.add_totp_to(picked);
+                }
+                Some(None) => {
                     self.modals.pop();
                 }
                 None => {}
@@ -1120,6 +1165,7 @@ impl App {
                 Modal::Confirm(c) => c.draw(g, area),
                 Modal::Prompt(p) => p.draw(g, area),
                 Modal::Generator(gn) => gn.draw(g, area),
+                Modal::Picker(p) => p.draw(g, area),
             };
         }
         screens::status_line(g, self, now);

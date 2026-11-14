@@ -176,6 +176,7 @@ fn add_a_login_with_the_form() {
     assert!(s.contains("••••••••••") && !s.contains("P4ss"), "the password is masked while typing:\n{s}");
     t.key(Key::Ctrl('r'));
     assert!(t.screen().contains("P4ss-wörd!"), "Ctrl+R shows it");
+    t.key(Key::Down); // the 2FA secret (optional; left empty)
     t.key(Key::Down);
     t.typ("line one");
     t.key(Key::Enter); // a new line inside the notes
@@ -217,8 +218,9 @@ fn add_an_api_key_by_pasting_and_a_note() {
     t.key(Key::Down);
     t.key(Key::Left); // login → note
     t.key(Key::Down); // tags
+    t.key(Key::Down); // 2FA secret (a note may have one too)
     t.key(Key::Down); // content
-    assert!(!t.screen().contains("Username"));
+    assert!(!t.screen().contains("Username") && t.screen().contains("2FA secret"));
     t.typ("ssid: home");
     t.key(Key::Enter);
     t.typ("pass: 1234");
@@ -967,12 +969,113 @@ fn the_2fa_tab_lists_every_code_like_an_authenticator_app() {
 }
 
 #[test]
+fn add_a_2fa_code_from_the_2fa_tab() {
+    let mut t = new_types();
+    t.app.clock = || 59;
+    t.key(Key::Left);
+    assert_eq!((t.app.tab, t.app.view.len()), (Tab::TwoFactor, 1));
+    // a: which item gets the code? Only items without one, and a new login.
+    t.key(Key::Char('a'));
+    let Some(Modal::Picker(p)) = t.app.modals.last() else { panic!("no picker") };
+    assert_eq!(p.names, ["Server key", "Visa"]);
+    let s = t.screen();
+    assert!(s.contains("Add a 2FA code") && s.contains("+ New login") && s.contains("can't scan it?"), "{s}");
+    // In the smallest window too; the selection stays in view when scrolling.
+    t.app.resize((60, 16));
+    for _ in 0..2 {
+        t.key(Key::Down);
+    }
+    let small = t.screen_at(60, 16);
+    assert!(small.contains("Add a 2FA code") && small.contains("Visa"), "{small}");
+    t.app.resize((80, 24));
+    t.keys(&[Key::Up, Key::Up]);
+    // Typing narrows the list and selects the first match.
+    t.typ("vis");
+    let Some(Modal::Picker(p)) = t.app.modals.last() else { panic!("no picker") };
+    assert_eq!((p.visible(), p.sel), (vec!["Visa"], 1));
+    t.key(Key::Enter);
+    // The edit form of that item, on the 2FA secret.
+    let Screen::Form(f) = &t.app.screen else { panic!("no form") };
+    assert_eq!(f.focus, Field::Totp);
+    assert!(t.screen().contains("Edit 'Visa'") && t.screen().contains("2FA secret"));
+    // A typo is refused before saving: the form stays, the cursor stays on
+    // the field, and the message does not repeat what was typed.
+    t.paste("zq-not-a-secret-1");
+    assert!(!t.screen().contains("zq-not"), "hidden while typing:\n{}", t.screen());
+    t.key(Key::Ctrl('s'));
+    let Screen::Form(f) = &t.app.screen else { panic!("the form closed") };
+    assert_eq!(f.focus, Field::Totp);
+    let s = t.screen();
+    assert!(s.contains("Not a valid 2FA secret") && !s.contains("zq-not"), "{s}");
+    // The secret as sites show it: in groups, lower case.
+    t.key(Key::Ctrl('u'));
+    t.paste("gezd gnbv gy3t qojq gezd gnbv gy3t qojq");
+    t.key(Key::Ctrl('r'));
+    assert!(t.screen().contains("gezd gnbv"), "Ctrl+R shows it");
+    t.key(Key::Ctrl('s'));
+    assert!(matches!(t.app.screen, Screen::Main));
+    assert_eq!(t.toast(), "Item 'Visa' updated. Its 2FA code is in the 2FA tab.");
+    assert_eq!((t.app.tab, t.app.view.len()), (Tab::TwoFactor, 2));
+    assert_eq!(t.app.selected().unwrap().name(), "Visa");
+    assert_eq!(t.screen().matches("287 082").count(), 2, "{}", t.screen());
+    let uv = t.reopen(PW);
+    let visa = get(&uv, "Visa");
+    assert_eq!(visa.totp(uv.item_key()).unwrap().unwrap().code_at(59).as_str(), "287082");
+    assert_eq!(visa.password(uv.item_key()).unwrap().as_str(), "4111 1111 1111 1111", "the rest is kept");
+}
+
+#[test]
+fn a_new_login_with_a_2fa_code_and_removing_a_code() {
+    let mut t = new_types();
+    t.app.clock = || 59;
+    t.key(Key::Left);
+    // Esc closes the question; a with no match left still offers a new login.
+    t.key(Key::Char('a'));
+    t.key(Key::Esc);
+    assert!(t.app.modals.is_empty() && matches!(t.app.screen, Screen::Main));
+    t.key(Key::Char('a'));
+    t.typ("nothing like this");
+    let Some(Modal::Picker(p)) = t.app.modals.last() else { panic!("no picker") };
+    assert_eq!(p.sel, 0);
+    t.key(Key::Enter);
+    let Screen::Form(f) = &t.app.screen else { panic!("no form") };
+    assert!(matches!(f.mode, super::super::screens::form::Mode::Add) && f.kind == Kind::Login);
+    assert!(t.toast().contains("paste the 2FA secret"), "{}", t.toast());
+    t.typ("Mail");
+    t.keys(&[Key::Down; 6]); // type, username, e-mail, URL, tags, password
+    t.typ("mail-pw-1");
+    t.key(Key::Down);
+    t.paste(TOTP_SEED);
+    t.key(Key::Ctrl('s'));
+    assert_eq!(t.toast(), "Login 'Mail' saved (encrypted). Its 2FA code is in the 2FA tab.");
+    assert_eq!(t.app.view.len(), 2);
+    // Removing a code: edit, the 2FA secret says "(unchanged)", Ctrl+U, save.
+    select(&mut t, "GitHub");
+    t.key(Key::Char('e'));
+    t.keys(&[Key::Down; 6]); // username, e-mail, URL, tags, password, 2FA secret
+    let Screen::Form(f) = &t.app.screen else { panic!("no form") };
+    assert_eq!(f.focus, Field::Totp);
+    assert!(t.screen().contains("(unchanged)"));
+    t.key(Key::Ctrl('u'));
+    t.key(Key::Ctrl('s'));
+    assert_eq!(t.toast(), "Item 'GitHub' updated.");
+    let uv = t.reopen(PW);
+    assert!(!get(&uv, "GitHub").has_totp() && get(&uv, "Mail").has_totp());
+    assert_eq!(get(&uv, "GitHub").password(uv.item_key()).unwrap().as_str(), "gh-Secret-1");
+    // Opening and saving an item without touching the field keeps its code.
+    select(&mut t, "Mail");
+    t.key(Key::Char('e'));
+    t.key(Key::Ctrl('s'));
+    assert!(t.reopen(PW).vault.get("Mail").unwrap().has_totp());
+}
+
+#[test]
 fn the_2fa_tab_without_codes_says_how_to_add_one() {
     let mut t = T::sample();
     t.key(Key::Left);
     assert_eq!((t.app.tab, t.app.view.len()), (Tab::TwoFactor, 0));
     let s = t.screen();
-    assert!(s.contains("No two-factor codes yet.") && s.contains("--totp"), "{s}");
+    assert!(s.contains("No two-factor codes yet.") && s.contains("Press a to add one"), "{s}");
     // Enter on an empty tab does nothing (and does not fail).
     t.key(Key::Enter);
     assert!(t.clip.borrow().is_empty() && t.app.toast.is_none());

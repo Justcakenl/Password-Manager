@@ -98,9 +98,14 @@ impl App {
             }
         };
         let page = self.list_rows() as isize;
-        // On the 2FA tab the code is what you came for: Enter and c copy it.
-        if !self.searching && self.tab == Tab::TwoFactor && matches!(key, Key::Enter | Key::Char('c')) {
-            return self.copy_field(CopyWhat::Totp);
+        // On the 2FA tab the code is what you came for: Enter and c copy it,
+        // and a (or n) adds a code to an item.
+        if !self.searching && self.tab == Tab::TwoFactor {
+            match key {
+                Key::Enter | Key::Char('c') => return self.copy_field(CopyWhat::Totp),
+                Key::Char('a' | 'n') => return self.ask_add_totp(),
+                _ => {}
+            }
         }
         if self.searching {
             match key {
@@ -249,6 +254,7 @@ impl App {
             vec![
                 ("↑↓", "move"),
                 ("Enter", "copy code"),
+                ("a", "add code"),
                 ("q", "quit"),
                 ("e", "edit"),
                 ("/", "search"),
@@ -326,7 +332,7 @@ impl App {
             } else if self.tab == Tab::TwoFactor {
                 [
                     "No two-factor codes yet.",
-                    "Add the TOTP secret of a site (shown under its QR code) with: cakepass edit NAME --totp",
+                    "Press a to add one: choose the account, then paste the secret the site shows under its QR code.",
                 ]
             } else {
                 ["Nothing of this type yet.", "Press a to add one, or ← → for the other types."]
@@ -588,7 +594,7 @@ impl App {
                     let key = if self.tab == Tab::TwoFactor { "v" } else { "Enter" };
                     format!("Hides in {left} s · {key} hides")
                 }
-                None if self.tab == Tab::TwoFactor => "Enter/c copies the code · v shows".to_string(),
+                None if self.tab == Tab::TwoFactor => "Enter copies · a adds a code".to_string(),
                 None if e.has_secret() || e.has_notes() => "Enter shows · c copies · e edits".to_string(),
                 None => "e edits · d deletes".to_string(),
             };

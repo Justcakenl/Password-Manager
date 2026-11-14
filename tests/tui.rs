@@ -367,7 +367,7 @@ fn add_an_item_with_the_arrow_keys_then_read_it_with_the_cli() {
     t.send("work, code");
     t.send(DOWN);
     t.send("Tui-Secret-42!");
-    t.send(DOWN);
+    t.send(&DOWN.repeat(2)); // past the (optional) 2FA secret
     t.send("line one\rline two");
     t.wait_for("line two");
     assert!(!t.screen().contains("Tui-Secret-42!"), "the password is masked while typing");

@@ -485,7 +485,7 @@ and **`?`** shows them all.
 | `c` | copy the password, API key, card number, private key, document number or note to the clipboard; it is **cleared after 20 seconds** (or your `clip-time`) |
 | `u` / `m` | copy the username (cardholder) / the e-mail address |
 | `t` | show the current two-factor (TOTP) code with its seconds left, and copy it (cleared like a password) |
-| 2FA tab | every item with a TOTP secret and its **current code**, live, with the seconds left (red in the last 5), like an authenticator app; the details also show the next code. There **Enter** or `c` copies the code. ← from All goes straight to it |
+| 2FA tab | every item with a TOTP secret and its **current code**, live, with the seconds left (red in the last 5), like an authenticator app; the details also show the next code. There **Enter** or `c` copies the code, and **`a` adds one**: choose the account (or a new login) and paste the secret. ← from All goes straight to it |
 | `f` | pin or unpin the item as a **favorite**: a ★ before its name, and favorites come first in the list |
 | `p` | copy the public key of an SSH key |
 | `a` or `n` | add an item |
@@ -500,9 +500,10 @@ and **`?`** shows them all.
 **Adding and editing** (`a`, `e`): a form with the fields Name, Type, Username
 (for an API key: Account/ID), E-mail, URL, Tags, Password (or API key) and Notes.
 A card has Cardholder, Expiry date, Card number and CVV instead; an SSH key has
-Host, Public key, Private key (several lines; paste it) and Passphrase. A TOTP
-secret is added with `cakepass add/edit … --totp` (see
-[Two-factor codes](#two-factor-codes-totp)).
+Host, Public key, Private key (several lines; paste it) and Passphrase. Every
+type also has an optional, hidden **2FA secret**: paste the secret a site shows
+under its QR code (see [Two-factor codes](#two-factor-codes-totp)). A typo is
+refused when you save, with the cursor back on the field.
 
 | Key | What it does |
 |---|---|
@@ -516,7 +517,8 @@ secret is added with `cakepass add/edit … --totp` (see
 | Esc | cancel (asks first when you changed something) |
 
 When you edit an item, the password field shows `•••••••• (unchanged)` (so do a
-stored CVV and passphrase). Leave it
+stored CVV, passphrase and 2FA secret; Ctrl+U on the 2FA secret and saving
+removes the code). Leave it
 and the password stays as it is; type and you replace it; Ctrl+R shows it.
 Pasting (Ctrl+Shift+V) works in every field, also for long API keys: pasted text
 is always just text, it never triggers a shortcut.
@@ -820,6 +822,14 @@ Valid for:       8 more second(s)
   Authenticator, Google Authenticator): all your codes in one list, each with
   the seconds it is still valid, and the next code in the details. Enter (or
   `c`) copies the selected code. ← from All goes there in one key press.
+- **Setting it up in the screen**, no commands needed:
+  1. On the site, turn on two-factor login with an authenticator app. Below
+     the QR code, click "can't scan it?" (or similar) and copy the secret.
+  2. In CakePass go to the **2FA** tab (←) and press **`a`**.
+  3. Choose the account (type a few letters to find it), or **+ New login**.
+  4. Paste the secret (Ctrl+Shift+V) in the **2FA secret** field and press
+     Ctrl+S. The code appears in the 2FA tab; type it on the site to finish.
+  The same field is in every add/edit form (`a`, `e`).
 - The secret is checked before it is saved (spaces and lower case are fine; a
   typo is refused). An `otpauth://totp/…` link may set other digits, a period
   or SHA-256/SHA-512; without them it is the standard 6 digits, 30 s, SHA-1.

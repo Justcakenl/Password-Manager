@@ -11,6 +11,8 @@
 //! security code; an SSH key has a host, public key, passphrase and a
 //! multi-line private key (pasting it is the normal way in); an identity has
 //! a full name, who issued it, an expiry date and the (hidden) number.
+//! Every type has an optional, hidden "2FA secret" (the TOTP secret under a
+//! site's QR code); it is checked before saving, so a typo is caught here.
 //!
 //! SECURITY: the fields are `Zeroizing` text inputs that exist only while the
 //! form is open; they are wiped when it closes, saved or not.
@@ -20,6 +22,7 @@ use std::time::Instant;
 use zeroize::Zeroizing;
 
 use cakepass::crypto::ItemKey;
+use cakepass::totp::Totp;
 use cakepass::vault::{Entry, Kind, NewEntry};
 use cakepass::{Error, Result};
 
@@ -54,6 +57,8 @@ pub enum Field {
     Secret,
     Cvv,
     Passphrase,
+    /// The TOTP secret (any type may have one).
+    Totp,
     Notes,
     Buttons,
 }
@@ -65,7 +70,7 @@ impl Field {
 
     /// Fields shown as dots until Ctrl+R.
     pub fn hidden(self) -> bool {
-        matches!(self, Field::Secret | Field::Cvv | Field::Passphrase)
+        matches!(self, Field::Secret | Field::Cvv | Field::Passphrase | Field::Totp)
     }
 }
 
@@ -92,6 +97,7 @@ pub struct Form {
     pub secret: TextInput,
     pub cvv: TextInput,
     pub passphrase: TextInput,
+    pub totp: TextInput,
     pub notes: TextInput,
     /// Ctrl+R: the hidden fields are shown.
     pub secret_shown: bool,
@@ -121,6 +127,7 @@ impl Form {
             secret: TextInput::new(kind == Kind::SshKey),
             cvv: TextInput::new(false),
             passphrase: TextInput::new(false),
+            totp: TextInput::new(false),
             notes: TextInput::new(true),
             secret_shown: false,
             unchanged: 0,
@@ -146,6 +153,7 @@ impl Form {
             (Field::Secret, e.password(key)?),
             (Field::Cvv, e.cvv(key)?),
             (Field::Passphrase, e.passphrase(key)?),
+            (Field::Totp, e.totp_secret(key)?),
         ] {
             if let Some(input) = f.input(field) {
                 input.set(&value);
@@ -181,7 +189,7 @@ impl Form {
             Kind::Identity => out.push(Field::Secret),
             Kind::Note => {}
         }
-        out.extend([Field::Notes, Field::Buttons]);
+        out.extend([Field::Totp, Field::Notes, Field::Buttons]);
         out
     }
 
@@ -235,6 +243,7 @@ impl Form {
             (Field::Secret, _) => "Password",
             (Field::Cvv, _) => "CVV",
             (Field::Passphrase, _) => "Passphrase",
+            (Field::Totp, _) => "2FA secret",
             (Field::Notes, Kind::Note) => "Content",
             (Field::Notes, _) => "Notes",
             (Field::Buttons, _) => "",
@@ -253,6 +262,7 @@ impl Form {
             Field::Secret => Some(&mut self.secret),
             Field::Cvv => Some(&mut self.cvv),
             Field::Passphrase => Some(&mut self.passphrase),
+            Field::Totp => Some(&mut self.totp),
             Field::Notes => Some(&mut self.notes),
             Field::Kind | Field::Buttons => None,
         }
@@ -272,6 +282,7 @@ impl Form {
             Field::Secret => &self.secret,
             Field::Cvv => &self.cvv,
             Field::Passphrase => &self.passphrase,
+            Field::Totp => &self.totp,
             Field::Notes => &self.notes,
             Field::Kind | Field::Buttons => return "",
         };
@@ -314,14 +325,14 @@ impl Form {
                 return Action::None;
             }
         };
-        let secret_keys = self.kind != Kind::Note;
         let generator = matches!(self.kind, Kind::Login | Kind::Api);
         match key {
             Key::Ctrl('s') => return Action::Save,
             Key::Esc => return Action::Cancel,
             Key::F(1) => return Action::Help,
             Key::Ctrl('g') if generator => return Action::Generate,
-            Key::Ctrl('r') if secret_keys => {
+            // Every type has a hidden field now (the 2FA secret), a note too.
+            Key::Ctrl('r') => {
                 self.secret_shown = !self.secret_shown;
                 return Action::None;
             }
@@ -446,6 +457,7 @@ impl Form {
             (Field::Secret, _) => "Hidden while you type. Ctrl+R shows, Ctrl+G generates.",
             (Field::Cvv, _) => "Optional and hidden: the security code on the back.",
             (Field::Passphrase, _) => "Optional and hidden: the passphrase of the private key.",
+            (Field::Totp, _) => "Optional: the 2FA secret from under the site's QR code.",
             (Field::Notes, Kind::Note) => "The text of the note. Enter starts a new line.",
             (Field::Notes, _) => "Optional. Enter starts a new line.",
             (Field::Buttons, _) => "Enter: save or cancel. Ctrl+S saves from any field.",
@@ -461,9 +473,17 @@ impl App {
     }
 
     pub fn open_edit(&mut self) {
-        let Some(e) = self.selected() else { return };
+        let Some(name) = self.selected().map(|e| e.name().to_string()) else { return };
+        self.open_edit_at(&name, Field::Name);
+    }
+
+    /// Edit the item `name` with the cursor in `focus` (the 2FA tab's "add a
+    /// code" opens the form on the 2FA secret).
+    pub fn open_edit_at(&mut self, name: &str, focus: Field) {
+        let Some(e) = self.uv.vault.get(name) else { return };
         match Form::edit(e, self.key()) {
-            Ok(f) => {
+            Ok(mut f) => {
+                f.focus = focus;
                 self.reveal_until = None;
                 self.screen = Screen::Form(Box::new(f));
             }
@@ -505,6 +525,10 @@ impl App {
                 self.ok(msg);
             }
             Err(e) => {
+                // The error goes where a message would be drawn over it.
+                if e.is_some() {
+                    self.toast = None;
+                }
                 f.error = e;
                 self.screen = Screen::Form(f);
             }
@@ -530,6 +554,16 @@ impl App {
                 _ => "The password is empty: type one or press Ctrl+G.".into(),
             }));
         }
+        // The 2FA secret is checked here too (the library checks it again), so
+        // the form can say what is wrong and put the cursor on it.
+        let totp_set = (f.adding() || f.is_changed(Field::Totp)) && !f.totp.as_str().trim().is_empty();
+        if totp_set && let Err(e) = Totp::parse(f.totp.as_str()) {
+            f.focus = Field::Totp;
+            return Err(Some(format!(
+                "Not a valid 2FA secret: {}. Paste the text under the QR code (\"can't scan it?\") or the otpauth:// link.",
+                totp_reason(&e)
+            )));
+        }
         let tags = commands::split_tags(f.tags.as_str());
         let odd_mail = commands::email_looks_odd(f.value(Field::Email));
         let result: Result<(String, String)> = match &f.mode {
@@ -547,8 +581,8 @@ impl App {
                     cvv: text(Field::Cvv),
                     public_key: text(Field::PublicKey),
                     passphrase: text(Field::Passphrase),
+                    totp_secret: text(Field::Totp),
                     tags,
-                    ..Default::default()
                 };
                 commands::add_entry(&mut self.uv, fields).map(|name| {
                     (name.clone(), format!("{} '{name}' saved (encrypted).", commands::kind_noun(kind)))
@@ -592,6 +626,10 @@ impl App {
                         if form.is_changed(Field::Passphrase) {
                             e.set_passphrase(key, form.passphrase.as_str())?;
                         }
+                        if form.is_changed(Field::Totp) {
+                            // Empty removes it (Ctrl+U on the field).
+                            e.set_totp_secret(key, form.totp.as_str())?;
+                        }
                         if form.is_changed(Field::Name) {
                             e.set_name(form.name.as_str())?;
                         }
@@ -610,6 +648,9 @@ impl App {
         };
         match result {
             Ok((name, mut msg)) => {
+                if totp_set {
+                    msg.push_str(" Its 2FA code is in the 2FA tab.");
+                }
                 if odd_mail {
                     msg.push_str(" Note: that e-mail address looks odd (saved anyway).");
                 }
@@ -715,6 +756,7 @@ impl App {
                         Field::Tags => &f.tags,
                         Field::Cvv => &f.cvv,
                         Field::Passphrase => &f.passphrase,
+                        Field::Totp => &f.totp,
                         _ => &f.secret,
                     };
                     let mask = (field.hidden() && !f.secret_shown).then_some(g.g.dot);
@@ -743,10 +785,19 @@ impl App {
         }
         match f.kind {
             Kind::Login | Kind::Api => hints.extend([("Ctrl+G", "generate"), ("Ctrl+R", "show password")]),
-            Kind::Card | Kind::SshKey | Kind::Identity => hints.push(("Ctrl+R", "show hidden")),
-            Kind::Note => {}
+            Kind::Card | Kind::SshKey | Kind::Identity | Kind::Note => hints.push(("Ctrl+R", "show hidden")),
         }
         hints.push(("F1", "help"));
         hints
     }
+}
+
+/// Why a 2FA secret was refused, without a capital or full stop (it goes in
+/// the middle of a sentence). Never contains the secret (see `totp.rs`).
+fn totp_reason(e: &Error) -> String {
+    let text = match e {
+        Error::InvalidInput(m) => m.clone(),
+        e => e.to_string(),
+    };
+    text.trim_end_matches('.').to_string()
 }

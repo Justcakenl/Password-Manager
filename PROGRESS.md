@@ -1,6 +1,6 @@
 # Progress: `cakepass` (CakePass)
 
-Last updated: step 15 (the 2FA tab in the screen); content schema still 5.
+Last updated: step 15 (the 2FA tab, and setting up 2FA in the screen); content schema still 5.
 Repository: `Justcakenl/Password-Manager`, branch `main` (private until it is made public).
 
 ## Maintainer checklist: manual testing on a real Arch machine
@@ -419,8 +419,26 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   `hidden_tabs_from_the_settings_file`;
   `with_every_type_tab_hidden_only_all_and_2fa_are_left`). Waits for
   review (reviewer-sonnet) and security audit (security-opus).
-  Not in this step: adding a TOTP secret from the screen (the form has no
-  TOTP field; it is `cakepass add/edit --totp`), and scanning a QR code.
+  **Setting it up in the screen (asked for next):** every add/edit form
+  has an optional, hidden "2FA secret" field (`Field::Totp`, before
+  Notes; all types, like the CLI). It works like the CVV: dots,
+  "(unchanged)" when editing, Ctrl+R shows it, Ctrl+U + save removes the
+  code. It is checked with `Totp::parse` before saving, so a typo gives
+  "Not a valid 2FA secret: …" (the library's reason, never the input) and
+  the cursor goes back to the field; the save message adds "Its 2FA code
+  is in the 2FA tab." On the 2FA tab `a` (or `n`) opens a new `Picker`
+  dialog (`dialog.rs`): "+ New login" and every item without a code;
+  typing narrows it; Enter opens that item's edit form on the 2FA field
+  (`App::open_edit_at`), or the add form for a new login. A form error now
+  clears a message that would be drawn over it. Tests: three new
+  (`add_a_2fa_code_from_the_2fa_tab`,
+  `a_new_login_with_a_2fa_code_and_removing_a_code`, and the empty-tab
+  text), three form walks updated for the extra field
+  (`add_a_login_with_the_form`, `add_an_api_key_by_pasting_and_a_note`,
+  `tests/tui.rs` `add_an_item_with_the_arrow_keys_then_read_it_with_the_cli`).
+  Not in this step: scanning a QR code (no camera or image code in
+  CakePass), and a login with only a 2FA code and no password (a login
+  still needs a password, as before).
 
 ## Still to do
 
@@ -680,12 +698,21 @@ See `docs/DESIGN.md` for the explanation. In short:
   codes are dots, like every other revealed secret.
 - Enter and `c` copy the code on the 2FA tab (the thing you came for);
   `v` still shows the password there.
+- The 2FA secret is a form field (not a separate dialog) so adding and
+  editing work the same way for it as for every other field, and the
+  "add a code" picker only has to choose the item. The picker lists names
+  only, never a decrypted field.
+- Found while testing: `Totp::parse` accepts very short base32 text (e.g.
+  "line one" = 4 bytes), so text typed into the wrong field can pass as a
+  secret. Not changed here (a minimum length could break short secrets
+  already stored or imported); raised with security review.
 
 ## Checks (latest step)
 
 | Check | Result |
 |---|---|
-| `cargo test` (step 15) | 324 passed (121 library, 92 CLI/screen unit, 63 CLI integration, 14 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
+| `cargo test` (step 15) | 326 passed (121 library, 94 CLI/screen unit, 63 CLI integration, 14 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
+| Setting up 2FA in a real terminal (step 15, tmux, throwaway vault) | 2FA tab → `a` → typed "disc" → Enter → Discord's edit form on the 2FA secret → typed a test secret → Ctrl+S: "Item 'Discord' updated. Its 2FA code is in the 2FA tab." and its code in the list; at 80×24 and 60×16 |
 | 2FA tab in a real terminal (step 15, debug build in tmux, throwaway vault from a CSV with RFC test seeds) | at 100×28, 80×24 and 60×16: 6- and 8-digit codes with seconds left, next code in the details, Enter copies ("The TOTP code copied (wl-copy)"); all eight tabs with counts at 80 columns |
 | Known-answer tests (step 12) | TOTP: RFC 6238 Appendix B (SHA-1, SHA-256, SHA-512, all six times) and RFC 4226 Appendix D; base32: RFC 4648 section 10; cross-checked with an independent Python implementation (`hmac`/`hashlib`/`base64`) |
 | Known-answer tests (step 11) | Argon2id with a secret: vectors from the reference C implementation (libargon2 via argon2-cffi; the harness reproduces RFC 9106 first); key-file pepper: vectors from Python's `hashlib.blake2b(digest_size=32)` |
@@ -722,6 +749,12 @@ Could NOT be tested in the cloud environment. Do this yourself and tick:
 - [ ] Enter on a row: "The TOTP code copied"; paste it on the site's login
       page and it is accepted; the clipboard is empty after the clip time
 - [ ] `?` (help) on the 2FA tab: the codes behind it turn into dots
+- [ ] **Set up 2FA in the screen** for a real account: on the site turn on
+      an authenticator app, copy the secret under the QR code; in CakePass
+      ← (2FA tab), `a`, choose the account, paste, Ctrl+S; type the code
+      on the site to finish. It is accepted
+- [ ] `e` on that item: the 2FA secret says "(unchanged)"; a typo there
+      gives "Not a valid 2FA secret" and nothing is saved
 
 ### Screen tabs, desktop entry and icon – new in step 14
 
