@@ -1158,8 +1158,10 @@ impl App {
                                     "{} item(s) added, {} already present. Same names got a number, e.g. \"GitHub (2)\".",
                                     counts.0, counts.1
                                 ));
-                                // It opens with its password alone: offer to get rid of it.
-                                self.modals.push(Modal::Confirm(Confirm::new(
+                                // It opens with its password alone: offer to get rid of it
+                                // (never this vault's own file, backup or pre-update copy).
+                                if !self.uv.paths().owns(&path) {
+                                    self.modals.push(Modal::Confirm(Confirm::new(
                                     "Delete the file?",
                                     vec![format!(
                                         "The items are in your vault now. Overwrite and delete {}? Anyone with \
@@ -1171,6 +1173,7 @@ impl App {
                                     false,
                                     ConfirmAction::DeleteFile(path),
                                 )));
+                                }
                             }
                             Err(e) => {
                                 if let Some(t) = self.save_error(e) {

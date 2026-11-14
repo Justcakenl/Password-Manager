@@ -598,6 +598,21 @@ fn share_an_item_and_add_it_in_another_cakepass() {
 }
 
 #[test]
+fn importing_the_vaults_own_backup_does_not_offer_to_delete_it() {
+    let mut t = T::sample();
+    let backup = t.app.uv.paths().backup.clone();
+    assert!(backup.exists(), "the sample vault was saved more than once");
+    t.key(Key::Char('i'));
+    t.typ(backup.to_str().unwrap());
+    t.key(Key::Enter);
+    t.typ(PW);
+    t.key(Key::Enter);
+    assert!(t.toast().contains("item(s) added"), "{}", t.toast());
+    assert!(!t.screen().contains("Delete the file?"), "{}", t.screen());
+    assert!(t.app.modals.is_empty() && backup.exists());
+}
+
+#[test]
 fn sharing_leaves_the_2fa_secret_out_unless_you_say_so() {
     for (answer, with) in [(Key::Enter, false), (Key::Char('y'), true)] {
         let mut t = new_types(); // GitHub has a 2FA secret

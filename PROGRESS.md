@@ -540,6 +540,21 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   `sharing_leaves_the_2fa_secret_out_unless_you_say_so` (both answers,
   Standard KDF). The flaky wrapped-text assertion now checks the prompt's
   own lines.
+  Second round (security-opus, reviewer-sonnet), after merging the 16b
+  follow-up into this branch:
+  - `ClearScreenGuard` (commands.rs) is made before the password is
+    printed: on drop, and on Ctrl+C while it lives (a SIGINT handler that
+    only calls write(2) and _exit(130)), screen and scrollback are cleared.
+  - `share` also needs stderr in the terminal (the clearing goes there), so
+    `2>/dev/null` is refused before anything is made or shown.
+  - `VaultPaths::owns` (keyfile::same_file against the vault, `.bak` and
+    every pre-update copy): after importing one of those, CLI and screen
+    do not offer to overwrite and delete it.
+  Tests: tests/tui.rs `share_items_in_a_terminal_and_add_them_elsewhere`
+  (also Ctrl+C at the question: exit 130, password gone after the last
+  clear; and `2>/dev/null`: refused, no file), `Pty::spawn_with`;
+  `importing_the_vaults_own_backup_does_not_offer_to_delete_it` in
+  tests/tui.rs and app/tests.rs (both checked to fail without `owns`).
 
 ## Still to do
 

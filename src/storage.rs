@@ -429,6 +429,18 @@ const KEEP_UPDATE_BACKUPS: usize = 3;
 /// The `pre-update` copies of this vault, oldest first: regular files named
 /// exactly `<vault>.pre-update-<digits>` (no temporary files, no other
 /// endings, no symlinks or folders).
+impl VaultPaths {
+    /// Whether `file` is this vault's own file: the vault itself, its backup
+    /// or a copy made before an update (same file on disk, so also through
+    /// another name). Never offer to delete those after an import.
+    pub fn owns(&self, file: &Path) -> bool {
+        use crate::keyfile::same_file;
+        same_file(file, &self.file)
+            || same_file(file, &self.backup)
+            || update_copies(self).is_ok_and(|c| c.iter().any(|(_, p)| same_file(file, p)))
+    }
+}
+
 fn update_copies(paths: &VaultPaths) -> Result<Vec<(u64, PathBuf)>> {
     let base = paths.file.file_name().ok_or_else(|| Error::InvalidInput("invalid path".into()))?;
     let prefix = format!("{}.pre-update-", base.to_string_lossy());

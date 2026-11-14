@@ -1809,10 +1809,12 @@ fn export(uv: &UnlockedVault, file: &Path) -> Result<()> {
 /// another way than the file.
 fn share(uv: &UnlockedVault, names: &[String], file: &Path, with_totp: bool) -> Result<()> {
     use std::io::IsTerminal;
-    if !io::stdout().is_terminal() || !prompt::stdin_is_tty() {
+    // stdout shows the password; stderr carries the clearing afterwards, so
+    // both must be the terminal (not `> file`, not `2>/dev/null`).
+    if !io::stdout().is_terminal() || !io::stderr().is_terminal() || !prompt::stdin_is_tty() {
         return Err(Error::InvalidInput(
             "cakepass share shows the share password once and only in a terminal; \
-             run it in a terminal (not with its output sent to a file or a pipe)"
+             run it in a terminal (not with its output or errors sent to a file or a pipe)"
                 .into(),
         ));
     }
@@ -1848,6 +1850,10 @@ fn share(uv: &UnlockedVault, names: &[String], file: &Path, with_totp: bool) -> 
             ui::warn(&format!("'{}' includes the private SSH key.", e.name()));
         }
     }
+    // From here on the screen and the scrollback are cleared however this
+    // ends: Enter, an error, or Ctrl+C at the question (the line is read in
+    // cooked mode, so Ctrl+C is a SIGINT that would skip every `Drop`).
+    let clear = ClearScreenGuard::new();
     ui::print_secret_line(&format!("{} ", ui::bold("Share password:")), &password)?;
     drop(password);
     ui::info("1. Send the file to the other person (Signal, e-mail, a USB stick, …).");
@@ -1858,10 +1864,45 @@ fn share(uv: &UnlockedVault, names: &[String], file: &Path, with_totp: bool) -> 
     ));
     ui::info("Delete the file once they have it; it opens with the share password alone.");
     // Off the screen and out of the scrollback once it is written down.
-    prompt::line("Press Enter when you have the share password (it is then cleared from the screen) ")?;
-    ui::clear_screen();
+    let _ =
+        prompt::line("Press Enter when you have the share password (it is then cleared from the screen) ");
+    drop(clear);
     ui::success(&format!("Share file: {shown}. The share password was cleared from the screen."));
     Ok(())
+}
+
+/// Clears the screen and the scrollback when dropped, and on Ctrl+C while it
+/// lives (then the process ends with 130, as Ctrl+C would). For a secret
+/// that is shown once in the terminal, such as the share password.
+struct ClearScreenGuard {
+    old: libc::sighandler_t,
+}
+
+/// What `ui::clear_screen` writes: clear, clear the scrollback, cursor home.
+const CLEAR_ALL: &[u8] = b"\x1b[2J\x1b[3J\x1b[H";
+
+extern "C" fn clear_and_exit(_: libc::c_int) {
+    // SAFETY: write(2) and _exit(2) are async-signal-safe; the buffer is static.
+    unsafe {
+        libc::write(2, CLEAR_ALL.as_ptr().cast(), CLEAR_ALL.len());
+        libc::_exit(130);
+    }
+}
+
+impl ClearScreenGuard {
+    fn new() -> ClearScreenGuard {
+        // SAFETY: installs a handler that only calls async-signal-safe functions.
+        let old = unsafe { libc::signal(libc::SIGINT, clear_and_exit as *const () as libc::sighandler_t) };
+        ClearScreenGuard { old }
+    }
+}
+
+impl Drop for ClearScreenGuard {
+    fn drop(&mut self) {
+        // SAFETY: puts back the handler that was there before.
+        unsafe { libc::signal(libc::SIGINT, self.old) };
+        ui::clear_screen();
+    }
 }
 
 fn import_vault(uv: &mut UnlockedVault, file: &Path) -> Result<()> {
@@ -1885,7 +1926,11 @@ fn import_vault(uv: &mut UnlockedVault, file: &Path) -> Result<()> {
     }
     // The file opens with its password alone: offer to get rid of it.
     let shown = ui::safe(&file.display().to_string(), false);
-    if prompt::stdin_is_tty() && prompt::confirm(&format!("Overwrite and delete {shown} now?"))? {
+    // Never offer that for this vault's own file, backup or pre-update copy.
+    if !uv.paths().owns(file)
+        && prompt::stdin_is_tty()
+        && prompt::confirm(&format!("Overwrite and delete {shown} now?"))?
+    {
         import::overwrite_and_remove(file)?;
         ui::success(&format!("{shown} overwritten and deleted."));
     }
