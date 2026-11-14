@@ -486,6 +486,15 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   fail without the fix (import succeeded; `list` printed the escape).
   `every_encrypted_field_is_validated_resealed_and_merged` now uses a real
   TOTP secret as the "different" value (imports check it).
+  After review (security-opus, low): `validate_line` trims before it
+  looks for control characters, so `\r`, `\x0b`, `\x0c` and U+0085 at
+  either end of a one-line field or the TOTP secret slipped through. The
+  check now demands the value be exactly what a setter would store
+  (`is_ok_and(|t| t == v)`, as for tags); setters and migrations trim, so
+  real exports pass. Tested per field with `x\r`, `\u{85}x`, `\u{b}x`,
+  `\u{c}x\r` (fails without the fix). The item name in the message is cut
+  to 40 characters (reviewer-sonnet). README: an export from an older
+  CakePass with a value today's setters refuse is refused as a whole.
 
 ## Still to do
 

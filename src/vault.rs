@@ -520,10 +520,15 @@ impl Entry {
     /// a vault that already holds such a value still opens; the output side
     /// makes those values harmless.)
     pub fn check_incoming(&self, key: &ItemKey) -> Result<()> {
+        // The name, cut short: it comes from the file and may be long.
+        let mut shown: String =
+            self.name.chars().take(40).map(|c| if c.is_control() { '?' } else { c }).collect();
+        if self.name.chars().count() > 40 {
+            shown.push('…');
+        }
         let bad = |what: &str| {
             Error::InvalidInput(format!(
-                "the file to import is not valid: item '{}' has an invalid {what}; nothing was imported",
-                self.name.replace(char::is_control, "?")
+                "the file to import is not valid: item '{shown}' has an invalid {what}; nothing was imported"
             ))
         };
         if validate_name(&self.name).ok() != Some(self.name.as_str()) {
@@ -540,8 +545,14 @@ impl Entry {
             ("security code", self.cvv(key)?),
             ("public key", self.public_key(key)?),
         ];
+        // Exactly as a setter would have stored it: `validate_line` trims
+        // first, and whitespace control characters (\r, \x0b, \x0c, U+0085)
+        // at either end would otherwise never be looked at. The setters and
+        // the migrations store trimmed values, so a real export always passes.
         for (what, v) in &lines {
-            validate_line(what, v).map_err(|_| bad(what))?;
+            if !validate_line(what, v).is_ok_and(|t| t == v.as_str()) {
+                return Err(bad(what));
+            }
         }
         let notes = self.notes(key)?;
         if notes.len() > MAX_FIELD_LEN || notes.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
@@ -554,7 +565,8 @@ impl Entry {
             return Err(bad("passphrase"));
         }
         let totp = self.totp_secret(key)?;
-        let totp_ok = validate_line("", &totp).is_ok_and(|v| v.is_empty() || Totp::parse(v).is_ok());
+        let totp_ok = validate_line("", &totp)
+            .is_ok_and(|v| v == totp.as_str() && (v.is_empty() || Totp::parse(v).is_ok()));
         if !totp_ok {
             return Err(bad("TOTP secret"));
         }
@@ -1726,6 +1738,25 @@ mod tests {
             assert!(!m.contains('\u{1b}') && !m.contains("0;X"), "the value is not in the message: {m}");
             assert_eq!(mine.to_json().unwrap().as_slice(), &before[..], "{f}: the vault is unchanged");
         }
+        // Whitespace control characters at either end, which trimming would
+        // hide from the check (one-line fields and the TOTP secret).
+        let line_fields = ["username", "email", "url", "expiry", "cvv", "public_key", "totp_secret"];
+        for field in line_fields {
+            let v = if field == "totp_secret" { TOTP_SEED } else { "x" };
+            for edge in [format!("{v}\r"), format!("\u{85}{v}"), format!("\u{b}{v}"), format!("\u{c}{v}\r")] {
+                let mut bad = item.clone();
+                bad["entries"][0]["name"] = "Evil".into();
+                bad["entries"][0][format!("{field}_sealed")] = k.seal(field, &edge).unwrap().into();
+                let result = load(&item).merge(&load(&bad), &k, &k);
+                assert!(matches!(result, Err(Error::InvalidInput(_))), "{field}: {edge:?} was imported");
+            }
+        }
+        // A long name is cut short in the message.
+        let mut bad = item.clone();
+        bad["entries"][0]["name"] = "N".repeat(150).into();
+        bad["entries"][0]["url_sealed"] = k.seal("url", osc).unwrap().into();
+        let Err(Error::InvalidInput(m)) = load(&item).merge(&load(&bad), &k, &k) else { panic!("imported") };
+        assert!(m.contains(&format!("'{}…'", "N".repeat(40))) && !m.contains(&"N".repeat(41)), "{m}");
         // Too long, and a TOTP secret that is not one.
         let long = "x".repeat(MAX_FIELD_LEN + 1);
         for (f, v) in [
