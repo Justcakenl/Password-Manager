@@ -1,6 +1,6 @@
 # Progress: `cakepass` (CakePass)
 
-Last updated: step 14 (editable screen tabs) and the desktop entry and app icon; content schema still 5.
+Last updated: the version on the opening screen (cherry-picked onto main); content schema still 5.
 Repository: `Justcakenl/Password-Manager`, branch `main` (private until it is made public).
 
 ## Maintainer checklist: manual testing on a real Arch machine
@@ -395,6 +395,17 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   (with `check()`, and again `--nocheck` after a new commit) against a
   `file://` copy of this repository; the GitHub URL itself only works once
   `main` is pushed.
+
+- [x] **The version on the opening screen** (branch
+  `feature/version-on-login-main`: `da8f98c` from `feature/version-on-login`
+  cherry-picked onto `main`, so it can be merged without the 2FA, 16a/16b
+  and sharing branches; asked for by the user, approved by reviewer-sonnet
+  and security-opus). `logo::tagline` prints the version (`logo::VERSION`,
+  "v0.4.0") small (dim) and centered under the tagline, so the login
+  screen, the setup and `cakepass logo` show it. The screen's title bar
+  shows "v0.4.0 · locks in 4:59" when the subtitle keeps its full width.
+  Tests: `empty_vault_shows_how_to_start` (title bar), tests/tui.rs
+  `hidden_tabs_from_the_settings_file` (opening screen in a pty).
 
 ## Still to do
 

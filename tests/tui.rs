@@ -545,6 +545,8 @@ fn hidden_tabs_from_the_settings_file() {
         .assert()
         .success();
     let mut t = v.pty(&[], &[], 80, 24);
+    // The opening screen shows the version, small, under the logo.
+    t.wait_for(concat!("v", env!("CARGO_PKG_VERSION")));
     t.login();
     t.wait_for("All 1   Logins 0   Notes 0");
     let bar = t.screen().lines().nth(1).unwrap_or_default().to_string();

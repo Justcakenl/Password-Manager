@@ -137,6 +137,8 @@ fn empty_vault_shows_how_to_start() {
     assert!(s.contains("Your vault is empty."), "{s}");
     assert!(s.contains("Press a to add your first item"));
     assert!(s.contains("locks in 5:00"));
+    let version = concat!("v", env!("CARGO_PKG_VERSION"), " · locks in 5:00");
+    assert!(s.lines().next().unwrap().contains(version), "the version, small, in the title bar: {s}");
     assert!(s.lines().last().unwrap().contains("? help"), "the key hints are on the last line");
 }
 
