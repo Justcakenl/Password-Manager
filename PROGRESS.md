@@ -1,6 +1,6 @@
 # Progress: `cakepass` (CakePass)
 
-Last updated: step 17 (sharing items with another CakePass); content schema still 5.
+Last updated: step 18 (the version on the opening screen); content schema still 5.
 Repository: `Justcakenl/Password-Manager`, branch `main` (private until it is made public).
 
 ## Maintainer checklist: manual testing on a real Arch machine
@@ -523,6 +523,16 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   Open questions for security review: password vs. public keys (age/X25519,
   a new dependency) — password for now; 2FA secret included by default with
   a warning (not opt-in).
+
+- [x] **Step 18: the version on the opening screen** (branch
+  `feature/version-on-login`, from `feature/share-items`; asked for by the
+  user). `logo::tagline` prints the version (`logo::VERSION`, "v0.4.0")
+  small (dim) and centered under the tagline, so the login screen, the
+  setup and `cakepass logo` show it. The screen's title bar shows
+  "v0.4.0 · locks in 4:59" when the subtitle keeps its full width (so
+  not in a narrow window). Tests: `empty_vault_shows_how_to_start` (title
+  bar), tests/tui.rs `hidden_tabs_from_the_settings_file` (the opening
+  screen in a pseudo-terminal). Seen in tmux at 80×24.
 
 ## Still to do
 
