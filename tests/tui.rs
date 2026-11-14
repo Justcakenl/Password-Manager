@@ -653,7 +653,8 @@ fn share_items_in_a_terminal_and_add_them_elsewhere() {
     assert!(screen.contains("'GitHub': its 2FA secret was left out"), "{screen}");
     let line = screen.lines().find(|l| l.starts_with("Share password:")).expect(&screen);
     let password = line.trim_start_matches("Share password:").trim().to_string();
-    assert_eq!(password.split('-').count(), 6, "{password}");
+    // Six words; a few list words have a dash of their own (t-shirt, yo-yo).
+    assert!((6..=12).contains(&password.split('-').count()), "{password}");
     t.send("\r");
     assert_eq!(t.wait_exit(), 0);
     // Taken off the screen and out of the scrollback after Enter.

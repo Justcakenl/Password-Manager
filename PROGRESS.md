@@ -555,6 +555,12 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   clear; and `2>/dev/null`: refused, no file), `Pty::spawn_with`;
   `importing_the_vaults_own_backup_does_not_offer_to_delete_it` in
   tests/tui.rs and app/tests.rs (both checked to fail without `owns`).
+  Remaining risk (accepted by security-opus): only SIGINT clears the share
+  password; after Ctrl+\\ (SIGQUIT) or `kill` it stays in the scrollback.
+  Test fix (found by reviewer-sonnet): the two "6 words" checks split on
+  `-`, but four list words have a dash themselves (`drop-down`, `felt-tip`,
+  `t-shirt`, `yo-yo`), so about 0.3% of runs counted 7. They now accept 6
+  to 12 parts.
 
 ## Still to do
 

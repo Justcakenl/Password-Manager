@@ -551,7 +551,8 @@ fn share_an_item_and_add_it_in_another_cakepass() {
     let Some(Modal::Message(m)) = t.app.modals.last() else { panic!("no message: {}", t.screen()) };
     let line = m.lines.iter().find(|l| l.starts_with("Share password:")).unwrap().clone();
     let password = line.trim_start_matches("Share password:").trim().to_string();
-    assert_eq!(password.split('-').count(), 6);
+    // Six words; a few list words have a dash of their own (t-shirt, yo-yo).
+    assert!((6..=12).contains(&password.split('-').count()), "{password}");
     assert!(m.lines.iter().any(|l| l.contains("ANOTHER way")));
     assert!(file.exists());
     t.key(Key::Enter);
