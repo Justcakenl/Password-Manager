@@ -23,6 +23,10 @@ pub enum ConfirmAction {
     Discard,
     /// Read the vault again after another window changed it.
     Reload,
+    /// Share this item: also its 2FA secret? (default no)
+    ShareTotp(String),
+    /// After an import: overwrite and delete the file? (default no)
+    DeleteFile(std::path::PathBuf),
 }
 
 pub struct Confirm {
@@ -122,6 +126,13 @@ pub enum PromptPurpose {
     Reload,
     /// The current master password, before switching to this security level.
     ConfirmLevel(SecurityLevel),
+    /// Where to write the share file for this item (and whether its 2FA
+    /// secret goes along).
+    ShareTo(String, bool),
+    /// Which export or share file to add.
+    ImportFrom,
+    /// The password of this export or share file.
+    ImportPassword(std::path::PathBuf),
 }
 
 pub struct Prompt {
@@ -315,6 +326,15 @@ pub struct Message {
     pub warning: bool,
 }
 
+/// A message may show a secret once (the share password): its text is
+/// wiped when the dialog closes.
+impl Drop for Message {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.lines.iter_mut().for_each(Zeroize::zeroize);
+    }
+}
+
 impl Message {
     pub fn new(title: &str, lines: Vec<String>, warning: bool) -> Message {
         Message { title: title.into(), lines, warning }
@@ -358,6 +378,8 @@ impl HelpPage {
                     ("", "the 2FA tab lists every item with a code; there Enter or c copies it, a adds one"),
                     ("p", "copy the public key of an SSH key"),
                     ("f", "pin or unpin as a favorite (★; favorites come first)"),
+                    ("x", "share the item: an encrypted file plus a generated password for someone else"),
+                    ("i", "add the items of a file someone shared with you (or an export)"),
                     ("a  n", "add an item"),
                     ("e", "edit the selected item"),
                     ("d  Del", "delete it (asks first)"),

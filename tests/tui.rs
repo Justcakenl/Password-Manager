@@ -164,6 +164,18 @@ fn set_size(fd: i32, w: u16, h: u16) {
 
 impl Pty {
     fn spawn(args: &[&str], env: &[(&str, String)], extra: &[(&str, &str)], w: u16, h: u16) -> Pty {
+        Pty::spawn_with(args, env, extra, w, h, false)
+    }
+
+    /// As `spawn`; with `stderr_to_null` stderr goes to /dev/null (`2>/dev/null`).
+    fn spawn_with(
+        args: &[&str],
+        env: &[(&str, String)],
+        extra: &[(&str, &str)],
+        w: u16,
+        h: u16,
+        stderr_to_null: bool,
+    ) -> Pty {
         // SAFETY: plain libc calls on descriptors we own; checked below.
         let (master, slave) = unsafe {
             let m = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
@@ -191,7 +203,7 @@ impl Pty {
             .envs(extra.iter().copied())
             .stdin(Stdio::from(slave.try_clone().unwrap()))
             .stdout(Stdio::from(slave.try_clone().unwrap()))
-            .stderr(Stdio::from(slave));
+            .stderr(if stderr_to_null { Stdio::null() } else { Stdio::from(slave) });
         // SAFETY: setsid and ioctl are async-signal-safe; this makes the
         // pseudo-terminal the controlling terminal (/dev/tty), as in a real login.
         unsafe {
@@ -615,6 +627,100 @@ fn passwd_rekeys_the_pre_update_copies_and_offers_to_delete_older_ones() {
     assert_eq!(t.wait_exit(), 0);
     assert!(!older.exists(), "deleted after yes");
     assert!(opens(&copy, PW) && !opens(&copy, PW3));
+}
+
+#[test]
+fn share_items_in_a_terminal_and_add_them_elsewhere() {
+    let v = Vault::new();
+    let add = |name: &str, pw: &str| {
+        v.cmd()
+            .args(["add", name, "-u", "john", "-e", "", "--url", "", "-t", ""])
+            .write_stdin(format!("{PW}\n{pw}\n"))
+            .assert()
+            .success();
+    };
+    add("GitHub", "gh-shared-1");
+    add("Bank", "bank-shared-2");
+    add("Private", "not-shared-3");
+    let seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+    v.cmd().args(["edit", "github", "--totp"]).write_stdin(format!("{PW}\n{seed}\n")).assert().success();
+    let file = v.dir.path().join("for-jane.cakepass");
+    let f = file.to_str().unwrap();
+    let mut t = v.pty(&["share", "github", "bank", "--to", f], &[], 100, 30);
+    t.wait_for("Master password");
+    t.send(&format!("{PW}\r"));
+    t.wait_for("Press Enter when you have the share password");
+    let screen = t.screen();
+    assert!(screen.contains("2 items shared (encrypted)"), "{screen}");
+    assert!(screen.contains("'GitHub': its 2FA secret was left out"), "{screen}");
+    let line = screen.lines().find(|l| l.starts_with("Share password:")).expect(&screen);
+    let password = line.trim_start_matches("Share password:").trim().to_string();
+    // Six words; a few list words have a dash of their own (t-shirt, yo-yo).
+    assert!((6..=12).contains(&password.split('-').count()), "{password}");
+    t.send("\r");
+    assert_eq!(t.wait_exit(), 0);
+    // Taken off the screen and out of the scrollback after Enter.
+    let out = t.output();
+    let after = &out[out.rfind("\x1b[3J").expect("scrollback cleared")..];
+    assert!(!after.contains(&password), "the password is gone from the screen");
+
+    // Ctrl+C at the question clears it too (and makes no difference to the file).
+    let other = v.dir.path().join("second.cakepass");
+    let mut c = v.pty(&["share", "bank", "--to", other.to_str().unwrap()], &[], 100, 30);
+    c.wait_for("Master password");
+    c.send(&format!("{PW}\r"));
+    c.wait_for("Press Enter when you have the share password");
+    let line = c.screen().lines().find(|l| l.starts_with("Share password:")).unwrap().to_string();
+    let second = line.trim_start_matches("Share password:").trim().to_string();
+    c.send("\x03");
+    assert_eq!(c.wait_exit(), 130, "ends as Ctrl+C does");
+    let out = c.output();
+    let after = &out[out.rfind("\x1b[3J").expect("scrollback cleared on Ctrl+C")..];
+    assert!(!after.contains(&second), "the password is gone after Ctrl+C");
+    assert!(other.exists());
+
+    // With stderr not in the terminal (2>/dev/null) the clearing could not
+    // reach the screen: refused before anything is made or shown.
+    let third = v.dir.path().join("third.cakepass");
+    let mut q =
+        Pty::spawn_with(&["share", "bank", "--to", third.to_str().unwrap()], &v.envs(), &[], 100, 30, true);
+    q.send(&format!("{PW}\r"));
+    assert_ne!(q.wait_exit(), 0);
+    assert!(!q.output().contains("Share password"), "{}", q.output());
+    assert!(!third.exists());
+    // Someone else adds them: only the two items, without the 2FA secret.
+    let w = Vault::new();
+    w.cmd().args(["import", f]).write_stdin(format!("{PW}\n{password}\n")).assert().success();
+    let show = |name: &str| {
+        let o = w.cmd().args(["get", name, "--show"]).write_stdin(format!("{PW}\n")).output().unwrap();
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    assert!(show("github").contains("gh-shared-1") && show("bank").contains("bank-shared-2"));
+    assert!(show("private").is_empty(), "only the chosen items");
+    w.cmd().args(["get", "github", "--totp"]).write_stdin(format!("{PW}\n")).assert().failure();
+}
+
+#[test]
+fn importing_the_vaults_own_backup_does_not_offer_to_delete_it() {
+    let v = Vault::new();
+    for name in ["One", "Two"] {
+        v.cmd()
+            .args(["add", name, "-u", "john", "-e", "", "--url", "", "-t", ""])
+            .write_stdin(format!("{PW}\npw-{name}\n"))
+            .assert()
+            .success();
+    }
+    let backup = v.dir.path().join("vault.enc.bak");
+    assert!(backup.exists());
+    let mut t = v.pty(&["import", backup.to_str().unwrap()], &[], 100, 30);
+    t.wait_for("Master password");
+    t.send(&format!("{PW}\r"));
+    t.wait_for("assword");
+    t.send(&format!("{PW}\r"));
+    assert_eq!(t.wait_exit(), 0, "{}", t.screen());
+    assert!(t.screen().contains("item(s) added"), "{}", t.screen());
+    assert!(!t.output().contains("Overwrite and delete"), "{}", t.screen());
+    assert!(backup.exists());
 }
 
 #[test]

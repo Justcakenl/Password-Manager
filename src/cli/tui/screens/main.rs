@@ -147,6 +147,8 @@ impl App {
             Key::Char('t') => self.copy_field(CopyWhat::Totp),
             Key::Char('p') => self.copy_field(CopyWhat::PublicKey),
             Key::Char('f') => self.toggle_favorite(),
+            Key::Char('x') => self.ask_share(),
+            Key::Char('i') => self.ask_import(),
             Key::Char('a' | 'n') => self.open_add(),
             Key::Char('e') => self.open_edit(),
             Key::Delete | Key::Char('d') => self.ask_delete(),

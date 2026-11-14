@@ -183,6 +183,12 @@ pub fn execute(uv: &mut UnlockedVault, cmd: Cmd, in_shell: bool) -> Result<()> {
             }
             export(uv, &file)
         }
+        Cmd::Share { names, to, with_totp } => {
+            if in_shell {
+                reconfirm(uv)?;
+            }
+            share(uv, &names, &to, with_totp)
+        }
         Cmd::Import { file } => import_vault(uv, &file),
         Cmd::ImportCsv { file } => import_csv(uv, &file),
         Cmd::Generate { opts, show, save } => {
@@ -1794,6 +1800,111 @@ fn export(uv: &UnlockedVault, file: &Path) -> Result<()> {
     Ok(())
 }
 
+/// `cakepass share NAME... --to FILE`: only these items, in a new file with
+/// a generated password (6 diceware words, about 77 bits: a weak password
+/// could make the file crackable, so you cannot choose one). The password
+/// is shown once, only in a terminal, and taken off the screen (and out of
+/// the scrollback) after Enter: it is all that protects the file, so it
+/// must never end up in a log or a pipe. It reaches the other person
+/// another way than the file.
+fn share(uv: &UnlockedVault, names: &[String], file: &Path, with_totp: bool) -> Result<()> {
+    use std::io::IsTerminal;
+    // stdout shows the password; stderr carries the clearing afterwards, so
+    // both must be the terminal (not `> file`, not `2>/dev/null`).
+    if !io::stdout().is_terminal() || !io::stderr().is_terminal() || !prompt::stdin_is_tty() {
+        return Err(Error::InvalidInput(
+            "cakepass share shows the share password once and only in a terminal; \
+             run it in a terminal (not with its output or errors sent to a file or a pipe)"
+                .into(),
+        ));
+    }
+    if fs::symlink_metadata(file).is_ok() {
+        return Err(Error::AlreadyExists(file.to_path_buf()));
+    }
+    let key = uv.item_key();
+    let mut chosen: Vec<&Entry> = Vec::new();
+    for n in names {
+        let e = find_entry(&uv.vault, key, n)?;
+        if !chosen.iter().any(|c| c.name() == e.name()) {
+            chosen.push(e);
+        }
+    }
+    let password = generator::generate_passphrase(&PassphraseOptions::default())?;
+    let list: Vec<&str> = chosen.iter().map(|e| e.name()).collect();
+    let n = uv.share_to(file, &list, password.as_bytes(), with_totp)?;
+    let shown = ui::safe(&file.display().to_string(), false);
+    ui::success(&format!("{} shared (encrypted) in {shown}", plural(n, "item", "items")));
+    for e in &chosen {
+        match (e.has_totp(), with_totp) {
+            (true, true) => ui::warn(&format!(
+                "'{}' includes its 2FA secret: the other person can make your 2FA codes too.",
+                e.name()
+            )),
+            (true, false) => ui::info(&format!(
+                "'{}': its 2FA secret was left out (add --with-totp to share it as well).",
+                e.name()
+            )),
+            _ => {}
+        }
+        if e.kind() == Kind::SshKey && e.has_password() {
+            ui::warn(&format!("'{}' includes the private SSH key.", e.name()));
+        }
+    }
+    // From here on the screen and the scrollback are cleared however this
+    // ends: Enter, an error, or Ctrl+C at the question (the line is read in
+    // cooked mode, so Ctrl+C is a SIGINT that would skip every `Drop`).
+    let clear = ClearScreenGuard::new();
+    ui::print_secret_line(&format!("{} ", ui::bold("Share password:")), &password)?;
+    drop(password);
+    ui::info("1. Send the file to the other person (Signal, e-mail, a USB stick, …).");
+    ui::info("2. Tell them the share password ANOTHER way (in person, by phone), never with the file.");
+    ui::info(&format!(
+        "3. They add the items to their own CakePass with i in the screen, or: cakepass import {}",
+        ui::safe(&file.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default(), false)
+    ));
+    ui::info("Delete the file once they have it; it opens with the share password alone.");
+    // Off the screen and out of the scrollback once it is written down.
+    let _ =
+        prompt::line("Press Enter when you have the share password (it is then cleared from the screen) ");
+    drop(clear);
+    ui::success(&format!("Share file: {shown}. The share password was cleared from the screen."));
+    Ok(())
+}
+
+/// Clears the screen and the scrollback when dropped, and on Ctrl+C while it
+/// lives (then the process ends with 130, as Ctrl+C would). For a secret
+/// that is shown once in the terminal, such as the share password.
+struct ClearScreenGuard {
+    old: libc::sighandler_t,
+}
+
+/// What `ui::clear_screen` writes: clear, clear the scrollback, cursor home.
+const CLEAR_ALL: &[u8] = b"\x1b[2J\x1b[3J\x1b[H";
+
+extern "C" fn clear_and_exit(_: libc::c_int) {
+    // SAFETY: write(2) and _exit(2) are async-signal-safe; the buffer is static.
+    unsafe {
+        libc::write(2, CLEAR_ALL.as_ptr().cast(), CLEAR_ALL.len());
+        libc::_exit(130);
+    }
+}
+
+impl ClearScreenGuard {
+    fn new() -> ClearScreenGuard {
+        // SAFETY: installs a handler that only calls async-signal-safe functions.
+        let old = unsafe { libc::signal(libc::SIGINT, clear_and_exit as *const () as libc::sighandler_t) };
+        ClearScreenGuard { old }
+    }
+}
+
+impl Drop for ClearScreenGuard {
+    fn drop(&mut self) {
+        // SAFETY: puts back the handler that was there before.
+        unsafe { libc::signal(libc::SIGINT, self.old) };
+        ui::clear_screen();
+    }
+}
+
 fn import_vault(uv: &mut UnlockedVault, file: &Path) -> Result<()> {
     // An export file has only a password; a copy of a vault may need its key file.
     let header = storage::read_header(file)?;
@@ -1812,6 +1923,16 @@ fn import_vault(uv: &mut UnlockedVault, file: &Path) -> Result<()> {
     ui::success(&format!("{added} item(s) added, {skipped} already present (skipped)."));
     if added > 0 {
         ui::info("Items with an existing name got a sequence number, e.g. \"GitHub (2)\".");
+    }
+    // The file opens with its password alone: offer to get rid of it.
+    let shown = ui::safe(&file.display().to_string(), false);
+    // Never offer that for this vault's own file, backup or pre-update copy.
+    if !uv.paths().owns(file)
+        && prompt::stdin_is_tty()
+        && prompt::confirm(&format!("Overwrite and delete {shown} now?"))?
+    {
+        import::overwrite_and_remove(file)?;
+        ui::success(&format!("{shown} overwritten and deleted."));
     }
     Ok(())
 }
