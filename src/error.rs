@@ -23,11 +23,41 @@ pub enum Error {
     #[error("the vault file uses an unknown algorithm")]
     UnsupportedAlgorithm,
 
+    #[error(
+        "the vault file uses a feature this version of cakepass does not know; use a newer version of cakepass"
+    )]
+    UnsupportedFeature,
+
     #[error("invalid key derivation parameters: {0}")]
     InvalidKdfParams(&'static str),
 
+    #[error("{}", not_enough_memory(*.argon_mib, *.needed_mib, *.available_mib, *.unlocking))]
+    NotEnoughMemory {
+        /// What Argon2 itself allocates.
+        argon_mib: u64,
+        /// The free memory needed for that (Argon2 may use at most 75 % of it).
+        needed_mib: u64,
+        /// What the kernel reports as available right now.
+        available_mib: u64,
+        /// Opening an existing vault (true) or choosing a level (false).
+        unlocking: bool,
+    },
+
     #[error("decryption failed: wrong master password, or the file is damaged or has been tampered with")]
     Decrypt,
+
+    #[error(
+        "this vault needs its key file as well as the master password, but no key file was given. \
+         Supply it with --keyfile PATH, with the environment variable CAKEPASS_KEYFILE, or once with \
+         `cakepass config set keyfile PATH`"
+    )]
+    KeyFileRequired,
+
+    #[error("the key file {} cannot be read: {reason}", .path.display())]
+    KeyFileUnreadable { path: PathBuf, reason: String },
+
+    #[error("unusable key file: {0}")]
+    KeyFileInvalid(String),
 
     #[error("the file is too large to be a vault")]
     TooLarge,
@@ -73,4 +103,24 @@ pub enum Error {
 
     #[error("file error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+/// The text of [`Error::NotEnoughMemory`].
+fn not_enough_memory(argon_mib: u64, needed_mib: u64, available_mib: u64, unlocking: bool) -> String {
+    let why = format!(
+        "needs about {needed_mib} MiB of free memory (Argon2id uses {argon_mib} MiB, and CakePass never \
+         takes more than 75 % of what is free, so the system is not forced to kill it), but only about \
+         {available_mib} MiB is free on this computer right now"
+    );
+    if unlocking {
+        format!(
+            "this vault was made with a security level that this computer cannot run at the moment: it {why}. \
+             Close other programs and try again, or open the vault on a computer with more memory"
+        )
+    } else {
+        format!(
+            "this security level {why}. Choose a lower level (for example `--level standard`), \
+             or close other programs first"
+        )
+    }
 }

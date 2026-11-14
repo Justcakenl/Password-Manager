@@ -1,19 +1,22 @@
 # Progress: `cakepass` (CakePass)
 
-Last updated: step 10 (the screen with arrow keys, version 0.3.0).
-Repository: `Justcakenl/passcode-manager-cli-`, branch `main` (private until it is made public).
+Last updated: step 15 (the 2FA tab, and setting up 2FA in the screen); content schema still 5.
+Repository: `Justcakenl/Password-Manager`, branch `main` (private until it is made public).
 
 ## Maintainer checklist: manual testing on a real Arch machine
 
-**Already installed CakePass?** Update and try the new screen:
+**Already installed CakePass?** Update and try the new security features:
 
 ```bash
 cakepass --update        # or run the one-line installer below again
-cakepass                 # log in → the screen with arrow keys; press ? for help
+cakepass security        # level, key file, unlock time measured on your laptop
 ```
 
-Then go through the new "Screen mode (arrow keys)" checks in the
-"Testing on Arch" list below. **First time?** Follow these steps:
+Then go through the new "Security levels and key files" checks (step 11) in
+the "Testing on Arch" list below. Note: after 0.4.0 has saved your vault once,
+CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
+
+**First time?** Follow these steps:
 
 1. **Log in to GitHub** (only needed while the repository is private):
    ```bash
@@ -22,12 +25,12 @@ Then go through the new "Screen mode (arrow keys)" checks in the
    ```
 2. **Run the one-line installer**:
    ```bash
-   gh api repos/Justcakenl/passcode-manager-cli-/contents/install.sh \
+   gh api repos/Justcakenl/Password-Manager/contents/install.sh \
      -H "Accept: application/vnd.github.raw" | bash
    ```
    It installs the build tools, downloads the code into `~/cakepass`, builds,
    tests and installs CakePass, and then starts the setup wizard. If something
-   fails, copy the error message and ask Claude. **Keep `~/cakepass`**:
+   fails, copy the error message and open an issue on GitHub. **Keep `~/cakepass`**:
    `cakepass --update` uses it.
 3. **In the wizard** choose: animation on or off, the auto-lock minutes, and a
    strong master password (write it on paper too).
@@ -142,12 +145,441 @@ Then go through the new "Screen mode (arrow keys)" checks in the
     with the arrow keys and verify it with `cakepass get`, paste, auto-lock,
     Ctrl+C/SIGTERM restore the terminal, resize, the line-mode fallbacks).
 
+- [x] **Step 11 – Security levels, key files, passphrase offer (version 0.4.0)**.
+  Release notes:
+  - **Added – security levels.** `standard` (Argon2id 64 MiB), `high` (256 MiB,
+    the new default for new vaults) and `maximum` (1 GiB), all t=3, p=4.
+    `init`/`setup --level …`; the `--kdf-*` flags still override. The setup
+    wizard asks for the level and measures the unlock time on this computer
+    once one is chosen. Existing vaults keep their settings.
+  - **Added – `cakepass security`.** Shows the level (or "custom"), Argon2
+    settings, key file and the unlock time measured now; `--level`,
+    `--new-keyfile PATH` and `--no-keyfile` re-key the vault with the same
+    master password (fresh salt, all items re-sealed, `.bak` re-encrypted),
+    also inside `cakepass shell`.
+  - **Added – key files.** `cakepass keyfile create PATH` (64 random bytes,
+    never overwrites, mode 600). A vault can require a key file: its pepper
+    (BLAKE2b-256 with the label "cakepass keyfile v1") is Argon2id's secret
+    input. Given with `--keyfile PATH`, `CAKEPASS_KEYFILE` or the `keyfile`
+    setting (`cakepass config set keyfile PATH|none`; only the path is stored).
+    Read before the password prompt; clear messages when it is missing,
+    unreadable (USB stick not plugged in), a symlink, not a regular file, empty
+    or over 1 MiB; a warning when others can read it or it sits next to the
+    vault. A wrong key file gives the same error as a wrong password.
+  - **Added – memory guard.** Argon2 never runs when it would need more than
+    75 % of the free memory (`MemAvailable`): a clear message instead of the
+    OOM killer, when opening, creating, re-keying and measuring.
+  - **Added – passphrase offer.** The setup wizard offers to make a 7-word
+    EFF passphrase (≈ 90 bits), shows it once ("write it down now") and asks to
+    type it back before the vault is created; it clears the screen afterwards.
+  - **Added – screen mode.** A "Security level" row in settings (← → choose,
+    measured the first time a level is shown, Enter applies after the master
+    password); key file status; re-checks, password change and reload re-read
+    the key file.
+  - **Changed – file format 3.** A flags byte (bit 0: key file required) in the
+    authenticated header. Formats 1 and 2 stay readable; a format 2 vault is
+    written as format 3 on its next save (reading alone does not rewrite it).
+    **CakePass 0.3 cannot open format 3.**
+  - **Changed.** Export files use the vault's Argon2 settings (never lighter
+    than Standard); `info` shows the level and key file; `UnlockedVault::
+    change_password` became `rekey`; `KdfParams::DEFAULT` became `STANDARD`
+    (plus `HIGH`, `MAXIMUM`) and `weaker_than_default` became
+    `weaker_than_standard` (same behaviour: a warning below Standard).
+  - **Security.** The `blake2` `zeroize` feature (no new crate) wipes the
+    BLAKE2b state Argon2 uses for its first hash, and the stack is scrubbed
+    after each Argon2 run. Memory scan of the release build with a key-file
+    vault, idle and unlocked (line mode and screen mode, also after re-keying):
+    master password, key file bytes (or any 16-byte piece) and pepper found 0
+    times. New "How strong is this, really?" section in the README.
+  - Tests: known-answer vectors from the reference Argon2 C code (with a
+    secret) and Python's BLAKE2b; format 3 bit flips, truncations, flag
+    tampering, v1/v2 → v3; key-file file rules; re-keying; the memory guard;
+    the wizard via pipes (passphrase typed back, key file); pseudo-terminal
+    tests for the settings row and logging in with a key file.
+
+- [x] **Step 12 – Bank cards, SSH keys and two-factor codes (TOTP)**:
+  - **Bank cards** (`--type card`): cardholder name, card number (the secret:
+    hidden prompt, copied by `get`, shown by `--show`), expiry date, security
+    code (CVV, hidden), notes and tags. `edit --expiry`, `--cvv`, `--password`
+    (a new card number); the interactive edit asks per field.
+  - **SSH keys** (`--type ssh-key`): private key (multi-line, pasted; the
+    secret), public key, passphrase (hidden), host, notes and tags.
+    `get --copy-public` copies the public key; `edit --public-key`,
+    `--key-passphrase`, `--password` (a new private key), `--url` (the host).
+  - **TOTP** on any item: `add --totp` / `edit --totp` ask (hidden) for the
+    base32 secret or an `otpauth://totp/…` link (algorithm SHA1/SHA256/SHA512,
+    digits and period from the link; RFC 6238 defaults otherwise); `edit
+    --no-totp` removes it. `get --totp` computes the current code, shows the
+    seconds left and copies it (cleared after 20 s). The secret is checked when
+    it is stored; codes are never stored. New module `src/totp.rs`.
+  - **CSV import** reads a TOTP column (`login_totp`, `TOTP`, `otpauth`, …);
+    an unusable value (Steam, `hotp`) is left out with a warning, the item is
+    still imported.
+  - **Screen mode**: Cards and SSH tabs; the form has the per-type fields (CVV
+    and passphrase masked like the password, "(unchanged)" when editing, the
+    private key is a multi-line field); details show the new fields; `t`
+    shows and copies the TOTP code (computed per frame, hidden after 10 s or
+    when the selection changes), `p` copies a public key. A multi-line masked
+    field now puts the cursor on the right column.
+  - **Content schema 5**: five new encrypted fields (expiry, CVV, TOTP secret,
+    public key, key passphrase), each through `ItemKey::seal`/`open`, in
+    `validate()`, `reseal()` and `merge()`'s duplicate check. Schema 1–4
+    vaults upgrade automatically when opened (schema 4 gains five encrypted
+    empty fields); the file format (3) is unchanged.
+  - **New dependencies**: `hmac` 0.13 and `sha1` 0.11 (RustCrypto, with their
+    `zeroize` feature; `sha2` got its `zeroize` feature too). Base32 is our own
+    (about 35 lines, an encoding, not a primitive).
+  - Tests: the RFC 6238 Appendix B vectors (SHA-1, SHA-256 and SHA-512, 8
+    digits, all six timestamps), the RFC 4226 Appendix D HOTP values, the
+    RFC 4648 base32 vectors, otpauth parsing and refusals, `Debug` never
+    shows a secret; encryption round trip per new type, re-sealing, merge,
+    validation of tampered content, migration 3 → 5 and 4 → 5 (also through
+    a real schema-4 vault file of 0.4); CLI add/get/edit for cards, SSH keys and
+    TOTP, the CSV TOTP column, and no readable card/key/TOTP data in any file
+    written; screen-mode unit tests and a pseudo-terminal test (add a card and
+    an SSH key with the arrow keys, read the TOTP code, check with `get`).
+
+- [x] **Step 13 – Password health check, identity documents, favorites,
+  clipboard time, man page** (no new content schema: still 5):
+  - **`cakepass audit`** (alias `health`): weak, reused, stale and empty
+    passwords and API keys, offline. Weak = the same zxcvbn estimate and
+    `MIN_SCORE` (3 of 4) as master passwords; reused = constant-time
+    comparison of the decrypted secrets, as `merge` does; stale = not
+    changed in more than 365 days (`--older-than DAYS`); empty = no
+    password. Logins and API keys only. Prints item names and counts only,
+    exit code 0. New library module `src/audit.rs`.
+  - **Identity documents** (`--type identity`; also `id`, `passport`,
+    `iban`, `licence`, `membership`): full name, the number (hidden prompt;
+    the secret that is copied and shown with `--show`), who issued it, an
+    expiry date, notes, tags. `edit --password`, `--expiry`, `-u`, `--url`;
+    the interactive edit asks per field. No new encrypted field: full name =
+    `username`, number = `password`, issuer = `url`, and the `expiry` field
+    of cards.
+  - **Favorites**: `edit --favorite` / `--no-favorite`, `list --favorites`
+    (`-f`), "Favorite: yes" in `get`. In the screen `f` pins or unpins; a ★
+    (`*` without UTF-8) before the name, favorites first in the list. A
+    plain flag next to the tags: old vaults simply have none.
+  - **Clipboard time**: `cakepass config set clip-time SECONDS` (5 to 300,
+    default 20), stored as `clip_time_seconds` in the settings file, used by
+    `get`, `generate` and the screen (its countdown too). The clearing helper
+    receives the time as an argument and clamps it again.
+  - **Man page**: `cakepass man` prints roff made by `clap_mangen` from the
+    clap definition; the PKGBUILD installs it as `cakepass.1`, next to the
+    shell completions it already installed.
+  - **Screen mode**: an IDs tab (the tab bar keeps its counts in 80 columns
+    with a narrower gap), the identity fields in the form, the details pane
+    and the help page; the type chooser fits six types in 60 columns.
+  - **New dependency**: `clap_mangen` 0.3 (the clap project's man page
+    generator, same family as `clap_complete`).
+  - Tests: audit (every category, exact reuse groups, a wrong key is an
+    error, the report holds no secret; through the CLI: no fed-in secret
+    anywhere in stdout or stderr), identity round trip / re-key / search,
+    favorites (not serialized while false, an old vault opens as is, pinning
+    keeps the date, kept through re-keying, not part of duplicate
+    detection), clip-time parsing, bounds and clamping, the settings file;
+    CLI tests for identities, favorites, audit, `config set clip-time` and
+    the man page, plus a test with a stand-in `wl-copy` that proves the
+    clipboard is cleared after the configured 5 s (not the default 20);
+    screen-mode tests (identity form, `f`, the star and its ASCII fallback,
+    the countdown with another clip time) and a pseudo-terminal test.
+  - Fixed a rare flaky test from step 12: it looked for the CVV "737" in the
+    vault JSON, which random base64 ciphertext can contain (about 0.6 % of
+    runs); short values are now matched as whole JSON strings.
+
+- [x] **Step 14 – Editable screen tabs** (no vault change; content schema
+  still 5):
+  - **Hide the tabs you do not use**: a Tabs row in the screen's settings
+    (`s`): ← → choose a type, Enter or Space shows or hides its tab (✔ / ✖,
+    `+` / `x` without UTF-8; one type at a time in a narrow window). The
+    same setting from the command line:
+    `cakepass config set hidden-tabs api,ssh-key` (any name `--type`
+    takes), `none` or an empty value shows them all again.
+  - Stored as `hidden_tabs=api,ssh-key` in the settings file, next to
+    `clip_time_seconds`; no line while nothing is hidden. A bad value in the
+    file means nothing hidden.
+  - **All** cannot be hidden (`config set` refuses it with a clear
+    message). Hiding a tab hides no item: they stay under All, and `list`,
+    `search`, `get`, `audit` and the line mode never read this setting.
+    ← → and Tab skip hidden tabs; when the tab you were on is hidden, the
+    list goes to All.
+  - Tests: parsing (names, aliases, order, repeats, `all`, typos), the
+    settings file; a CLI test that `list`/`search`/`get`/`shell`/`audit`
+    still show an item of a hidden type; screen-mode tests (the Tabs row,
+    skipping, every tab hidden, ASCII and 60 columns); a pseudo-terminal
+    test that reads the setting at start. Four existing settings-screen
+    tests now step past the new row.
+
+- [x] **Desktop entry and app icon** (packaging only, with step 14):
+  `packaging/cakepass.desktop` (`Exec=cakepass`, `Terminal=true`,
+  `Icon=cakepass`) and the app icon in `assets/icons/` (SVG and 32/256/512 px
+  PNG, copied unmodified from the maintainer's `CakePass-logo/` set; source
+  and checksums in `assets/icons/README.md`). The PKGBUILD installs them
+  into `/usr/share/applications` and the hicolor icon theme and now depends
+  on `hicolor-icon-theme`, which owns those folders; pacman's
+  `gtk-update-icon-cache` and `update-desktop-database` hooks refresh the
+  caches. `tests/packaging.rs` checks that every file the PKGBUILD installs
+  exists with mode 0644, that each PNG has the size of its folder, and the
+  desktop entry's keys.
+
+- [x] **Security-audit fixes** (after the security audit of this branch):
+  - **Copied secrets are marked sensitive.** `wl-copy --sensitive` offers
+    the `x-kde-passwordManagerHint` type, so clipboard histories that
+    respect it (KDE Klipper; Omarchy's, whose `capture.sh` otherwise saved
+    every copied password into a 0644 JSON file before CakePass cleared
+    the clipboard) skip the entry. Checked on Omarchy: the type is listed,
+    a watcher sees `CLIPBOARD_STATE=sensitive`, and the history file does
+    not change. Only wl-clipboard 2.3+ knows the option; an older `wl-copy`
+    (found from its `--help`) copies without it instead of failing. `xclip`
+    cannot offer the hint next to the text (tested: a second `-t` replaces
+    the first, so `TARGETS` then lacks every text type), so X11 stays a
+    documented limitation.
+  - **The SSH private key is hidden while typed in the line mode.**
+    `add --type ssh-key` and `edit --password` read it with
+    `prompt::hidden_multiline`: echo and the terminal's line editing off
+    (as `rpassword` does for one line), each line only shows a `│`, the
+    terminal is restored afterwards and on Ctrl+C (which cancels). Same
+    end rules as notes (a line with only a dot, or Ctrl+D); from a pipe
+    nothing changes. The screen's form already hid it. Tests: the editing
+    rules byte by byte, and two pseudo-terminal tests (a pasted key never
+    appears in the output and is stored exactly; Ctrl+C leaves echo on).
+
+- [x] **Installer: a choice about the desktop shortcut.** After installing,
+  `install.sh` asks "Add CakePass to your application menu (a desktop
+  icon)? [Y/n]" (Enter = yes; asked only in a terminal and without
+  `--yes`, which keeps it). No, or `--no-shortcut`: it removes
+  `/usr/share/applications/cakepass.desktop` with sudo (the icon files
+  stay) and says how to keep it out for good: an update reinstalls the
+  file, unless `NoExtract = usr/share/applications/cakepass.desktop` is in
+  `/etc/pacman.conf`. `--uninstall` already removes the whole package,
+  this file included. Tests: kept with `--yes` and without a terminal,
+  removed with `--no-shortcut`, and the question answered with Enter and
+  with `n` in a real terminal.
+
+- [x] **Fixed: closing the window could end in a kill by SIGHUP** (a race
+  that existed before step 12; seen as a rare failure of
+  `ctrl_c_and_signals_restore_the_terminal` when `makepkg` ran the whole
+  suite). Root cause, measured with temporary instrumentation (signal and
+  exit-path order recorded in atomics, the handler's thread id via
+  `gettid`): closing a pty wakes the program's `poll` with POLLHUP
+  *before* the kernel sends the SIGHUP of that hangup. Usually the SIGHUP
+  is already pending when `poll` returns, and the handler runs first; under
+  load it can come later. In every killed run the loop had ended on POLLHUP
+  with no SIGHUP handled, the vault had been wiped, the old (default)
+  actions had been put back, and the late SIGHUP then killed the process in
+  the rest of its exit, before it was done (the screen buffers were only
+  wiped after that point, so they may not have been). The
+  watchdog thread was ruled out: every handled SIGHUP ran on the main
+  thread, and the handler is process-wide anyway (`start_watchdog` runs
+  before `Terminal::enter`, so the signal mask plays no part).
+  Fix (`src/cli/tui/term.rs`): a hangup (POLLHUP, EOF, EIO or SIGHUP) is
+  remembered and SIGHUP is then left ignored instead of reset to the
+  default; and the screen buffers are wiped *before* any old signal action
+  comes back. Test: `a_late_sighup_after_closing_the_window_does_not_kill_the_clean_exit`
+  holds the program (debug-only hook `CAKEPASS_TEST_AFTER_LEAVE`) right
+  after it left the screen mode and sends a SIGHUP then: before the fix
+  it died by signal 1 every time, now it exits 0. Stress test of all of
+  `tests/tui.rs`: before, 1 failure in 24 runs one at a time, and 14 of 151
+  hangups killed with three loops side by side; after, 150 of 150 runs
+  with three loops side by side and 100 of 100 one at a time.
+
+- [x] **AUR package `cakepass-git`** (`packaging/aur/PKGBUILD` +
+  `.SRCINFO`): builds the newest commit of `main` from GitHub
+  (`git+https://…#branch=main`), with a real `pkgver()` (Cargo.toml
+  version + commit count + short hash, e.g. `0.4.0.r20.98a672d`),
+  `provides=cakepass`, `conflicts=(cakepass kluis)`. Same build, tests and
+  files as `packaging/arch/PKGBUILD`, except `source-dir` and the update
+  timer (`cakepass --update` rebuilds a local checkout; for this package
+  the AUR helper updates, `yay -Syu --devel`). `tests/packaging.rs`
+  compares the two `package()` functions file by file and checks that
+  `.SRCINFO` matches the PKGBUILD. Proven end to end with a real `makepkg`
+  (with `check()`, and again `--nocheck` after a new commit) against a
+  `file://` copy of this repository; the GitHub URL itself only works once
+  `main` is pushed.
+
+- [x] **Step 15: a 2FA tab in the screen** (branch `feature/2fa-tab`, from
+  `main`), asked for as "like Proton Authenticator". A new `Tab::TwoFactor`
+  ("2FA", last in the tab bar, so ← from All reaches it) lists every item
+  with a TOTP secret, of any type. Each row: name, account (username, or
+  the host of an SSH key), the current code in two halves (`287 082`) and
+  the seconds left, red in the last 5. The details show the code and the
+  **next code**. Enter and `c` copy the code there (`t` everywhere, as
+  before); `v` still shows the password. Search, favorites and paging work
+  as in the other tabs. Empty: "No two-factor codes yet" with the
+  `cakepass edit NAME --totp` hint. Codes are computed per frame from the
+  decrypted secret (`Totp`/`TotpCode` are `ZeroizeOnDrop`; the grouped text
+  is `Zeroizing`), never kept; under any dialog they are dots and the
+  details fall back to "set (t shows it)". The tab bar now keeps 12 columns
+  for the search instead of 18, so all eight tabs keep their counts in 80
+  columns. Files: `src/cli/tui/app.rs` (`Tab::TwoFactor`, `Tab::shows`),
+  `src/cli/tui/screens/main.rs` (`draw_code_rows`, keys, hints, details),
+  `src/cli/tui/screens/dialog.rs` (help). Tests: two new
+  (`the_2fa_tab_lists_every_code_like_an_authenticator_app`,
+  `the_2fa_tab_without_codes_says_how_to_add_one`), and the tab-order
+  tests updated for the eighth tab (`tests/tui.rs`
+  `hidden_tabs_from_the_settings_file`;
+  `with_every_type_tab_hidden_only_all_and_2fa_are_left`). Waits for
+  review (reviewer-sonnet) and security audit (security-opus).
+  **Setting it up in the screen (asked for next):** every add/edit form
+  has an optional, hidden "2FA secret" field (`Field::Totp`, before
+  Notes; all types, like the CLI). It works like the CVV: dots,
+  "(unchanged)" when editing, Ctrl+R shows it, Ctrl+U + save removes the
+  code. It is checked with `Totp::parse` before saving, so a typo gives
+  "Not a valid 2FA secret: …" (the library's reason, never the input) and
+  the cursor goes back to the field; the save message adds "Its 2FA code
+  is in the 2FA tab." On the 2FA tab `a` (or `n`) opens a new `Picker`
+  dialog (`dialog.rs`): "+ New login" and every item without a code;
+  typing narrows it; Enter opens that item's edit form on the 2FA field
+  (`App::open_edit_at`), or the add form for a new login. A form error now
+  clears a message that would be drawn over it. Tests: three new
+  (`add_a_2fa_code_from_the_2fa_tab`,
+  `a_new_login_with_a_2fa_code_and_removing_a_code`, and the empty-tab
+  text), three form walks updated for the extra field
+  (`add_a_login_with_the_form`, `add_an_api_key_by_pasting_and_a_note`,
+  `tests/tui.rs` `add_an_item_with_the_arrow_keys_then_read_it_with_the_cli`).
+  Then (after both approved `cadca72`): `Totp::parse_new` with a minimum
+  of 10 bytes for new secrets (see "Decisions made"), tests in
+  `totp.rs`, the form test and `tests/cli.rs`; the README says the 2FA tab
+  shows every code and the next one at once; a code that cannot be
+  decrypted says "can't decrypt" (fits the code column). security-opus's
+  last nit is fixed too: the too-short message rounds the base32 count up
+  ((n * 8).div_ceil(5)), so 4 bytes reads "about 7 characters", not 6.
+  Not in this step: scanning a QR code (no camera or image code in
+  CakePass; if ever, via an outside tool such as `zbarimg` and `parse_new`,
+  never an image library inside the process), a warning for short secrets
+  on CSV import, and a login with only a 2FA code and no password (a login
+  still needs a password, as before).
+
 ## Still to do
 
+- [ ] **Step 16 (next, before any new feature): two open findings from
+  security-opus's audit**, each on its own branch from `main` after
+  `feature/2fa-tab` is merged:
+  1. `cakepass list` can print terminal escape codes that came in with
+     an import (item names/fields from a CSV or export): control
+     characters must be neutralised wherever such text is printed.
+  2. The `vault.enc.pre-update-<time>` copies made by `cakepass --update`
+     still open with the OLD master password after it is changed: decide
+     with security review whether a password change re-keys, deletes or
+     at least clearly warns about them (as it already does for `.bak`).
+  Work out the exact scope from the audit text before implementing.
+- [x] **Pushed `main` to GitHub** (now at `f91117e`). HTTPS with a GitHub
+  account password no longer works (GitHub rejects it: use a token or
+  SSH); an SSH key for this account already existed on this machine and
+  wasn't wired up, so `origin` on both this checkout and `~/cakepass`
+  (the one `cakepass --update` uses) was switched to
+  `git@github.com:Justcakenl/Password-Manager.git`. `install.sh` and the
+  `cakepass-git` AUR package now actually build what they describe.
+- [ ] **Run `cakepass update --yes` to update the real installed
+  package** (needs the maintainer's sudo password at the terminal, which
+  no agent session can supply — this is the one remaining step for the
+  machine this was developed on to actually run the new version).
+- [ ] **Minor test-coverage gap (not a functional bug)**: no installer
+  test proves `--yes` suppresses the shortcut question specifically when
+  a real terminal is present (the existing `--yes` test runs without a
+  terminal, where the question can't appear regardless of `--yes`).
+  Reading `install.sh` directly confirms the actual logic is correct
+  (`$YES` is checked before asking); only the test coverage for that one
+  combination is missing. Add a terminal test with `--yes --no-setup`
+  and a typed `n` that expects no question and the file kept.
+- [ ] **Leftover branch on GitHub**: `claude/blissful-dijkstra-etqobs`
+  (one commit, "Docs: repository is public, remove private-repo
+  instructions", not merged into `main`). Harmless, just needs a
+  decision: merge it or delete the remote branch.
+- [ ] **Publish `cakepass-git` on the AUR** (`main` is pushed, so the
+  package already builds the real thing; this step is only about making
+  it visible on the AUR itself, whenever you want that):
+  1. An AUR account with your SSH public key, then
+     `git clone ssh://aur@aur.archlinux.org/cakepass-git.git`, copy
+     `PKGBUILD` and `.SRCINFO` into it (only those two), commit and push.
+  2. After every later change to `packaging/aur/PKGBUILD`: regenerate
+     `.SRCINFO` (`cargo test` fails until you do) and push both to the AUR
+     again. A new commit on `main` alone needs no AUR push: `--devel`
+     helpers rebuild from git.
 - [ ] Check the "Testing on Arch" list below on your own computer.
 - [ ] GitHub repository description still says "Beta-test"; change it in the
   repository settings.
 - [ ] Ideas for later: see the README, "For later".
+- [ ] **Before the first public release**: give unknown `Kind` values a
+  permissive deserializer plus a clear error message ("this vault uses an
+  item type this version doesn't know: '…'") instead of the generic
+  "damaged vault" message. Not a blocker for merging step 12/13 (nothing
+  has shipped yet, so no real vault can hit this today) — deepseek's step
+  13 review recommended filing it as a pre-release item specifically, not
+  a merge gate.
+- [x] **App icon / desktop integration**: done on `feature/tabs-and-icon`
+  (see "Done" above). Only the `cakepass-app-icon*` files were used (there
+  is no `cakepass-app-icon-1024.png`; the 1024 px file in that folder is
+  the `cakepass-icon` variant). The branding logo in
+  `docs/cakepass-logo.png` was left as it is, as asked for this round.
+  The original scope note: Assets
+  already exist at `/mnt/data/Claude code pr/CakePass-logo/`: SVG sources
+  (`cakepass-logo*.svg`, `cakepass-icon*.svg`, dark and monochrome
+  variants) and rasterized app icons at 32/256/512/1024 px
+  (`cakepass-app-icon-{32,256,512,1024}.png`), distinct from the
+  branding logo already used in `docs/cakepass-logo.png`/README. Scope
+  for whoever picks this up: add a `.desktop` file (`Exec=cakepass`,
+  `Terminal=true`, `Icon=cakepass`) and install the app-icon PNGs into the
+  XDG hicolor icon theme paths via `packaging/arch/PKGBUILD`, so CakePass
+  gets a proper icon in application launchers; check whether the existing
+  `docs/cakepass-logo.png` should be swapped for one of the new logo
+  variants while in there. This is packaging/asset work, not a numbered
+  "Step" with tests.
+- [ ] **Decide whether/when to merge `feature/card-totp-sshkey` into `main`.**
+  It is finished, reviewed and tested (see "Checks" below for step 12) but
+  deliberately left unmerged until the maintainer says so. Same decision
+  will apply to `feature/identity-favorites-audit` once step 13 clears
+  review and test.
+- [ ] **Step 14 is implemented on `feature/tabs-and-icon`** (see "Done"
+  above), branched from `feature/identity-favorites-audit`, and waits for
+  the independent review and test pass. The agreed scope was:
+  - **Editable TUI tabs**: the screen mode's tab bar (All/Logins/API
+    keys/Notes/Cards/SSH/IDs — 7 already, and counts had to be narrowed to
+    fit 80 columns for step 13) should be user-configurable: let someone
+    hide a tab they don't use (e.g. the API tab) rather than always
+    showing all of them. Hiding a tab does not hide its items — they stay
+    visible under "All" and in `list`/`search`; it only removes that one
+    filtered view. Suggested design: a setting (same settings file as
+    `clip-time`/`lock-timeout`), e.g. `hidden_tabs` as a comma list of
+    kind names, defaulting to empty (nothing hidden); a CLI command to
+    toggle it (`cakepass config set hide-tab api` / `show-tab api`) and/or
+    a row in the screen's own settings page (`s`) to tick/untick each
+    kind, consistent with how animation and auto-lock are already toggled
+    there. "All" itself should probably stay un-hideable. Work out the
+    exact design the same way `Card`/`Identity` were designed (check for
+    reuse before adding anything new) once this is picked up — this is a
+    scope note, not a finished spec.
+- [ ] **Step 13 is implemented on `feature/identity-favorites-audit`** (see
+  "Done" above), branched from `feature/card-totp-sshkey`, and waits for the
+  independent review and test pass. The agreed scope was:
+  - **Password health check**: an offline report of weak (reuse the
+    existing `zxcvbn` dependency), reused (compare decrypted secrets across
+    items, same technique `Vault::merge`'s duplicate detection already
+    uses) and old/stale (based on `modified()`, already stored) passwords.
+    No new dependency, no network use.
+  - **`Kind::Identity`**: personal documents — passport/ID number, bank
+    account (IBAN), membership numbers. Design the field mapping the same
+    way `Card`/`SshKey` were designed (reuse the generic sealed fields
+    where the meaning transfers; add new sealed fields only where it
+    genuinely doesn't, exactly like `expiry_sealed`/`cvv_sealed` were
+    added for `Card`) before implementing.
+  - **Polish bundle** (all agreed, low effort, no architecture change):
+    favorites/pinning on an item, a configurable clipboard-clear time
+    (`--clip-time` / a setting, replacing the hard-coded 20 s), a man page
+    (`clap_mangen`).
+  - **Explicitly not now**: hardware key (FIDO2/YubiKey `hmac-secret`) —
+    agreed to revisit after the above; it touches `crypto.rs`'s key
+    derivation itself and needs a new HID dependency, unlike the
+    additions above.
+  - **Process used for step 12, repeat for step 13**: a coder profile
+    implements on a feature branch and runs `cargo test` +
+    `cargo clippy --all-targets -- -D warnings` + `cargo fmt --check`
+    itself before handing off; an independent reviewer profile (different
+    model family than the coder) reviews the diff and re-runs the same
+    checks; an independent tester profile builds it and drives the CLI by
+    hand against a throwaway vault. Step 12 caught one real bug this way
+    (a private key displayed with corrupting indentation) that neither the
+    coder's own tests nor a first pass of review had caught — repeat the
+    same split for step 13 rather than skipping the independent passes.
 
 ## Decisions made
 
@@ -185,12 +617,132 @@ See `docs/DESIGN.md` for the explanation. In short:
   mode), not "back to the login screen".
 - Tests shorten the idle lock with `CAKEPASS_TEST_LOCK_SECS`; only debug builds
   read it (the release build ignores it), and it can only make the time shorter.
+- Security levels instead of numbers: Standard 64 MiB, High 256 MiB (default),
+  Maximum 1 GiB; t=3, p=4. Argon2 may use at most 75 % of the free memory.
+  Tests pretend to have little memory with `CAKEPASS_TEST_MEM_AVAILABLE_KIB`
+  (debug builds only).
+- Key file = Argon2id's secret input (pepper from BLAKE2b-256 with a label);
+  format 3 records "key file required" in the authenticated header. No key-file
+  fingerprint: a wrong key file and a wrong password are indistinguishable.
+- `cakepass security --new-keyfile PATH` (not `--keyfile`): `--keyfile` is the
+  global option for the *current* key file, and clap cannot have both.
+- Only the key file's path is stored (settings); the key file and its pepper
+  are read again whenever needed and wiped after each Argon2 run.
+- A format 2 vault is not rewritten just because it was read; it becomes
+  format 3 on its next save.
+- The free memory needed is shown honestly with the 75 % rule (High needs
+  ~342 MiB free, Maximum ~1.4 GB), not as the bare Argon2 size.
+- Step 12: a card and an SSH key reuse the generic fields (cardholder =
+  username, card number / private key = the password field, host = URL), so
+  `secret()`, copying and `--show` need no per-type code. Every item has all
+  ten encrypted fields (unused ones hold an encrypted empty string): one shape
+  for validate/re-seal/merge. `merge()` compares all decrypted fields in
+  constant time instead of a fixed tuple, so a future field cannot be
+  forgotten there.
+- TOTP is a field, not a type, and any type may carry one. The secret is
+  stored as given (base32 or the `otpauth://` link, so its digits, period and
+  algorithm are kept) and parsed when it is stored, so a typo is refused at
+  once instead of when you need a code. Only `otpauth://totp` is accepted:
+  `hotp` (a counter that must be saved after every use) and Steam Guard
+  (another alphabet) would be silently wrong codes.
+- The new CLI options (`--totp`, `--cvv`, `--key-passphrase`, `--public-key`,
+  `--expiry`) are flags that ask in a prompt; none takes a value (a test checks
+  this for every one of them). `edit --key-passphrase` and not `--passphrase`:
+  `--passphrase` already exists on `edit` through the generator options (it
+  makes a diceware passphrase for a new password).
+- A card number, CVV, TOTP secret and key passphrase are asked once, not
+  twice: they are copied from somewhere, not invented, and the TOTP secret is
+  validated. Card numbers are free text like a password (no Luhn check):
+  spaces, dashes and test numbers are the user's business.
+- Card numbers, CVVs and private keys are not searchable (like passwords);
+  the cardholder name and the host are (like the username and URL).
+- The screen mode keeps the generator (Ctrl+G) for logins and API keys only;
+  a card number or private key cannot be generated.
+- A TOTP code is computed for every frame from the decrypted secret and wiped
+  right after; only the item's name and a deadline are kept to know what to
+  show. Copying a code does not reveal the password.
+- CSV import: an unusable TOTP value drops only the TOTP secret (with a
+  warning that counts them), never the item. The ambiguous headers `otp` and
+  `2fa` are not read as TOTP columns.
+- Step 13: the identity number is typed in a **hidden** prompt, like a card
+  number. It is the item's main secret (dots in `get` and the screen,
+  copied by default), so showing it while typing would put it in the
+  terminal's scrollback, which everything else avoids. A typo is caught with
+  `get --show`, as for cards.
+- One `identity` type for passports, ID cards, licences, bank accounts and
+  memberships, with no new encrypted field (the expiry field of cards is
+  reused). It may carry a TOTP secret like every type since step 12; that is
+  not blocked (blocking it would be the only exception of its kind).
+- The audit's "stale" threshold is 365 days by default (`--older-than`,
+  1 to 36 500). It uses the item's modification date, which every edit
+  changes (also of the notes or tags); the vault does not record when the
+  password itself changed. An unknown date (0) counts as stale. An item
+  without a password is reported only as "empty". Pinning a favorite does
+  not change the date, so it cannot hide a stale password.
+- The audit always exits with 0 (a report, as asked). It shows names only;
+  not even the zxcvbn advice, which can describe the password ("this is a
+  top-10 common password").
+- Clipboard time bounds: 5 to 300 seconds. Below 5 s there is no time to
+  paste; above 5 minutes a secret sits on the clipboard longer than the
+  default auto-lock. `config set clip-time` refuses values outside the
+  range with a clear message; a bad value in the settings file falls back to
+  20 s, and the helper clamps whatever it is given. It is a setting only,
+  not also a per-command `--clip-time` option (the setting covers `get`,
+  `generate`, the line mode and the screen alike, and a flag on every copy
+  command would be more surface for little gain).
+- Favorites come first in the screen's list (a stable sort, trivial); the
+  `list` command keeps its plain name order (scripts may rely on it) and has
+  `--favorites` instead. Favorites are not part of duplicate detection on
+  import: a pinned copy of an item is still the same item.
+- `f` in the screen's list is now a shortcut, so typing `f` no longer starts
+  a search with that letter (a capital F still does).
+- Step 14: hidden tabs are one `hidden-tabs` setting holding the whole list
+  (like every other setting: one key, one line), not a `hide-tab` /
+  `show-tab` pair. Toggling one type at a time is what the Tabs row in the
+  screen is for; on the command line `config` shows the current list, so
+  setting the whole list is just as easy and keeps `config set` uniform.
+- "All" in the list is refused with a message rather than ignored, so a
+  command never silently does less than it was asked to. In the settings
+  file (which is forgiving everywhere) any bad value means "nothing hidden".
+- The Tabs row sits right after Auto-lock (with the other preferences,
+  before the master password and security level), so those two rows moved
+  down by one.
+- Step 15: the 2FA tab is a view, not a type, so it is not in
+  `hidden-tabs` and is always shown (like All); an empty one explains how
+  to add a code. It is last in the bar so ← from All reaches it in one
+  key and the order of the type tabs does not change.
+- On the 2FA tab the codes of all visible rows are shown at once, as in
+  every authenticator app: that is the point of the tab. A code is valid
+  for at most one period and is useless without the password, unlike the
+  password itself, which stays dots until revealed. Under a dialog the
+  codes are dots, like every other revealed secret.
+- Enter and `c` copy the code on the 2FA tab (the thing you came for);
+  `v` still shows the password there.
+- The 2FA secret is a form field (not a separate dialog) so adding and
+  editing work the same way for it as for every other field, and the
+  "add a code" picker only has to choose the item. The picker lists names
+  only, never a decrypted field.
+- `Totp::parse` accepts very short base32 text ("line one" = 4 bytes), so
+  text typed into the wrong field could pass as a secret. Agreed with the
+  security and code review: a strict `Totp::parse_new` for secrets entered
+  now (the screen's form, `add/edit --totp`) refuses fewer than 10 bytes
+  (80 bits, 16 characters; RFC 4226 asks 128, but the site chooses and 80
+  is the least seen in practice), with a message that gives only lengths.
+  Reading, computing codes, merging and CSV import keep the lenient
+  `parse`, so secrets already stored or imported go on working.
 
 ## Checks (latest step)
 
 | Check | Result |
 |---|---|
-| `cargo test` | 213 passed (74 library, 70 CLI/screen unit, 39 CLI integration, 5 screen in a pseudo-terminal, 12 update, 13 installer) |
+| `cargo test` (step 15) | 327 passed (122 library, 94 CLI/screen unit, 63 CLI integration, 14 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
+| Setting up 2FA in a real terminal (step 15, tmux, throwaway vault) | 2FA tab → `a` → typed "disc" → Enter → Discord's edit form on the 2FA secret → typed a test secret → Ctrl+S: "Item 'Discord' updated. Its 2FA code is in the 2FA tab." and its code in the list; at 80×24 and 60×16 |
+| 2FA tab in a real terminal (step 15, debug build in tmux, throwaway vault from a CSV with RFC test seeds) | at 100×28, 80×24 and 60×16: 6- and 8-digit codes with seconds left, next code in the details, Enter copies ("The TOTP code copied (wl-copy)"); all eight tabs with counts at 80 columns |
+| Known-answer tests (step 12) | TOTP: RFC 6238 Appendix B (SHA-1, SHA-256, SHA-512, all six times) and RFC 4226 Appendix D; base32: RFC 4648 section 10; cross-checked with an independent Python implementation (`hmac`/`hashlib`/`base64`) |
+| Known-answer tests (step 11) | Argon2id with a secret: vectors from the reference C implementation (libargon2 via argon2-cffi; the harness reproduces RFC 9106 first); key-file pepper: vectors from Python's `hashlib.blake2b(digest_size=32)` |
+| Unlock times (release, 4-core 2.1 GHz Xeon VM, step 11) | Standard ≈ 0.18–0.21 s, High ≈ 0.8–0.9 s, Maximum ≈ 3.6–3.8 s (first run once 5.9 s); wiping Argon2's freed memory is ~5–10 % of that |
+| Memory scan with a key-file vault (release, step 11) | idle and unlocked, line mode and screen mode, also after re-keying and measuring levels: master password (UTF-8/UTF-32), key file (64 bytes or any 16-byte window) and pepper (32 bytes or any 16-byte window) 0 times; a control (an item name) is found. Memory back to ~8.9 MB after a 256 MiB Argon2 run; no large mapping left. The same scan with the stack scrub and the `blake2` `zeroize` feature both switched off also found 0, so these two are defense in depth |
+| First-run wizard in a real pseudo-terminal (step 11) | level typo corrected, passphrase retyped wrong then right, screen + scrollback cleared, key file created, screen mode opened, key file found for a re-check |
 | Screen mode in a real pseudo-terminal | every screen at 80×24, 100×30, 70×30 and 60×16, in UTF-8, ASCII and `NO_COLOR`; add/edit/delete/search/paste/reveal/generator/settings, resize, too small, Ctrl+C, SIGTERM, auto-lock, `--no-tui`, `TERM=dumb` |
 | Memory scan of the screen mode (release build) | after revealing, hiding, editing and leaving: username, e-mail, URL, password, API key, notes 0 times as readable text; password/key/notes also 0 times in the screen buffer; only the cells of the item on screen hold its username/e-mail/URL |
 | Generator menu in a real pseudo-terminal (step 9) | regenerate, edit (own password), view, save, quit; `generate --save`, `add --generate`, `edit --generate` all driven and checked |
@@ -198,7 +750,9 @@ See `docs/DESIGN.md` for the explanation. In short:
 | `cargo audit` | no vulnerabilities |
 | `cargo build --release --locked` | succeeded |
 | Setup wizard in a real pseudo-terminal | answers visible, passwords hidden, settings and vault created |
-| Installer | tested end to end with a fake GitHub and fake `pacman`/`sudo`/`makepkg`/`cakepass` (piped like `curl \| bash`, truncated download, re-run, local changes, failed build, uninstall) |
+| Installer | tested end to end with a fake GitHub and fake `pacman`/`sudo`/`makepkg`/`cakepass` (piped like `curl \| bash`, truncated download, re-run, local changes, failed build, uninstall, the desktop-shortcut question answered in a real terminal); `shellcheck` 0.10.0: no findings |
+| Package build (step 14, Arch, real `makepkg --nocheck` into a scratch folder) | `makepkg --printsrcinfo` and the build succeed; the package holds `usr/share/applications/cakepass.desktop`, `usr/share/icons/hicolor/{32x32,256x256,512x512}/apps/cakepass.png` and `scalable/apps/cakepass.svg` (all 0644, identical to `assets/icons/`), depends on `hicolor-icon-theme`; `desktop-file-validate` passes (one hint: `Security` could also be listed with `System`). Not installed with pacman |
+| AUR package `cakepass-git` (real `makepkg` against a `file://` bare clone of this repo, the PKGBUILD changed only in its URL) | `makepkg --printsrcinfo` OK; full build with `check()`: all 8 test groups passed, package `cakepass-git-0.4.0.r19.0650bc8-1`; after a throwaway commit, `--nocheck`: "Updated version: cakepass-git 0.4.0.r20.98a672d-1", binary reports `commit 98a672d89ff4`; the package holds the same files as the local one minus `source-dir` and the update timer, licence under `licenses/cakepass-git/`. Not yet built from the real GitHub URL (needs `main` pushed) |
 
 ### Tested in a clean Arch Linux container (earlier step, as a normal user)
 
@@ -211,6 +765,104 @@ See `docs/DESIGN.md` for the explanation. In short:
 ## Testing on Arch
 
 Could NOT be tested in the cloud environment. Do this yourself and tick:
+
+### The 2FA tab – new in step 15
+
+- [ ] `cakepass`, then ←: the 2FA tab lists your items with a TOTP secret,
+      each code the same as in your phone's authenticator app, counting down
+- [ ] Enter on a row: "The TOTP code copied"; paste it on the site's login
+      page and it is accepted; the clipboard is empty after the clip time
+- [ ] `?` (help) on the 2FA tab: the codes behind it turn into dots
+- [ ] **Set up 2FA in the screen** for a real account: on the site turn on
+      an authenticator app, copy the secret under the QR code; in CakePass
+      ← (2FA tab), `a`, choose the account, paste, Ctrl+S; type the code
+      on the site to finish. It is accepted
+- [ ] `e` on that item: the 2FA secret says "(unchanged)"; a typo there
+      gives "Not a valid 2FA secret" and nothing is saved
+
+### Screen tabs, desktop entry and icon – new in step 14
+
+- [ ] After `makepkg -si`: CakePass shows up in your application launcher
+      (e.g. Walker on Omarchy) with the pink cake-padlock icon, and opens in
+      a terminal
+- [ ] In the screen, `s`, the Tabs row: hide API keys with → and Enter;
+      back in the list the tab is gone, ← → skip it, and your API keys are
+      still under All
+- [ ] `cakepass config` shows `hidden-tabs: api`; `cakepass list` still
+      lists your API keys; `cakepass config set hidden-tabs none` brings the
+      tab back
+
+### Identities, favorites, audit, clipboard time – new in step 13
+
+- [ ] `cakepass audit` on your real vault: the names it lists make sense
+      (weak, reused, stale), and nothing secret appears on screen
+- [ ] `cakepass config set clip-time 45`, then `cakepass get <item>`: the
+      message says 45 seconds, and the clipboard is empty after 45 s (not 20)
+- [ ] In the screen: `f` puts a ★ before an item and moves it to the top;
+      `cakepass list --favorites` shows it; `f` again unpins it
+- [ ] `cakepass add Passport --type identity`; the IDs tab shows it, the
+      number is dots until Enter
+- [ ] After `makepkg -si`: `man cakepass` opens the manual page
+
+### Cards, SSH keys and TOTP – new in step 12
+
+- [ ] Your existing vault opens after the update and everything is still there
+      (it is upgraded to content schema 5 on the next save)
+- [ ] **TOTP against your phone**: add the TOTP secret of a real account
+      (`cakepass edit <site> --totp`; most sites show the secret under the QR
+      code, "can't scan it?"). `cakepass get <site> --totp` shows the same code
+      as your authenticator app, and logging in with it works
+- [ ] In the screen: `t` on that item shows the code and the seconds left,
+      Ctrl+Shift+V pastes it, and after 20 s the clipboard is empty
+- [ ] **SSH key**: paste a real (test) private key in the screen form
+      (`a` → Type: SSH key → Private key, Ctrl+Shift+V); `cakepass get <name>
+      --show` prints it exactly, `cakepass get <name>` copies it (paste it into
+      a file and `ssh-keygen -y -f` on that file works), and `--copy-public`
+      copies the public key
+- [ ] **Card**: add one in the screen; number and CVV are dots until Enter;
+      `cakepass list` and the list in the screen show the cardholder, never the
+      number
+- [ ] Import a Bitwarden CSV export that has 2FA codes: the codes work, and a
+      Steam account (if you have one) gives the "WITHOUT their TOTP secret"
+      warning
+
+### Security levels and key files – new in step 11
+
+- [ ] `cakepass security` on your real vault: it shows `standard` (vaults made
+      before 0.4) and the unlock time measured on your laptop. Note the times of
+      the three levels: `cakepass security --level high`, then `cakepass security`
+      again; the same for `maximum`, then go back to the level you want
+- [ ] Unlocking at each level feels like the measured time (`time cakepass list`)
+- [ ] A big level on a busy laptop: open many browser tabs, then run
+      `cakepass security --level maximum` → either it works, or a clear
+      "needs about … MiB of free memory" message (never a crash or a frozen system)
+- [ ] **Key file on a USB stick**: plug in a stick, `cakepass keyfile create
+      /run/media/$USER/<stick>/cakepass.key`, then
+      `cakepass security --new-keyfile /run/media/$USER/<stick>/cakepass.key`;
+      `cakepass config` shows the path; `cakepass list` works with the stick in
+- [ ] **Unplug the stick** and run `cakepass list`: a plain message that the key
+      file cannot be read (with the path), asked *before* the password
+- [ ] Plug it in again; on FAT/exFAT you get a warning that others can read it
+      (expected; the stick itself must be kept safe)
+- [ ] **Wrong key file**: `cakepass keyfile create /tmp/other.key`, then
+      `CAKEPASS_KEYFILE=/tmp/other.key cakepass list` → the same message as a
+      wrong password, plus which key file was used
+- [ ] Copy the key file to a second stick, and open a copy of the vault with
+      that copy: `cakepass --keyfile <copy> --vault <vault copy> list`
+- [ ] `cakepass` (the screen): log in with the stick in; `s` → Security level
+      row: ← → shows "Measuring…" then the time per level; Enter + master
+      password switches; the `.bak` still opens (`cakepass --vault
+      ~/.local/share/cakepass/vault.enc.bak list`)
+- [ ] In the screen, change the master password with the stick in; unplug the
+      stick and try again → "Key file needed" message, nothing changed
+- [ ] `cakepass security --no-keyfile` → the password alone opens the vault;
+      `cakepass config` no longer shows the path
+- [ ] A fresh setup in a throw-away place (`CAKEPASS_VAULT=/tmp/t.enc
+      XDG_CONFIG_HOME=/tmp/tcfg cakepass setup`): choose a level, accept "Make a
+      strong passphrase for me?", write it down, type it back (the screen is
+      cleared afterwards), create a key file on the stick; then log in with it
+- [ ] `cakepass --update` with a key-file vault: the update never asks for the
+      key file; afterwards `cakepass list` works as before
 
 - [ ] **The one-line installer on a clean Arch install**, both commands from the
       README (`gh api … | bash` and the `curl … $(gh auth token)` variant).
@@ -233,7 +885,9 @@ Could NOT be tested in the cloud environment. Do this yourself and tick:
 - [ ] Clipboard and closing the terminal: start `cakepass get`, close the window
       at once; after 20 s the clipboard must still be empty
 - [ ] Clipboard history (Klipper/cliphist/CopyQ): check whether the password
-      stays in there. If so: turn the history off or exclude cakepass
+      stays in there. If so: turn the history off or exclude cakepass. On
+      Wayland, `wl-paste --list-types` right after `cakepass get` lists
+      `x-kde-passwordManagerHint` (Omarchy's history then skips it)
 - [ ] Hidden prompt: no characters appear while typing the master password,
       and Ctrl+C restores the terminal
 - [ ] Colors: green ✔ and yellow warnings; no color codes with `cakepass list | cat`

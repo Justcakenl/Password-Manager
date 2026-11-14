@@ -99,7 +99,7 @@ pub fn check() -> std::result::Result<(), Unavailable> {
 /// `CAKEPASS_TEST_LOCK_SECS`; release builds ignore that.
 fn lock_secs(cfg: &Config) -> u64 {
     let secs = cfg.lock_timeout_secs();
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "test-hooks"))]
     if let Some(s) = std::env::var("CAKEPASS_TEST_LOCK_SECS").ok().and_then(|v| v.parse::<u64>().ok()) {
         return secs.min(s.max(1));
     }
@@ -117,9 +117,12 @@ pub fn run(paths: &VaultPaths, cfg: &Config) -> Result<()> {
 pub fn run_unlocked(uv: UnlockedVault, notices: Vec<Notice>, cfg: &Config) -> Result<()> {
     let theme = Theme::detect(ui::color_on_stdout());
     let lock = lock_secs(cfg);
-    let copier: app::Copier = Box::new(commands::copy_secret);
+    // The clipboard is cleared after the configured time; the toast says the same.
+    let clear_secs = cfg.clip_time_secs;
+    let copier: app::Copier = Box::new(move |s: &str| commands::copy_secret(s, clear_secs));
     let now = Instant::now();
     let mut app = App::new(uv, cfg.clone(), config::path(), Duration::from_secs(lock), copier, now);
+    app.key_file = commands::key_file_path();
     app.show_notices(notices);
     prompt::mark_activity();
     term::set_lock_secs(lock);
@@ -129,6 +132,7 @@ pub fn run_unlocked(uv: UnlockedVault, notices: Vec<Notice>, cfg: &Config) -> Re
     let human = shell::describe(app.lock_secs());
     drop(app); // wipes the key and everything decrypted
     terminal.leave(true);
+    after_leave_hook();
     match result? {
         Exit::Quit | Exit::Lock => ui::success("🔒 CakePass locked; the key has been wiped from memory."),
         Exit::Idle => {
@@ -142,6 +146,24 @@ pub fn run_unlocked(uv: UnlockedVault, notices: Vec<Notice>, cfg: &Config) -> Re
         Exit::Hangup => {}
     }
     Ok(())
+}
+
+/// Debug builds (the tests) can hold the program right after it left the
+/// screen mode (the signal actions from before are back): with
+/// `CAKEPASS_TEST_AFTER_LEAVE=<file>` it creates that file and waits until it
+/// is removed (at most 10 s), so a test can send a signal exactly then.
+/// Release builds have no such pause.
+fn after_leave_hook() {
+    #[cfg(any(debug_assertions, feature = "test-hooks"))]
+    if let Some(marker) = std::env::var_os("CAKEPASS_TEST_AFTER_LEAVE") {
+        let marker = std::path::PathBuf::from(marker);
+        if std::fs::write(&marker, b"left\n").is_ok() {
+            let start = Instant::now();
+            while marker.exists() && start.elapsed() < Duration::from_secs(10) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
 }
 
 /// Draw, wait for keys (or time), handle them; until the app or a signal ends it.

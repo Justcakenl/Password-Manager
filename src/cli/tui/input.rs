@@ -241,7 +241,8 @@ impl TextInput {
             if self.multiline { self.text.split('\n').collect() } else { vec![&self.text] };
         let cur_line = if self.multiline { self.text[..self.cursor].matches('\n').count() } else { 0 };
         let col = match mask {
-            Some(_) => self.text[..self.cursor].chars().count(),
+            // One mask character per character, counted within the cursor's line.
+            Some(_) => self.text[self.line_start()..self.cursor].chars().count(),
             None => self.column(),
         };
         // Keep the cursor inside the visible window.

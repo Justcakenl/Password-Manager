@@ -13,6 +13,11 @@
 //! - Every change is saved at once with the library (`UnlockedVault::save`).
 //!   If saving fails the vault in memory is put back as it was, so memory and
 //!   file never differ.
+//! - A vault with a key file: only the key file's *path* is kept here. The
+//!   file is read again (and its pepper wiped right after) for each action
+//!   that needs it: re-checking the master password, re-keying, reloading.
+//! - Changing the security level re-checks the master password first, so a
+//!   typo can never re-key the vault under a password nobody knows.
 
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -20,9 +25,10 @@ use std::time::{Duration, Instant};
 
 use zeroize::Zeroizing;
 
-use cakepass::clipboard::CLEAR_AFTER_SECS;
-use cakepass::crypto::ItemKey;
-use cakepass::storage::UnlockedVault;
+use cakepass::crypto::{self, ItemKey, KdfParams, SecurityLevel};
+use cakepass::format::Credentials;
+use cakepass::keyfile::{self, LoadedKeyFile};
+use cakepass::storage::{self, UnlockedVault};
 use cakepass::vault::{Entry, Kind, Vault};
 use cakepass::{Error, Result};
 
@@ -32,8 +38,10 @@ use super::super::prompt;
 use super::grid::{Grid, Rect, wrap};
 use super::input::TextInput;
 use super::keys::{Event, Key};
-use super::screens::dialog::{Confirm, ConfirmAction, Help, HelpPage, Message, Prompt, PromptPurpose};
-use super::screens::form::Form;
+use super::screens::dialog::{
+    Confirm, ConfirmAction, Help, HelpPage, Message, Picked, Picker, Prompt, PromptPurpose,
+};
+use super::screens::form::{Field, Form};
 use super::screens::generator::{GenPrefs, GenTarget, Generator};
 use super::screens::settings::Settings;
 use super::screens::{self, Hint};
@@ -66,17 +74,37 @@ pub enum Tab {
     All,
     Logins,
     Api,
+    Cards,
+    Identities,
+    SshKeys,
     Notes,
+    /// Every item with a TOTP secret, whatever its type, with its current
+    /// code in the list (like an authenticator app). Not a type, so it is
+    /// not in the `hidden-tabs` setting either: it is always shown.
+    TwoFactor,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::All, Tab::Logins, Tab::Api, Tab::Notes];
+    /// Last, so ← from "All" goes straight to the codes.
+    pub const ALL: [Tab; 8] = [
+        Tab::All,
+        Tab::Logins,
+        Tab::Api,
+        Tab::Cards,
+        Tab::Identities,
+        Tab::SshKeys,
+        Tab::Notes,
+        Tab::TwoFactor,
+    ];
 
     pub fn kind(self) -> Option<Kind> {
         match self {
-            Tab::All => None,
+            Tab::All | Tab::TwoFactor => None,
             Tab::Logins => Some(Kind::Login),
             Tab::Api => Some(Kind::Api),
+            Tab::Cards => Some(Kind::Card),
+            Tab::Identities => Some(Kind::Identity),
+            Tab::SshKeys => Some(Kind::SshKey),
             Tab::Notes => Some(Kind::Note),
         }
     }
@@ -86,13 +114,48 @@ impl Tab {
             Tab::All => "All",
             Tab::Logins => "Logins",
             Tab::Api => "API keys",
+            Tab::Cards => "Cards",
+            Tab::Identities => "IDs",
+            // Short, so all seven tabs keep their counts in 80 columns.
+            Tab::SshKeys => "SSH",
             Tab::Notes => "Notes",
+            Tab::TwoFactor => "2FA",
         }
     }
 
-    pub fn step(self, delta: isize) -> Tab {
-        let i = Tab::ALL.iter().position(|&t| t == self).unwrap_or(0) as isize;
-        Tab::ALL[(i + delta).rem_euclid(4) as usize]
+    /// Whether this tab lists `e`.
+    pub fn shows(self, e: &Entry) -> bool {
+        match self {
+            Tab::TwoFactor => e.has_totp(),
+            t => t.kind().is_none_or(|k| e.kind() == k),
+        }
+    }
+
+    /// The tab of a type.
+    pub fn of(kind: Kind) -> Tab {
+        match kind {
+            Kind::Login => Tab::Logins,
+            Kind::Api => Tab::Api,
+            Kind::Card => Tab::Cards,
+            Kind::Identity => Tab::Identities,
+            Kind::SshKey => Tab::SshKeys,
+            Kind::Note => Tab::Notes,
+        }
+    }
+
+    /// The next (`delta` > 0) or previous tab that `shown` lets through,
+    /// going round. "All" is always shown, so there always is one.
+    pub fn step(self, delta: isize, shown: impl Fn(Tab) -> bool) -> Tab {
+        let n = Tab::ALL.len() as isize;
+        let mut i = Tab::ALL.iter().position(|&t| t == self).unwrap_or(0) as isize;
+        for _ in 0..n {
+            i = (i + delta.signum()).rem_euclid(n);
+            let t = Tab::ALL[i as usize];
+            if t == Tab::All || shown(t) {
+                return t;
+            }
+        }
+        Tab::All
     }
 }
 
@@ -109,6 +172,8 @@ pub enum Modal {
     Confirm(Confirm),
     Prompt(Prompt),
     Generator(Box<Generator>),
+    /// The 2FA tab's "add a code": which item gets it.
+    Picker(Picker),
 }
 
 /// A message in the status line.
@@ -126,17 +191,32 @@ pub enum Task {
     Reconfirm(Zeroizing<String>),
     ChangePassword(Zeroizing<String>),
     Reload(Zeroizing<String>),
+    /// Time one unlock at this level (settings screen; no dialog involved).
+    Measure(SecurityLevel),
+    /// Re-check the master password, then re-key at this level.
+    ChangeLevel(Zeroizing<String>, SecurityLevel),
 }
 
 /// Copies a secret to the clipboard (with automatic clearing); returns the
 /// name of the tool. Replaced by a fake in the tests.
 pub type Copier = Box<dyn FnMut(&str) -> Result<&'static str>>;
 
+/// Measures how long one unlock takes with these settings (Argon2 on this
+/// computer). Replaced by a fake in the tests.
+pub type Measurer = Box<dyn FnMut(&KdfParams) -> Result<Duration>>;
+
+/// A measured unlock time, or why it could not be measured.
+pub type Timing = std::result::Result<Duration, String>;
+
 #[derive(Debug, Clone, Copy)]
 pub enum CopyWhat {
     Secret,
     Username,
     Email,
+    /// The public key of an SSH key.
+    PublicKey,
+    /// The current TOTP code (computed now; also shown in the details).
+    Totp,
 }
 
 pub struct App {
@@ -158,6 +238,11 @@ pub struct App {
     /// First visible row of the list (kept between frames).
     pub top: Cell<usize>,
     pub reveal_until: Option<Instant>,
+    /// The TOTP code of this item is shown in the details until then. Only
+    /// the name is kept: the code is computed again for every frame.
+    pub totp_shown: Option<(String, Instant)>,
+    /// Seconds since 1970 (for TOTP codes). Replaced by a fixed time in the tests.
+    pub clock: fn() -> u64,
     pub screen: Screen,
     pub modals: Vec<Modal>,
     pub toast: Option<Toast>,
@@ -165,6 +250,12 @@ pub struct App {
     pub exit: Option<Exit>,
     pub gen_prefs: GenPrefs,
     pub wrong_reconfirms: u8,
+    /// Where the key file is, for a vault that needs one (only the path).
+    pub key_file: Option<PathBuf>,
+    pub measurer: Measurer,
+    /// Unlock times per level (index into `SecurityLevel::ALL`), measured
+    /// the first time a level is shown.
+    pub level_times: [Option<Timing>; 3],
 }
 
 impl App {
@@ -192,6 +283,8 @@ impl App {
             sel: 0,
             top: Cell::new(0),
             reveal_until: None,
+            totp_shown: None,
+            clock: cakepass::vault::now,
             screen: Screen::Main,
             modals: Vec::new(),
             toast: None,
@@ -199,9 +292,43 @@ impl App {
             exit: None,
             gen_prefs: GenPrefs::default(),
             wrong_reconfirms: 0,
+            key_file: None,
+            measurer: Box::new(crypto::measure_unlock),
+            level_times: Default::default(),
         };
         app.refilter();
         app
+    }
+
+    // ───────────────────────── key file and levels ─────────────────────────
+
+    /// Read the key file when `required` (it is wiped when dropped).
+    fn key_file_for(&self, required: bool) -> Result<Option<LoadedKeyFile>> {
+        if !required {
+            return Ok(None);
+        }
+        let path = self.key_file.as_ref().ok_or(Error::KeyFileRequired)?;
+        keyfile::load(path).map(Some)
+    }
+
+    fn wrong_password_text(&self) -> &'static str {
+        if self.uv.uses_key_file() {
+            "Wrong master password (or key file). Try again."
+        } else {
+            "Wrong master password. Try again."
+        }
+    }
+
+    /// Measure `level` (once) after the next frame, which says "Measuring…".
+    pub fn request_measure(&mut self, level: SecurityLevel) {
+        if self.level_times[level_index(level)].is_none() && self.task.is_none() {
+            self.task = Some(Task::Measure(level));
+        }
+    }
+
+    /// Whether `level` is being measured right now.
+    pub fn measuring(&self, level: SecurityLevel) -> bool {
+        matches!(self.task, Some(Task::Measure(l)) if l == level)
     }
 
     /// Show the messages from unlocking (warnings, an update) in a dialog.
@@ -226,6 +353,7 @@ impl App {
     /// Lock now because nobody typed anything for the lock timeout.
     pub fn lock_idle(&mut self) {
         self.reveal_until = None;
+        self.totp_shown = None;
         self.exit.get_or_insert(Exit::Idle);
     }
 
@@ -243,6 +371,9 @@ impl App {
         if self.reveal_until.is_some_and(|t| now >= t) {
             self.reveal_until = None;
         }
+        if self.totp_shown.as_ref().is_some_and(|(_, t)| now >= *t) {
+            self.totp_shown = None;
+        }
         if self.toast.as_ref().is_some_and(|t| now >= t.until) {
             self.toast = None;
         }
@@ -255,7 +386,8 @@ impl App {
     /// screen (at most a second, for the lock countdown).
     pub fn wait_ms(&self, now: Instant) -> i32 {
         let lock_at = self.last_input + self.lock_after;
-        let mut next = [Some(lock_at), self.reveal_until, self.toast.as_ref().map(|t| t.until)]
+        let totp_until = self.totp_shown.as_ref().map(|(_, t)| *t);
+        let mut next = [Some(lock_at), self.reveal_until, totp_until, self.toast.as_ref().map(|t| t.until)]
             .into_iter()
             .flatten()
             .map(|t| t.saturating_duration_since(now))
@@ -281,6 +413,18 @@ impl App {
         self.uv.vault.entries()
     }
 
+    /// Whether the tab bar shows this tab (`config set hidden-tabs`, or the
+    /// Tabs row in the settings). Only the tab: its items stay under "All".
+    /// "All" and "2FA" are not a type, so they are always shown.
+    pub fn tab_shown(&self, tab: Tab) -> bool {
+        tab.kind().is_none_or(|k| self.cfg.shows_tab(k))
+    }
+
+    /// The tab ← → (or Tab, Shift+Tab) moves to, skipping hidden ones.
+    pub fn next_tab(&self, delta: isize) -> Tab {
+        self.tab.step(delta, |t| self.tab_shown(t))
+    }
+
     pub fn selected(&self) -> Option<&Entry> {
         self.view.get(self.sel).and_then(|&i| self.entries().get(i))
     }
@@ -289,7 +433,7 @@ impl App {
     /// selected item selected when it is still there.
     pub fn refilter(&mut self) {
         let keep = self.selected().map(|e| e.name().to_string());
-        let kind = self.tab.kind();
+        let tab = self.tab;
         let query = self.search.as_str().trim();
         let entries = self.uv.vault.entries();
         self.view = if query.is_empty() {
@@ -307,7 +451,9 @@ impl App {
             }
             out
         };
-        self.view.retain(|&i| kind.is_none_or(|k| entries[i].kind() == k));
+        self.view.retain(|&i| tab.shows(&entries[i]));
+        // Favorites first; otherwise the vault's order (by name). Stable.
+        self.view.sort_by_key(|&i| !entries[i].is_favorite());
         match keep.and_then(|n| self.view.iter().position(|&i| entries[i].name() == n)) {
             Some(pos) => self.sel = pos,
             None => self.sel = self.sel.min(self.view.len().saturating_sub(1)),
@@ -401,7 +547,7 @@ impl App {
     pub fn copy_value(&mut self, value: &str, what: &str) {
         match (self.copier)(value) {
             Ok(tool) => {
-                let clears = self.now + Duration::from_secs(CLEAR_AFTER_SECS);
+                let clears = self.now + Duration::from_secs(self.cfg.clip_time_secs);
                 self.toast = Some(Toast {
                     text: format!("{what} copied ({tool})"),
                     style: Style::SUCCESS,
@@ -425,17 +571,110 @@ impl App {
                 (e.secret(key), commands::secret_noun(kind), format!("no {}", kind.secret_label()))
             }
             CopyWhat::Username if kind == Kind::Note => return self.info("A note has no username."),
+            CopyWhat::Username if kind == Kind::SshKey => return self.info("An SSH key has no username."),
             CopyWhat::Username => {
-                let noun = if kind == Kind::Api { "The account ID" } else { "The username" };
+                let noun = match kind {
+                    Kind::Api => "The account ID",
+                    Kind::Card => "The cardholder name",
+                    Kind::Identity => "The full name",
+                    _ => "The username",
+                };
                 (e.username(key), noun, "no username".to_string())
             }
             CopyWhat::Email if kind == Kind::Note => return self.info("A note has no e-mail address."),
+            CopyWhat::Email if matches!(kind, Kind::Card | Kind::SshKey | Kind::Identity) => {
+                return self.info(format!("{} has no e-mail address.", commands::kind_noun(kind)));
+            }
             CopyWhat::Email => (e.email(key), "The e-mail address", "no e-mail address".to_string()),
+            CopyWhat::PublicKey if kind != Kind::SshKey => {
+                return self.info("Only an SSH key has a public key.");
+            }
+            CopyWhat::PublicKey => (e.public_key(key), "The public key", "no public key".to_string()),
+            CopyWhat::Totp => return self.copy_totp(),
         };
         match value {
             Ok(v) if v.is_empty() => self.info(format!("This item has {missing}.")),
             Ok(v) => self.copy_value(&v, noun),
             Err(e) => self.fail(error_text(&e)),
+        }
+    }
+
+    /// `t`: compute the current TOTP code of the selected item (fresh from
+    /// the decrypted secret, which is wiped right after), copy it and show
+    /// it in the details for a while. The code itself is never kept.
+    fn copy_totp(&mut self) {
+        let Some(e) = self.selected() else { return };
+        let name = e.name().to_string();
+        let code = match e.totp(self.uv.item_key()) {
+            Ok(Some(totp)) => totp.code_at((self.clock)()),
+            Ok(None) => {
+                return self.info(format!(
+                    "'{name}' has no TOTP secret. Add one with: cakepass edit \"{name}\" --totp"
+                ));
+            }
+            Err(e) => return self.fail(error_text(&e)),
+        };
+        self.reveal_until = None;
+        self.totp_shown = Some((name, self.now + Duration::from_secs(REVEAL_SECS)));
+        self.copy_value(code.as_str(), "The TOTP code");
+    }
+
+    /// `a` on the 2FA tab: ask which item gets a 2FA code (or a new login).
+    pub fn ask_add_totp(&mut self) {
+        let names: Vec<String> =
+            self.entries().iter().filter(|e| !e.has_totp()).map(|e| e.name().to_string()).collect();
+        self.reveal_until = None;
+        self.modals.push(Modal::Picker(Picker::new(
+            "Add a 2FA code",
+            vec![
+                "Which account is it for? On the site, turn on two-factor login with an \
+                 authenticator app; under the QR code it shows a secret (\"can't scan it?\"). \
+                 Next you paste that secret."
+                    .into(),
+            ],
+            "+ New login",
+            names,
+        )));
+    }
+
+    /// Open the form for the chosen item, on its 2FA secret field.
+    fn add_totp_to(&mut self, picked: Picked) {
+        match picked {
+            Picked::New => {
+                self.reveal_until = None;
+                self.screen = Screen::Form(Box::new(Form::add(Kind::Login)));
+                self.info("Fill in the name and password, then paste the 2FA secret.");
+            }
+            // The field's own help line says what to paste.
+            Picked::Name(name) => self.open_edit_at(&name, Field::Totp),
+        }
+    }
+
+    /// `f`: pin the selected item as a favorite, or unpin it. Saved at once
+    /// (all or nothing, like every other change).
+    pub fn toggle_favorite(&mut self) {
+        let Some(e) = self.selected() else { return };
+        let (name, pin) = (e.name().to_string(), !e.is_favorite());
+        let change = |v: &mut Vault, _: &ItemKey| {
+            v.update(&name, |e| {
+                e.set_favorite(pin);
+                Ok(())
+            })
+        };
+        match self.commit(change) {
+            Ok(()) => {
+                self.refilter();
+                self.ok(if pin {
+                    format!("'{name}' pinned as a favorite (f again unpins it).")
+                } else {
+                    format!("'{name}' is no longer a favorite.")
+                });
+            }
+            Err(e) => {
+                if let Some(t) = self.save_error(e) {
+                    self.fail(t);
+                }
+            }
         }
     }
 
@@ -471,6 +710,7 @@ impl App {
         // A secret is only ever revealed on the bare main screen.
         if !self.modals.is_empty() || !matches!(self.screen, Screen::Main) {
             self.reveal_until = None;
+            self.totp_shown = None;
         }
     }
 
@@ -504,6 +744,16 @@ impl App {
                     }
                 }
                 Some(false) => {
+                    self.modals.pop();
+                }
+                None => {}
+            },
+            Modal::Picker(p) => match p.handle(ev) {
+                Some(Some(picked)) => {
+                    self.modals.pop();
+                    self.add_totp_to(picked);
+                }
+                Some(None) => {
                     self.modals.pop();
                 }
                 None => {}
@@ -676,6 +926,12 @@ impl App {
                 self.modals.push(Modal::Prompt(p));
                 self.task = Some(Task::Reload(text));
             }
+            PromptPurpose::ConfirmLevel(level) => {
+                p.purpose = PromptPurpose::ConfirmLevel(level);
+                p.busy = Some("Re-encrypting the vault at the new level (this takes a moment)…");
+                self.modals.push(Modal::Prompt(p));
+                self.task = Some(Task::ChangeLevel(text, level));
+            }
         }
     }
 
@@ -704,6 +960,11 @@ impl App {
     /// Run the slow work queued by a dialog. Returns whether there was any.
     pub fn run_task(&mut self) -> bool {
         let Some(task) = self.task.take() else { return false };
+        if let Task::Measure(level) = task {
+            let timing = (self.measurer)(&level.params()).map_err(|e| error_text(&e));
+            self.level_times[level_index(level)] = Some(timing);
+            return true;
+        }
         // The prompt that queued the task is on top; it is replaced or updated.
         let mut top = match self.modals.pop() {
             Some(Modal::Prompt(p)) => p,
@@ -715,26 +976,30 @@ impl App {
         };
         top.busy = None;
         match task {
-            Task::Reconfirm(pw) => match self.uv.verify_password(pw.as_bytes()) {
+            Task::Measure(_) => unreachable!("handled above"),
+            Task::Reconfirm(pw) => match self.check_password(&pw) {
                 Ok(true) => {
                     self.wrong_reconfirms = 0;
                     self.modals.push(Modal::Prompt(new_master_prompt()));
                 }
-                Ok(false) | Err(_) => {
-                    self.wrong_reconfirms += 1;
-                    if self.wrong_reconfirms >= 3 {
-                        self.wrong_reconfirms = 0;
-                        self.fail("Wrong master password; the master password was not changed.");
-                    } else {
-                        top.input.clear();
-                        top.error = Some("Wrong master password. Try again.".into());
-                        self.modals.push(Modal::Prompt(top));
-                    }
+                Ok(false) => self.wrong_password(top, "the master password was not changed"),
+                Err(e) => self.check_failed(top, &e),
+            },
+            Task::ChangeLevel(pw, level) => match self.check_password(&pw) {
+                Ok(true) => {
+                    self.wrong_reconfirms = 0;
+                    self.change_level(&pw, level);
                 }
+                Ok(false) => self.wrong_password(top, "the security level was not changed"),
+                Err(e) => self.check_failed(top, &e),
             },
             Task::ChangePassword(new) => {
                 let kdf = self.uv.kdf();
-                match self.uv.change_password(new.as_bytes(), kdf) {
+                // The key file (if any) stays: it is part of the new key too.
+                let changed = self.key_file_for(self.uv.uses_key_file()).and_then(|kf| {
+                    self.uv.rekey(Credentials::new(new.as_bytes(), kf.as_ref().map(|k| &k.pepper)), kdf)
+                });
+                match changed {
                     Ok(()) => self.modals.push(Modal::Message(Message::new(
                         "Master password changed",
                         vec![
@@ -755,7 +1020,7 @@ impl App {
                     }
                 }
             }
-            Task::Reload(pw) => match UnlockedVault::open(self.uv.paths().clone(), pw.as_bytes()) {
+            Task::Reload(pw) => match self.reopen(&pw) {
                 Ok(mut fresh) => {
                     fresh.take_warnings();
                     self.uv = fresh; // the old copy (and its key) is wiped
@@ -769,7 +1034,7 @@ impl App {
                 }
                 Err(Error::Decrypt) => {
                     top.input.clear();
-                    top.error = Some("Wrong master password. Try again.".into());
+                    top.error = Some(self.wrong_password_text().into());
                     self.modals.push(Modal::Prompt(top));
                 }
                 Err(e) => self.modals.push(Modal::Message(Message::new(
@@ -780,6 +1045,101 @@ impl App {
             },
         }
         true
+    }
+
+    /// Check the master password (with the key file, if the vault has one).
+    fn check_password(&self, pw: &str) -> Result<bool> {
+        let kf = self.key_file_for(self.uv.uses_key_file())?;
+        self.uv.verify_password(Credentials::new(pw.as_bytes(), kf.as_ref().map(|k| &k.pepper)))
+    }
+
+    /// The re-check itself failed. A key file problem (USB stick not plugged
+    /// in, ...) gets a dialog of its own: its text is too long for the field.
+    fn check_failed(&mut self, mut top: Prompt, e: &Error) {
+        if matches!(e, Error::KeyFileRequired | Error::KeyFileUnreadable { .. } | Error::KeyFileInvalid(_)) {
+            self.modals.push(Modal::Message(Message::new(
+                "Key file needed",
+                vec![error_text(e), "Nothing was changed.".into()],
+                true,
+            )));
+        } else {
+            top.error = Some(error_text(e));
+            self.modals.push(Modal::Prompt(top));
+        }
+    }
+
+    /// A wrong password in a re-check: try again, at most three times.
+    fn wrong_password(&mut self, mut top: Prompt, what: &str) {
+        self.wrong_reconfirms += 1;
+        if self.wrong_reconfirms >= 3 {
+            self.wrong_reconfirms = 0;
+            self.fail(format!("Wrong master password; {what}."));
+        } else {
+            top.input.clear();
+            top.error = Some(self.wrong_password_text().into());
+            self.modals.push(Modal::Prompt(top));
+        }
+    }
+
+    /// Read the vault from disk again (its key file too, if it needs one now).
+    fn reopen(&self, pw: &str) -> Result<UnlockedVault> {
+        let header = storage::read_header(&self.uv.paths().file)?;
+        let kf = self.key_file_for(header.key_file)?;
+        UnlockedVault::open(
+            self.uv.paths().clone(),
+            Credentials::new(pw.as_bytes(), kf.as_ref().map(|k| &k.pepper)),
+        )
+    }
+
+    /// Re-key at `level` with the same password and key file (already checked).
+    fn change_level(&mut self, pw: &str, level: SecurityLevel) {
+        let start = Instant::now();
+        let changed = self.key_file_for(self.uv.uses_key_file()).and_then(|kf| {
+            self.uv.rekey(Credentials::new(pw.as_bytes(), kf.as_ref().map(|k| &k.pepper)), level.params())
+        });
+        let message = match changed {
+            Ok(()) => Message::new(
+                "Security level changed",
+                vec![
+                    format!("The vault now uses the {} level: {}.", level.title(), level.params().describe()),
+                    format!("Unlocking takes about {} on this computer.", commands::seconds(start.elapsed())),
+                    "Your master password did not change. The .bak backup was re-encrypted as well.".into(),
+                ],
+                false,
+            ),
+            Err(e) => Message::new(
+                "Not changed",
+                vec![format!("The security level was NOT changed: {}", error_text(&e))],
+                true,
+            ),
+        };
+        self.modals.push(Modal::Message(message));
+    }
+
+    /// Enter on the security level row: ask for the master password first.
+    pub fn confirm_level(&mut self, level: SecurityLevel) {
+        if self.uv.security_level() == Some(level) {
+            return self.info(format!("The vault already uses the {} level.", level.title()));
+        }
+        if let Err(e) = crypto::ensure_memory(&level.params(), crypto::MemoryUse::Create) {
+            return self.fail(error_text(&e));
+        }
+        let time = match &self.level_times[level_index(level)] {
+            Some(Ok(d)) => format!(" Unlocking will take about {} on this computer.", commands::seconds(*d)),
+            _ => String::new(),
+        };
+        self.modals.push(Modal::Prompt(Prompt::new(
+            "Change the security level",
+            vec![
+                format!("Switch to {}: {}.{time}", level.title(), level.params().describe()),
+                "Type your current master password to confirm. The vault and its .bak backup are \
+                 re-encrypted with a fresh salt; the password itself stays the same."
+                    .into(),
+            ],
+            "Current",
+            true,
+            PromptPurpose::ConfirmLevel(level),
+        )));
     }
 
     // ───────────────────────── drawing ─────────────────────────
@@ -805,11 +1165,17 @@ impl App {
                 Modal::Confirm(c) => c.draw(g, area),
                 Modal::Prompt(p) => p.draw(g, area),
                 Modal::Generator(gn) => gn.draw(g, area),
+                Modal::Picker(p) => p.draw(g, area),
             };
         }
         screens::status_line(g, self, now);
         screens::hint_bar(g, &hints);
     }
+}
+
+/// The position of `level` in `SecurityLevel::ALL` (and `App::level_times`).
+pub fn level_index(level: SecurityLevel) -> usize {
+    SecurityLevel::ALL.iter().position(|&l| l == level).unwrap_or(0)
 }
 
 /// The new-master-password question (after the current one was confirmed).

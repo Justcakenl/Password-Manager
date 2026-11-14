@@ -5,28 +5,74 @@
 //! URLs, which are encrypted too) is displayed through
 //! `ui::print_secret_line`: straight to the terminal, without a copy in
 //! Rust's output buffer.
+//!
+//! SECURITY (key files): a key file is read only when the vault header says
+//! it is required, always *before* the password prompt, and its pepper is
+//! dropped (wiped) as soon as the vault is open. Operations that need it
+//! again (re-checking the password, re-keying) read the file again. Only
+//! its path is kept, here in memory and in the settings file.
 
 use std::fs::{self, File};
 use std::io;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::path::Path;
-use std::sync::OnceLock;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use secrecy::{ExposeSecret, SecretString};
 use zeroize::Zeroizing;
 
-use cakepass::clipboard::{self, CLEAR_AFTER_SECS};
-use cakepass::crypto::{ItemKey, KdfParams};
+use cakepass::clipboard;
+use cakepass::crypto::{self, ItemKey, KdfParams, MemoryUse, SecurityLevel};
+use cakepass::format::{Credentials, Header};
 use cakepass::generator::{self, PassphraseOptions, PasswordOptions};
+use cakepass::keyfile::{self, LoadedKeyFile};
 use cakepass::secure_mem::{self, Hardening};
 use cakepass::storage::{self, UnlockedVault, VaultPaths};
+use cakepass::totp::Totp;
 use cakepass::vault::{Entry, Kind, NewEntry, Vault};
 use cakepass::{Error, Result, import};
 
-use super::args::{self, AddArgs, Cmd, EditArgs, GenArgs, GetArgs, KdfArgs, KdfChangeArgs};
+use super::args::{
+    self, AddArgs, Cmd, EditArgs, GenArgs, GetArgs, KdfArgs, KdfChangeArgs, KeyfileAction, SecurityArgs,
+};
 use super::{config, logo, prompt, setup, shell, tui, ui, update};
 
 static HARDENING: OnceLock<Hardening> = OnceLock::new();
+
+/// Where the key file is: given now (`--keyfile` or `CAKEPASS_KEYFILE`),
+/// or in the settings. Only paths, never contents.
+struct KeyFileSetting {
+    explicit: Option<PathBuf>,
+    configured: Option<PathBuf>,
+}
+
+static KEY_FILE: Mutex<KeyFileSetting> = Mutex::new(KeyFileSetting { explicit: None, configured: None });
+
+fn key_file_setting() -> std::sync::MutexGuard<'static, KeyFileSetting> {
+    KEY_FILE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The key file to use for a vault that needs one: `--keyfile` or
+/// `CAKEPASS_KEYFILE` first, then the `keyfile` setting.
+pub fn key_file_path() -> Option<PathBuf> {
+    let s = key_file_setting();
+    s.explicit.clone().or_else(|| s.configured.clone())
+}
+
+/// The key file given with `--keyfile` or `CAKEPASS_KEYFILE` (not the setting).
+pub(super) fn explicit_key_file() -> Option<PathBuf> {
+    key_file_setting().explicit.clone()
+}
+
+/// `~/x` → `$HOME/x`, and relative → absolute (for messages and settings).
+pub(super) fn absolute_path(p: &Path) -> PathBuf {
+    let expanded = match (p.strip_prefix("~"), std::env::var_os("HOME")) {
+        (Ok(rest), Some(home)) => PathBuf::from(home).join(rest),
+        _ => p.to_path_buf(),
+    };
+    std::path::absolute(&expanded).unwrap_or(expanded)
+}
 const LABEL_WIDTH: usize = 16;
 const TAGLINE: &str = "offline · encrypted · yours alone";
 
@@ -42,6 +88,10 @@ pub fn run(cli: args::Cli) -> Result<()> {
         None => VaultPaths::default_location()?,
     };
     let cfg = config::load();
+    *key_file_setting() = KeyFileSetting {
+        explicit: cli.keyfile.as_deref().filter(|p| !p.as_os_str().is_empty()).map(absolute_path),
+        configured: cfg.keyfile.clone(),
+    };
     let Some(command) = cli.command else {
         // `cakepass` without a command: login screen + the screen mode (or the
         // line mode), or the first-time setup when there is no vault yet.
@@ -68,6 +118,9 @@ pub fn run(cli: args::Cli) -> Result<()> {
         Cmd::Init { kdf } => init(&paths, &kdf),
         Cmd::Generate { opts, show, save } => generate(&paths, None, &opts, show, save),
         Cmd::Info => info(&paths),
+        Cmd::Security(s) if s.changes_something() => security_change(&paths, None, &s),
+        Cmd::Security(_) => security_show(&paths),
+        Cmd::Keyfile { action } => keyfile_command(action),
         Cmd::Config { action } => setup::config_command(action),
         Cmd::Logo => show_logo(),
         Cmd::Update(u) => update::run(
@@ -81,6 +134,7 @@ pub fn run(cli: args::Cli) -> Result<()> {
             &paths,
         ),
         Cmd::Completions { shell } => completions(shell),
+        Cmd::Man => man_page(),
         Cmd::Shell { timeout } => shell::run(&paths, timeout.unwrap_or(cfg.lock_timeout_secs())),
         cmd => {
             let mut uv = unlock(&paths)?;
@@ -114,7 +168,8 @@ pub fn execute(uv: &mut UnlockedVault, cmd: Cmd, in_shell: bool) -> Result<()> {
         Cmd::Get(g) => get(uv, &g),
         Cmd::Edit(e) => edit(uv, e),
         Cmd::Rm { name, yes } => rm(uv, &name, yes),
-        Cmd::List { tag, kind } => list(&uv.vault, uv.item_key(), tag.as_deref(), kind),
+        Cmd::List { tag, kind, favorites } => list(&uv.vault, uv.item_key(), tag.as_deref(), kind, favorites),
+        Cmd::Audit { older_than } => audit(&uv.vault, uv.item_key(), older_than),
         Cmd::Search { query } => search(&uv.vault, uv.item_key(), &query),
         Cmd::Passwd { kdf } => {
             if in_shell {
@@ -135,9 +190,16 @@ pub fn execute(uv: &mut UnlockedVault, cmd: Cmd, in_shell: bool) -> Result<()> {
             generate(&paths, Some(uv), &opts, show, save)
         }
         Cmd::Info => info(uv.paths()),
+        Cmd::Security(s) if s.changes_something() => {
+            let paths = uv.paths().clone();
+            security_change(&paths, Some(uv), &s)
+        }
+        Cmd::Security(_) => security_show(uv.paths()),
+        Cmd::Keyfile { action } => keyfile_command(action),
         Cmd::Config { action } => setup::config_command(action),
         Cmd::Logo => show_logo(),
         Cmd::Completions { shell } => completions(shell),
+        Cmd::Man => man_page(),
         Cmd::Update(_) => Err(Error::InvalidInput(
             "close the vault first (exit) and then type `cakepass --update`; the vault should be closed while updating"
                 .into(),
@@ -150,20 +212,88 @@ pub fn execute(uv: &mut UnlockedVault, cmd: Cmd, in_shell: bool) -> Result<()> {
 
 // ───────────────────────── helpers ─────────────────────────
 
+/// The Argon2 settings from `--level` (default: high) and the `--kdf-*` flags.
 pub(super) fn kdf_from_args(a: &KdfArgs) -> Result<KdfParams> {
-    let memory_kib = a.kdf_memory.checked_mul(1024).ok_or(Error::InvalidKdfParams("too much memory"))?;
-    let p = KdfParams { memory_kib, iterations: a.kdf_iterations, parallelism: a.kdf_parallelism };
+    let base = a.level.unwrap_or(SecurityLevel::DEFAULT).params();
+    let memory_kib = match a.kdf_memory {
+        Some(m) => m.checked_mul(1024).ok_or(Error::InvalidKdfParams("too much memory"))?,
+        None => base.memory_kib,
+    };
+    let p = KdfParams {
+        memory_kib,
+        iterations: a.kdf_iterations.unwrap_or(base.iterations),
+        parallelism: a.kdf_parallelism.unwrap_or(base.parallelism),
+    };
     p.validate()?;
     Ok(p)
 }
 
 pub(super) fn warn_if_weak_kdf(p: &KdfParams) {
-    if p.weaker_than_default() {
+    if p.weaker_than_standard() {
         ui::warn(
-            "You are using lighter Argon2 settings than recommended (64 MiB, 3 iterations). \
+            "You are using lighter Argon2 settings than the Standard level (64 MiB, 3 iterations). \
              A stolen vault file is then easier to crack.",
         );
     }
+}
+
+/// "standard" / "high" / "maximum", or "custom".
+pub(super) fn level_name(kdf: &KdfParams) -> &'static str {
+    SecurityLevel::of(kdf).map_or("custom", SecurityLevel::name)
+}
+
+/// "0.84 s", "3.1 s", "12 s".
+pub(super) fn seconds(d: Duration) -> String {
+    let s = d.as_secs_f64();
+    if s < 10.0 { format!("{s:.2} s") } else { format!("{s:.0} s") }
+}
+
+/// Read the key file if the vault needs one. Call this before asking for
+/// the password, so a missing key file is reported first.
+pub(super) fn key_file_for(required: bool) -> Result<Option<LoadedKeyFile>> {
+    if !required {
+        return Ok(None);
+    }
+    let path = key_file_path().ok_or(Error::KeyFileRequired)?;
+    keyfile::load(&path).map(Some)
+}
+
+/// [`key_file_for`], with its warnings shown (on the command line).
+fn key_file_with_warnings(required: bool) -> Result<Option<LoadedKeyFile>> {
+    let kf = key_file_for(required)?;
+    for w in kf.iter().flat_map(|k| &k.warnings) {
+        ui::warn(w);
+    }
+    Ok(kf)
+}
+
+/// Checks before the password prompt: a readable header, enough memory for
+/// its security level, and a note when a key file was given that is not needed.
+fn preflight(paths: &VaultPaths) -> Result<Header> {
+    let header = storage::read_header(&paths.file)?;
+    crypto::ensure_memory(&header.kdf, MemoryUse::Unlock)?;
+    if !header.key_file && explicit_key_file().is_some() {
+        ui::info(&ui::dim_err(
+            "(This vault does not use a key file, so the one given with --keyfile or CAKEPASS_KEYFILE is not needed.)",
+        ));
+    }
+    Ok(header)
+}
+
+/// After a failed unlock of a vault with a key file: say which key file
+/// was used (a wrong one fails exactly like a wrong password).
+fn explain_failure(e: &Error, uses_key_file: bool) {
+    if uses_key_file && matches!(e, Error::Decrypt) {
+        let used = key_file_path().map_or("-".into(), |p| p.display().to_string());
+        ui::info(&format!(
+            "This vault also needs its key file; the key file used was {used}. \
+             A wrong key file gives the same message as a wrong password."
+        ));
+    }
+}
+
+fn credentials<'a>(pw: &'a SecretString, kf: &'a Option<LoadedKeyFile>) -> Credentials<'a> {
+    Credentials::new(pw.expose_secret().as_bytes(), kf.as_ref().map(|k| &k.pepper))
 }
 
 /// Something to tell the user right after unlocking.
@@ -198,12 +328,16 @@ fn after_unlock(uv: &mut UnlockedVault) {
 
 /// Ask for the master password and open the vault (for single commands).
 pub fn unlock(paths: &VaultPaths) -> Result<UnlockedVault> {
-    // Check the header first, so a broken or unknown file gives a clear error
-    // right away, without first asking for a password.
-    storage::read_header(&paths.file)?;
+    // Check the header (and memory, and the key file) first, so a broken or
+    // unknown file gives a clear error right away, without first asking for
+    // a password.
+    let header = preflight(paths)?;
+    let kf = key_file_with_warnings(header.key_file)?;
     let pw = prompt::secret("Master password: ")?;
-    let mut uv = UnlockedVault::open(paths.clone(), pw.expose_secret().as_bytes())?;
+    let opened = UnlockedVault::open(paths.clone(), credentials(&pw, &kf));
     drop(pw);
+    drop(kf);
+    let mut uv = opened.inspect_err(|e| explain_failure(e, header.key_file))?;
     after_unlock(&mut uv);
     Ok(uv)
 }
@@ -217,31 +351,39 @@ pub fn login_screen(paths: &VaultPaths) -> Result<UnlockedVault> {
 
 /// The login screen without the messages afterwards (see [`unlock_notices`]).
 pub(super) fn login(paths: &VaultPaths) -> Result<UnlockedVault> {
-    storage::read_header(&paths.file)?;
+    let header = preflight(paths)?;
     logo::show(true);
     logo::tagline(TAGLINE);
+    // The key file is read once, before the first attempt, and wiped after the last.
+    let kf = key_file_with_warnings(header.key_file)?;
+    let wrong = if header.key_file { "Wrong master password or key file." } else { "Wrong master password." };
     const ATTEMPTS: usize = 3;
     for attempt in 1..=ATTEMPTS {
         let pw = prompt::secret(&format!("  {} ", ui::pink_bold("🔑 Master password ❯")))?;
-        match UnlockedVault::open(paths.clone(), pw.expose_secret().as_bytes()) {
+        match UnlockedVault::open(paths.clone(), credentials(&pw, &kf)) {
             Ok(uv) => {
                 drop(pw);
                 return Ok(uv);
             }
             Err(Error::Decrypt) if attempt < ATTEMPTS && prompt::stdin_is_tty() => {
                 let left = ATTEMPTS - attempt;
-                ui::warn(&format!("Wrong master password. {left} attempt(s) left."));
+                ui::warn(&format!("{wrong} {left} attempt(s) left."));
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                explain_failure(&e, header.key_file);
+                return Err(e);
+            }
         }
     }
+    explain_failure(&Error::Decrypt, header.key_file);
     Err(Error::Decrypt)
 }
 
 /// Ask for the master password again (in the shell, before sensitive actions).
 fn reconfirm(uv: &UnlockedVault) -> Result<()> {
+    let kf = key_file_with_warnings(uv.uses_key_file())?;
     let pw = prompt::secret("Current master password (to confirm): ")?;
-    if uv.verify_password(pw.expose_secret().as_bytes())? { Ok(()) } else { Err(Error::Decrypt) }
+    if uv.verify_password(credentials(&pw, &kf))? { Ok(()) } else { Err(Error::Decrypt) }
 }
 
 pub(super) fn split_tags(s: &str) -> Vec<String> {
@@ -286,37 +428,47 @@ fn generate_secret(g: &GenArgs) -> Result<(Zeroizing<String>, f64)> {
     Recipe::from_args(g).generate()
 }
 
-/// "The password" / "The API key" / "The note".
+/// "The password" / "The API key" / "The note" / "The card number" / "The
+/// private key" / "The number".
 pub(super) fn secret_noun(kind: Kind) -> &'static str {
     match kind {
         Kind::Login => "The password",
         Kind::Api => "The API key",
         Kind::Note => "The note",
+        Kind::Card => "The card number",
+        Kind::SshKey => "The private key",
+        Kind::Identity => "The number",
     }
 }
 
-/// "Login" / "API key" / "Note" (for messages).
+/// "Login" / "API key" / "Note" / "Card" / "SSH key" / "Identity" (for messages).
 pub(super) fn kind_noun(kind: Kind) -> &'static str {
     match kind {
         Kind::Login => "Login",
         Kind::Api => "API key",
         Kind::Note => "Note",
+        Kind::Card => "Card",
+        Kind::SshKey => "SSH key",
+        Kind::Identity => "Identity",
     }
 }
 
-/// Copy to the clipboard and start the helper that clears it after 20 s.
-/// Returns the name of the clipboard tool that was used.
-pub(super) fn copy_secret(secret: &str) -> Result<&'static str> {
+/// Copy to the clipboard and start the helper that clears it after
+/// `clear_secs` seconds. Returns the name of the clipboard tool that was used.
+pub(super) fn copy_secret(secret: &str, clear_secs: u64) -> Result<&'static str> {
     let tool = clipboard::detect().ok_or(Error::NoClipboard)?;
-    clipboard::copy_with_auto_clear(tool, secret.as_bytes())?;
+    clipboard::copy_with_auto_clear(tool, secret.as_bytes(), clear_secs)?;
     Ok(tool.name())
 }
 
-/// Copy to the clipboard and have it cleared after 20 s.
+/// Copy to the clipboard and have it cleared after the configured time
+/// (`cakepass config set clip-time`), read now so a change in another
+/// window or in `cakepass shell` counts at once.
 fn copy_to_clipboard(secret: &str, what: &str) -> Result<()> {
-    let tool = copy_secret(secret)?;
+    let secs = config::load().clip_time_secs;
+    let tool = copy_secret(secret, secs)?;
     ui::success(&format!(
-        "{what} was copied to the clipboard (via {tool}); it will be cleared in {CLEAR_AFTER_SECS} seconds."
+        "{what} was copied to the clipboard (via {tool}); it will be cleared in {secs} seconds."
     ));
     Ok(())
 }
@@ -363,6 +515,65 @@ fn ask_api_key() -> Result<Zeroizing<String>> {
 
 fn ask_note_content() -> Result<Zeroizing<String>> {
     prompt::multiline("Type or paste the text of your note (it is stored encrypted):")
+}
+
+/// Ask for a value that is copied from somewhere (a card number, a security
+/// code, a passphrase): hidden input, pasting is fine, no repetition (it is
+/// not invented now; check it afterwards with `get --show`).
+fn ask_hidden(question: &str, required: Option<&str>) -> Result<Zeroizing<String>> {
+    let v = prompt::secret(question)?;
+    let v = Zeroizing::new(v.expose_secret().trim().to_string());
+    if let Some(what) = required
+        && v.is_empty()
+    {
+        return Err(Error::InvalidInput(format!("the {what} must not be empty")));
+    }
+    Ok(v)
+}
+
+fn ask_card_number() -> Result<Zeroizing<String>> {
+    ask_hidden("Card number (hidden input; pasting is fine): ", Some("card number"))
+}
+
+/// The number of an identity document (passport, ID card, licence, bank
+/// account, membership). Hidden like a card number: it is the item's main
+/// secret, shown as hidden everywhere else, so it should not end up in the
+/// terminal's scrollback while typing either. Check it with `get --show`.
+fn ask_identity_number() -> Result<Zeroizing<String>> {
+    ask_hidden(
+        "Number: document, account (IBAN) or membership number (hidden input; pasting is fine): ",
+        Some("number"),
+    )
+}
+
+fn ask_new_cvv() -> Result<Zeroizing<String>> {
+    ask_hidden("New security code / CVV (hidden input; empty = clear): ", None)
+}
+
+/// A passphrase is kept exactly as typed (spaces included), like a password.
+fn ask_new_passphrase() -> Result<Zeroizing<String>> {
+    let p = prompt::secret("New passphrase of the private key (hidden input; empty = clear): ")?;
+    Ok(Zeroizing::new(p.expose_secret().to_string()))
+}
+
+/// The private key of an SSH key: multi-line, like a note, kept exactly, and
+/// hidden while it is typed or pasted (like every other secret).
+fn ask_private_key() -> Result<Zeroizing<String>> {
+    let k =
+        prompt::hidden_multiline("Paste the private key (PEM or OpenSSH format; it is stored encrypted):")?;
+    if k.trim().is_empty() {
+        return Err(Error::InvalidInput("the private key must not be empty".into()));
+    }
+    Ok(k)
+}
+
+/// Ask for a TOTP secret (hidden): the base32 secret or the otpauth:// link
+/// a site shows under its QR code. It is checked before anything is saved.
+fn ask_totp() -> Result<Zeroizing<String>> {
+    let s =
+        ask_hidden("TOTP secret or otpauth:// link (hidden input; pasting is fine): ", Some("TOTP secret"))?;
+    Totp::parse_new(&s)?;
+    Ok(s)
 }
 
 fn report_generated(name: &str, pw: &str, bits: f64) {
@@ -507,6 +718,18 @@ fn field_block(label: &str, text: &str) -> Result<()> {
     Ok(())
 }
 
+/// Show a multi-line field with the label on its own line and every line of
+/// the value as it is, without indentation: a private key copied from the
+/// terminal must be byte-for-byte the key (indented lines would break it).
+fn field_verbatim(label: &str, text: &str) -> Result<()> {
+    let safe = Zeroizing::new(ui::safe(text, true));
+    ui::print_secret_line(&ui::bold(&format!("{label}:")), "")?;
+    for line in safe.lines() {
+        ui::print_secret_line("", line)?;
+    }
+    Ok(())
+}
+
 // ───────────────────────── commands ─────────────────────────
 
 fn show_logo() -> Result<()> {
@@ -530,19 +753,24 @@ pub(super) fn print_new_vault_banner() {
     ]);
 }
 
-/// Ask for a strong master password and create the vault.
-pub(super) fn create_vault(paths: &VaultPaths, kdf: KdfParams) -> Result<UnlockedVault> {
-    print_new_vault_banner();
-    warn_if_weak_kdf(&kdf);
-    let pw = prompt::new_strong_password("master password")?;
-    ui::info(&format!(
-        "Deriving the key with Argon2id ({} MiB, {} iterations, {} lanes)…",
-        kdf.memory_kib / 1024,
-        kdf.iterations,
-        kdf.parallelism
+/// Create the vault with a master password that was already chosen (and
+/// the key file, if one was chosen).
+pub(super) fn create_vault(
+    paths: &VaultPaths,
+    kdf: KdfParams,
+    pw: &SecretString,
+    kf: &Option<LoadedKeyFile>,
+) -> Result<UnlockedVault> {
+    ui::info(&format!("Deriving the key with {}…", kdf.describe()));
+    let uv = UnlockedVault::create(paths.clone(), credentials(pw, kf), kdf)?;
+    ui::success(&format!(
+        "Vault created: {} (security level: {})",
+        uv.paths().file.display(),
+        level_name(&kdf)
     ));
-    let uv = UnlockedVault::create(paths.clone(), pw.expose_secret().as_bytes(), kdf)?;
-    ui::success(&format!("Vault created: {}", uv.paths().file.display()));
+    if kf.is_some() {
+        ui::info("  It needs the key file as well as the master password to open.");
+    }
     Ok(uv)
 }
 
@@ -551,11 +779,25 @@ fn init(paths: &VaultPaths, kdf_args: &KdfArgs) -> Result<()> {
         return Err(Error::AlreadyExists(paths.file.clone()));
     }
     let kdf = kdf_from_args(kdf_args)?;
+    crypto::ensure_memory(&kdf, MemoryUse::Create)?;
+    // Only a key file given now (--keyfile, CAKEPASS_KEYFILE) protects a new
+    // vault; a key file in the settings may belong to another vault.
+    let key_file = explicit_key_file();
+    let kf = key_file.as_deref().map(|p| load_new_key_file(p, paths)).transpose()?;
     logo::show(true);
     logo::tagline("welcome! let's create your vault");
-    create_vault(paths, kdf)?;
+    print_new_vault_banner();
+    warn_if_weak_kdf(&kdf);
+    let pw = prompt::new_strong_password("master password")?;
+    create_vault(paths, kdf, &pw, &kf)?;
+    drop(pw);
+    drop(kf);
+    if let Some(p) = &key_file {
+        remember_key_file(p, None);
+        key_file_loss_warning();
+    }
     ui::info(
-        "Next: `cakepass add <name>` (login), `--type api` (API key) or `--type note`. \
+        "Next: `cakepass add <name>` (login), or with `--type api`, `note`, `card`, `ssh-key` or `identity`. \
          Make regular copies of the vault file (see the README).",
     );
     Ok(())
@@ -580,6 +822,9 @@ fn add_item(
         return Err(Error::InvalidInput(
             "a note has no username, e-mail address, URL or password; use only --tags".into(),
         ));
+    }
+    if matches!(kind, Kind::Card | Kind::SshKey | Kind::Identity) {
+        return add_card_key_or_identity(uv, a);
     }
     let interactive = a.username.is_none() && a.email.is_none() && a.url.is_none() && a.tags.is_none();
     let (user_q, url_q) = match kind {
@@ -622,8 +867,10 @@ fn add_item(
             }
             Kind::Login => ask_item_password(&a.gen_opts)?,
             Kind::Api => (ask_api_key()?, None),
+            Kind::Card | Kind::SshKey | Kind::Identity => unreachable!("handled by add_card_key_or_identity"),
         }
     };
+    let totp = if a.totp { ask_totp()? } else { Zeroizing::new(String::new()) };
     let fields = NewEntry {
         name: a.name.clone(),
         kind,
@@ -632,12 +879,98 @@ fn add_item(
         password: secret.to_string(),
         url,
         notes: notes.to_string(),
+        totp_secret: totp.to_string(),
         tags,
+        ..Default::default()
     };
     let name = add_entry(uv, fields)?;
     ui::success(&format!("{} '{name}' saved (encrypted).", kind_noun(kind)));
+    if a.totp {
+        totp_saved_hint(&name);
+    }
     if let Some(bits) = generated_bits {
         report_generated(&name, &secret, bits);
+    }
+    Ok(())
+}
+
+fn totp_saved_hint(name: &str) {
+    ui::info(&format!("TOTP secret saved: `cakepass get \"{name}\" --totp` shows the current code."));
+}
+
+/// `add --type card`, `add --type ssh-key` and `add --type identity`: the
+/// questions in the order you read them off the card, the key files or the
+/// document. Hidden input for the card number, the security code, the
+/// passphrase and the document number.
+fn add_card_key_or_identity(uv: &mut UnlockedVault, a: AddArgs) -> Result<()> {
+    let kind = a.kind;
+    let interactive = a.username.is_none() && a.email.is_none() && a.url.is_none() && a.tags.is_none();
+    let mut fields = NewEntry { name: a.name.clone(), kind, ..Default::default() };
+    if kind == Kind::Identity {
+        if a.email.is_some() || a.generate {
+            return Err(Error::InvalidInput(
+                "an identity has no e-mail address, and its number is not generated; \
+                 use -u for the full name and --url for who issued it"
+                    .into(),
+            ));
+        }
+        fields.username = match a.username {
+            Some(u) => u,
+            None => prompt::line("Full name (optional): ")?,
+        };
+        fields.password = ask_identity_number()?.to_string();
+        fields.url = match a.url {
+            Some(u) => u,
+            None => prompt::line("Issued by, e.g. a government office or bank (optional): ")?,
+        };
+        fields.expiry = prompt::line("Expiry date, e.g. 2031-05-14 (optional): ")?;
+    } else if kind == Kind::Card {
+        if a.email.is_some() || a.url.is_some() || a.generate {
+            return Err(Error::InvalidInput(
+                "a card has no e-mail address, URL or generated password; use -u for the cardholder name and --tags"
+                    .into(),
+            ));
+        }
+        fields.username = match a.username {
+            Some(u) => u,
+            None => prompt::line("Cardholder name (optional): ")?,
+        };
+        fields.password = ask_card_number()?.to_string();
+        fields.expiry = prompt::line("Expiry date, e.g. 08/29 (optional): ")?;
+        fields.cvv = ask_hidden("Security code / CVV (hidden input, optional): ", None)?.to_string();
+    } else {
+        if a.username.is_some() || a.email.is_some() || a.generate {
+            return Err(Error::InvalidInput(
+                "an SSH key has no username or e-mail address, and cakepass does not generate keys; \
+                 use --url for the host and --tags"
+                    .into(),
+            ));
+        }
+        fields.password = ask_private_key()?.to_string();
+        fields.public_key =
+            prompt::line("Public key (optional, one line, e.g. ssh-ed25519 AAAA… me@laptop): ")?;
+        fields.passphrase = prompt::secret("Passphrase of the private key (hidden input, optional): ")?
+            .expose_secret()
+            .to_string();
+        fields.url = match a.url {
+            Some(u) => u,
+            None => prompt::line("Host (optional, e.g. git@github.com): ")?,
+        };
+    }
+    if interactive {
+        fields.notes = prompt::line("Notes (optional, one line): ")?;
+    }
+    fields.tags = match a.tags {
+        Some(t) => t,
+        None => split_tags(&prompt::line("Tags, separated by commas (optional): ")?),
+    };
+    if a.totp {
+        fields.totp_secret = ask_totp()?.to_string();
+    }
+    let name = add_entry(uv, fields)?;
+    ui::success(&format!("{} '{name}' saved (encrypted).", kind_noun(kind)));
+    if a.totp {
+        totp_saved_hint(&name);
     }
     Ok(())
 }
@@ -673,6 +1006,9 @@ fn warn_if_not_email(email: &str) {
 fn get(uv: &UnlockedVault, g: &GetArgs) -> Result<()> {
     let key = uv.item_key();
     let e = find_entry(&uv.vault, key, &g.name)?;
+    if g.totp {
+        return show_totp(e, key, g.no_copy);
+    }
     let kind = e.kind();
     let hidden = ui::dim("(hidden; use --show)");
     let empty = ui::dim("-");
@@ -692,10 +1028,29 @@ fn get(uv: &UnlockedVault, g: &GetArgs) -> Result<()> {
             field("E-mail", &value(&e.email(key)?))?;
             field("Service", &value(&e.url(key)?))?;
         }
+        Kind::Card => {
+            field("Cardholder", &value(&e.username(key)?))?;
+            field("Expiry date", &value(&e.expiry(key)?))?;
+        }
+        Kind::SshKey => {
+            field("Host", &value(&e.url(key)?))?;
+            field("Public key", &value(&e.public_key(key)?))?;
+        }
+        Kind::Identity => {
+            field("Full name", &value(&e.username(key)?))?;
+            field("Issued by", &value(&e.url(key)?))?;
+            field("Expiry date", &value(&e.expiry(key)?))?;
+        }
         Kind::Note => {}
     }
     field("Tags", &value(&e.tags().join(", ")))?;
     field("Modified", &ui::format_time(e.modified()))?;
+    if e.is_favorite() {
+        field("Favorite", "yes")?;
+    }
+    if e.has_totp() {
+        field("TOTP", &ui::dim("set (use --totp for the current code)"))?;
+    }
     let secret_label = capitalize(kind.secret_label());
 
     if g.show {
@@ -710,7 +1065,22 @@ fn get(uv: &UnlockedVault, g: &GetArgs) -> Result<()> {
             } else {
                 field_block("Notes", &notes)?
             }
-            field(&secret_label, &value(&e.password(key)?))?;
+            match kind {
+                Kind::Card => {
+                    field(&secret_label, &value(&e.password(key)?))?;
+                    field("Security code", &value(&e.cvv(key)?))?;
+                }
+                Kind::SshKey => {
+                    field("Passphrase", &value(&e.passphrase(key)?))?;
+                    let private = e.password(key)?;
+                    if private.is_empty() {
+                        field(&secret_label, &empty)?
+                    } else {
+                        field_verbatim(&secret_label, &private)?
+                    }
+                }
+                _ => field(&secret_label, &value(&e.password(key)?))?,
+            }
         }
         return Ok(());
     }
@@ -718,7 +1088,13 @@ fn get(uv: &UnlockedVault, g: &GetArgs) -> Result<()> {
         field("Content", if e.has_notes() { &hidden } else { &empty })?;
     } else {
         field("Notes", if e.has_notes() { &hidden } else { &empty })?;
+        if kind == Kind::SshKey {
+            field("Passphrase", if e.has_passphrase() { &hidden } else { &empty })?;
+        }
         field(&secret_label, if e.has_password() { &hidden } else { &empty })?;
+        if kind == Kind::Card {
+            field("Security code", if e.has_cvv() { &hidden } else { &empty })?;
+        }
     }
     if g.no_copy {
         return Ok(());
@@ -728,18 +1104,56 @@ fn get(uv: &UnlockedVault, g: &GetArgs) -> Result<()> {
         if user.is_empty() {
             return Err(Error::InvalidInput("this item has no username".into()));
         }
-        copy_to_clipboard(&user, "The username")
+        let noun = match kind {
+            Kind::Card => "The cardholder name",
+            Kind::Identity => "The full name",
+            _ => "The username",
+        };
+        copy_to_clipboard(&user, noun)
     } else if g.copy_email {
         let mail = e.email(key)?;
         if mail.is_empty() {
             return Err(Error::InvalidInput("this item has no e-mail address".into()));
         }
         copy_to_clipboard(&mail, "The e-mail address")
+    } else if g.copy_public {
+        let public = e.public_key(key)?;
+        if public.is_empty() {
+            return Err(Error::InvalidInput("this item has no public key".into()));
+        }
+        copy_to_clipboard(&public, "The public key")
     } else if !e.has_secret() {
         ui::info(&format!("This item has no {}.", kind.secret_label()));
         Ok(())
     } else {
         copy_to_clipboard(&e.secret(key)?, secret_noun(kind))
+    }
+}
+
+/// `get --totp`: the current two-factor code, computed now from the
+/// decrypted secret (never stored), shown and copied (cleared like a password).
+fn show_totp(e: &Entry, key: &ItemKey, no_copy: bool) -> Result<()> {
+    let Some(totp) = e.totp(key)? else {
+        return Err(Error::InvalidInput(format!(
+            "'{}' has no TOTP secret; add one with `cakepass edit \"{}\" --totp`",
+            e.name(),
+            e.name()
+        )));
+    };
+    let code = totp.now();
+    drop(totp);
+    field("Name", e.name())?;
+    field("TOTP code", code.as_str())?;
+    field("Valid for", &format!("{} more second(s)", code.seconds_left()))?;
+    if no_copy {
+        return Ok(());
+    }
+    match copy_to_clipboard(code.as_str(), "The TOTP code") {
+        Err(Error::NoClipboard) => {
+            ui::info("No clipboard tool found; type the code shown above.");
+            Ok(())
+        }
+        other => other,
     }
 }
 
@@ -757,19 +1171,59 @@ fn keep_or(input: String) -> Option<String> {
     }
 }
 
+/// Which options of `edit` do not fit this type of item (a clear error is
+/// better than silently storing a CVV in a login).
+fn check_edit_options(kind: Kind, a: &EditArgs) -> Result<()> {
+    let ssh_only = a.public_key || a.key_passphrase;
+    let problem = match kind {
+        Kind::Note
+            if a.username.is_some() || a.email.is_some() || a.url.is_some() || a.password || a.generate =>
+        {
+            Some("a note has no username, e-mail address, URL or password; use --notes for the contents")
+        }
+        Kind::Card if a.email.is_some() || a.url.is_some() || a.generate => Some(
+            "a card has no e-mail address or URL, and its number is not generated; use -u for the cardholder name",
+        ),
+        Kind::SshKey if a.username.is_some() || a.email.is_some() || a.generate => Some(
+            "an SSH key has no username or e-mail address, and cakepass does not generate keys; use --url for the host",
+        ),
+        Kind::Identity if a.email.is_some() || a.generate => Some(
+            "an identity has no e-mail address, and its number is not generated; \
+             use -u for the full name and --url for who issued it",
+        ),
+        Kind::Card if ssh_only => Some("--public-key and --key-passphrase are for an SSH key"),
+        Kind::SshKey if a.expiry || a.cvv => Some("--expiry is for a card or an identity, --cvv for a card"),
+        Kind::Identity if a.cvv || ssh_only => {
+            Some("--cvv is for a card, --public-key and --key-passphrase for an SSH key")
+        }
+        Kind::Login | Kind::Api | Kind::Note if a.expiry || a.cvv || ssh_only => Some(
+            "--expiry is for a card or an identity, --cvv for a card, \
+             --public-key and --key-passphrase for an SSH key",
+        ),
+        _ => None,
+    };
+    match problem {
+        Some(p) => Err(Error::InvalidInput(p.into())),
+        None => Ok(()),
+    }
+}
+
 fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
-    let (old_name, kind, cur_user, cur_email, cur_url, cur_tags) = {
+    let (old_name, kind, cur_user, cur_email, cur_url, cur_tags, cur_expiry, cur_public) = {
         let key = uv.item_key();
         let e = find_entry(&uv.vault, key, &a.name)?;
-        (e.name().to_string(), e.kind(), e.username(key)?, e.email(key)?, e.url(key)?, e.tags().join(", "))
+        (
+            e.name().to_string(),
+            e.kind(),
+            e.username(key)?,
+            e.email(key)?,
+            e.url(key)?,
+            e.tags().join(", "),
+            e.expiry(key)?,
+            e.public_key(key)?,
+        )
     };
-    if kind == Kind::Note
-        && (a.username.is_some() || a.email.is_some() || a.url.is_some() || a.password || a.generate)
-    {
-        return Err(Error::InvalidInput(
-            "a note has no username, e-mail address, URL or password; use --notes for the contents".into(),
-        ));
-    }
+    check_edit_options(kind, &a)?;
     let interactive = a.rename.is_none()
         && a.username.is_none()
         && a.email.is_none()
@@ -777,7 +1231,15 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
         && a.tags.is_none()
         && !a.password
         && !a.generate
-        && !a.notes;
+        && !a.notes
+        && !a.expiry
+        && !a.cvv
+        && !a.public_key
+        && !a.key_passphrase
+        && !a.totp
+        && !a.no_totp
+        && !a.favorite
+        && !a.no_favorite;
 
     let mut rename = a.rename;
     let mut username = a.username;
@@ -787,16 +1249,37 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
     let mut notes: Option<Zeroizing<String>> = None;
     let mut new_secret: Option<Zeroizing<String>> = None;
     let mut generated_bits = None;
+    let mut expiry: Option<String> = None;
+    let mut cvv: Option<Zeroizing<String>> = None;
+    let mut public_key: Option<String> = None;
+    let mut passphrase: Option<Zeroizing<String>> = None;
+    let mut totp: Option<Zeroizing<String>> = None;
 
     if interactive {
         ui::info("Press Enter to leave a field unchanged, or type '-' to clear it.");
         rename = keep_or(prompt::line(&format!("Name [{old_name}]: "))?).filter(|s| !s.is_empty());
-        if kind != Kind::Note {
-            let (uq, lq) =
-                if kind == Kind::Api { ("Account / ID", "Service URL") } else { ("Username", "URL") };
-            username = keep_or(prompt::line(&format!("{uq} [{}]: ", cur_user.as_str()))?);
-            email = keep_or(prompt::line(&format!("E-mail address [{}]: ", cur_email.as_str()))?);
-            url = keep_or(prompt::line(&format!("{lq} [{}]: ", cur_url.as_str()))?);
+        match kind {
+            Kind::Login | Kind::Api => {
+                let (uq, lq) =
+                    if kind == Kind::Api { ("Account / ID", "Service URL") } else { ("Username", "URL") };
+                username = keep_or(prompt::line(&format!("{uq} [{}]: ", cur_user.as_str()))?);
+                email = keep_or(prompt::line(&format!("E-mail address [{}]: ", cur_email.as_str()))?);
+                url = keep_or(prompt::line(&format!("{lq} [{}]: ", cur_url.as_str()))?);
+            }
+            Kind::Card => {
+                username = keep_or(prompt::line(&format!("Cardholder name [{}]: ", cur_user.as_str()))?);
+                expiry = keep_or(prompt::line(&format!("Expiry date [{}]: ", cur_expiry.as_str()))?);
+            }
+            Kind::SshKey => {
+                url = keep_or(prompt::line(&format!("Host [{}]: ", cur_url.as_str()))?);
+                public_key = keep_or(prompt::line(&format!("Public key [{}]: ", cur_public.as_str()))?);
+            }
+            Kind::Identity => {
+                username = keep_or(prompt::line(&format!("Full name [{}]: ", cur_user.as_str()))?);
+                url = keep_or(prompt::line(&format!("Issued by [{}]: ", cur_url.as_str()))?);
+                expiry = keep_or(prompt::line(&format!("Expiry date [{}]: ", cur_expiry.as_str()))?);
+            }
+            Kind::Note => {}
         }
         tags = keep_or(prompt::line(&format!("Tags [{cur_tags}]: "))?).map(|t| split_tags(&t));
         match kind {
@@ -831,6 +1314,27 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
                     new_secret = Some(ask_api_key()?);
                 }
             }
+            Kind::Card => {
+                if prompt::confirm("Replace the card number?")? {
+                    new_secret = Some(ask_card_number()?);
+                }
+                if prompt::confirm("Change the security code (CVV)?")? {
+                    cvv = Some(ask_new_cvv()?);
+                }
+            }
+            Kind::SshKey => {
+                if prompt::confirm("Replace the private key?")? {
+                    new_secret = Some(ask_private_key()?);
+                }
+                if prompt::confirm("Change the passphrase?")? {
+                    passphrase = Some(ask_new_passphrase()?);
+                }
+            }
+            Kind::Identity => {
+                if prompt::confirm("Replace the number?")? {
+                    new_secret = Some(ask_identity_number()?);
+                }
+            }
             Kind::Note => {}
         }
     } else {
@@ -848,6 +1352,9 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
         } else if a.password {
             new_secret = Some(match kind {
                 Kind::Api => ask_api_key()?,
+                Kind::Card => ask_card_number()?,
+                Kind::SshKey => ask_private_key()?,
+                Kind::Identity => ask_identity_number()?,
                 _ => {
                     let first = prompt::secret("New password: ")?;
                     if prompt::stdin_is_tty() {
@@ -859,6 +1366,23 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
                     Zeroizing::new(first.expose_secret().to_string())
                 }
             });
+        }
+        if a.expiry {
+            expiry = Some(prompt::line("New expiry date, e.g. 08/29 (empty = clear): ")?);
+        }
+        if a.cvv {
+            cvv = Some(ask_new_cvv()?);
+        }
+        if a.public_key {
+            public_key = Some(prompt::line("New public key (one line, empty = clear): ")?);
+        }
+        if a.key_passphrase {
+            passphrase = Some(ask_new_passphrase()?);
+        }
+        if a.totp {
+            totp = Some(ask_totp()?);
+        } else if a.no_totp {
+            totp = Some(Zeroizing::new(String::new()));
         }
     }
 
@@ -887,14 +1411,42 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
         if let Some(p) = &new_secret {
             entry.set_password(key, p)?;
         }
+        if let Some(x) = &expiry {
+            entry.set_expiry(key, x)?;
+        }
+        if let Some(c) = &cvv {
+            entry.set_cvv(key, c)?;
+        }
+        if let Some(p) = &public_key {
+            entry.set_public_key(key, p)?;
+        }
+        if let Some(p) = &passphrase {
+            entry.set_passphrase(key, p)?;
+        }
+        if let Some(t) = &totp {
+            entry.set_totp_secret(key, t)?;
+        }
         if let Some(new_name) = &rename {
             entry.set_name(new_name)?;
+        }
+        if a.favorite || a.no_favorite {
+            entry.set_favorite(a.favorite);
         }
         Ok(())
     })?;
     let final_name = rename.as_deref().map_or(old_name, |n| n.trim().to_string());
     uv.save()?;
     ui::success(&format!("Item '{final_name}' updated."));
+    if a.favorite {
+        ui::info("Pinned as a favorite (`cakepass list --favorites`).");
+    } else if a.no_favorite {
+        ui::info("No longer a favorite.");
+    }
+    match &totp {
+        Some(t) if t.is_empty() => ui::info("The TOTP secret was removed."),
+        Some(_) => totp_saved_hint(&final_name),
+        None => {}
+    }
     if let (Some(p), Some(bits)) = (&new_secret, generated_bits) {
         report_generated(&final_name, p, bits);
     }
@@ -957,24 +1509,40 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 
 fn summary(entries: &[&Entry]) -> String {
     let count = |k: Kind| entries.iter().filter(|e| e.kind() == k).count();
-    let parts: Vec<String> =
-        [(Kind::Login, "login", "logins"), (Kind::Api, "API key", "API keys"), (Kind::Note, "note", "notes")]
-            .iter()
-            .filter(|&&(k, _, _)| count(k) > 0)
-            .map(|&(k, one, many)| plural(count(k), one, many))
-            .collect();
+    let words = |k: Kind| match k {
+        Kind::Login => ("login", "logins"),
+        Kind::Api => ("API key", "API keys"),
+        Kind::Card => ("card", "cards"),
+        Kind::SshKey => ("SSH key", "SSH keys"),
+        Kind::Identity => ("identity", "identities"),
+        Kind::Note => ("note", "notes"),
+    };
+    let parts: Vec<String> = Kind::ALL
+        .iter()
+        .filter(|&&k| count(k) > 0)
+        .map(|&k| {
+            let (one, many) = words(k);
+            plural(count(k), one, many)
+        })
+        .collect();
     format!("{}: {}", plural(entries.len(), "item", "items"), parts.join(" · "))
 }
 
-fn list(vault: &Vault, key: &ItemKey, tag: Option<&str>, kind: Option<Kind>) -> Result<()> {
+fn list(vault: &Vault, key: &ItemKey, tag: Option<&str>, kind: Option<Kind>, favorites: bool) -> Result<()> {
     let entries: Vec<&Entry> = vault
         .entries()
         .iter()
-        .filter(|e| tag.is_none_or(|t| e.has_tag(t)) && kind.is_none_or(|k| e.kind() == k))
+        .filter(|e| {
+            tag.is_none_or(|t| e.has_tag(t))
+                && kind.is_none_or(|k| e.kind() == k)
+                && (!favorites || e.is_favorite())
+        })
         .collect();
     if entries.is_empty() {
         if vault.is_empty() {
             ui::info("The vault is still empty. Add an item with `cakepass add <name>`.");
+        } else if favorites && !vault.entries().iter().any(Entry::is_favorite) {
+            ui::info("No favorites yet. Pin an item with `cakepass edit <name> --favorite`.");
         } else {
             ui::info("No items match.");
         }
@@ -982,6 +1550,62 @@ fn list(vault: &Vault, key: &ItemKey, tag: Option<&str>, kind: Option<Kind>) -> 
     }
     print_table(&entries, key)?;
     ui::info(&summary(&entries));
+    Ok(())
+}
+
+/// `cakepass audit`: the password health check. Only item names and counts
+/// are printed, never a secret or anything derived from one.
+fn audit(vault: &Vault, key: &ItemKey, older_than_days: u64) -> Result<()> {
+    let weak = |s: &str| prompt::strength(s).0 < prompt::MIN_SCORE;
+    let report = cakepass::audit::audit(vault, key, cakepass::vault::now(), older_than_days, weak)?;
+    let skipped = vault.len() - report.checked;
+    println!(
+        "{}",
+        ui::bold(&format!(
+            "Password health check: {}",
+            plural(report.checked, "login or API key", "logins and API keys")
+        ))
+    );
+    if skipped > 0 {
+        ui::info(&format!(
+            "({} not checked: cards, SSH keys, identities and notes have no password to judge.)",
+            plural(skipped, "other item", "other items")
+        ));
+    }
+    let names = |list: &[String]| {
+        for n in list {
+            println!("  - {}", ui::safe(n, false));
+        }
+    };
+    println!();
+    println!("Weak: {} (strength below {} of 4: easy to guess)", report.weak.len(), prompt::MIN_SCORE);
+    names(&report.weak);
+    let reused_items: usize = report.reused.iter().map(Vec::len).sum();
+    println!(
+        "Reused: {} (the same password or key in more than one item{})",
+        reused_items,
+        match report.reused.len() {
+            0 => String::new(),
+            n => format!("; {}", plural(n, "group", "groups")),
+        }
+    );
+    for group in &report.reused {
+        let group: Vec<String> = group.iter().map(|n| ui::safe(n, false)).collect();
+        println!("  - {}", group.join(", "));
+    }
+    println!("Stale: {} (not changed in more than {older_than_days} days)", report.stale.len());
+    names(&report.stale);
+    println!("Empty: {} (no password or key)", report.empty.len());
+    names(&report.empty);
+    println!();
+    if report.is_clean() {
+        ui::success("Nothing to improve: no weak, reused, stale or empty passwords.");
+    } else {
+        ui::info(
+            "Change a password with `cakepass edit <name> --generate` (and on the website), \
+             most urgent first: reused, then weak.",
+        );
+    }
     Ok(())
 }
 
@@ -1063,6 +1687,7 @@ fn generate(
                 url: None,
                 tags: None,
                 generate: false,
+                totp: false,
                 gen_opts: g.clone(),
             };
             add_item(uv, args, Some((secret, bits)))
@@ -1072,6 +1697,8 @@ fn generate(
 
 fn passwd(uv: &mut UnlockedVault, a: &KdfChangeArgs) -> Result<()> {
     let cur = uv.kdf();
+    // The key file (if any) stays; it is needed to make the new key.
+    let kf = key_file_with_warnings(uv.uses_key_file())?;
     let kdf = KdfParams {
         memory_kib: match a.kdf_memory {
             Some(m) => m.checked_mul(1024).ok_or(Error::InvalidKdfParams("too much memory"))?,
@@ -1081,10 +1708,12 @@ fn passwd(uv: &mut UnlockedVault, a: &KdfChangeArgs) -> Result<()> {
         parallelism: a.kdf_parallelism.unwrap_or(cur.parallelism),
     };
     kdf.validate()?;
+    crypto::ensure_memory(&kdf, MemoryUse::Create)?;
     warn_if_weak_kdf(&kdf);
     ui::info("Choose a new master password. The same warning applies: forgotten = everything lost.");
     let new_pw: SecretString = prompt::new_strong_password("master password")?;
-    uv.change_password(new_pw.expose_secret().as_bytes(), kdf)?;
+    uv.rekey(credentials(&new_pw, &kf), kdf)?;
+    drop(kf);
     ui::success("Master password changed. All items and the backup now use the new key.");
     ui::warn(
         "Copies and exports you made yourself earlier still open with the OLD password. \
@@ -1099,20 +1728,32 @@ fn export(uv: &UnlockedVault, file: &Path) -> Result<()> {
     }
     ui::info("Choose a password for the export file (it may differ from your master password).");
     let pw = prompt::new_strong_password("export password")?;
-    uv.export_to(file, pw.expose_secret().as_bytes(), KdfParams::DEFAULT)?;
+    uv.export_to(file, pw.expose_secret().as_bytes(), uv.export_params())?;
     ui::success(&format!(
         "{} exported (encrypted) to {}",
         plural(uv.vault.len(), "item", "items"),
         file.display()
     ));
     ui::info("Without the export password this file is useless. Import it with `cakepass import <file>`.");
+    if uv.uses_key_file() {
+        ui::warn(
+            "The export file is protected by the export password ONLY, not by your key file. \
+             Keep it as safe as the vault, and delete it when you no longer need it.",
+        );
+    }
     Ok(())
 }
 
 fn import_vault(uv: &mut UnlockedVault, file: &Path) -> Result<()> {
+    // An export file has only a password; a copy of a vault may need its key file.
+    let header = storage::read_header(file)?;
+    crypto::ensure_memory(&header.kdf, MemoryUse::Unlock)?;
+    let kf = key_file_with_warnings(header.key_file)?;
     let pw = prompt::secret("Password of the import file: ")?;
-    let (other, other_key) = storage::read_vault_file(file, pw.expose_secret().as_bytes())?;
+    let read = storage::read_vault_file(file, credentials(&pw, &kf));
     drop(pw);
+    drop(kf);
+    let (other, other_key) = read.inspect_err(|e| explain_failure(e, header.key_file))?;
     let (vault, key) = uv.parts_mut();
     let (added, skipped) = vault.merge(&other, other_key.item_key(), key)?;
     if added > 0 {
@@ -1147,6 +1788,13 @@ fn import_csv(uv: &mut UnlockedVault, file: &Path) -> Result<()> {
         "{added} item(s) imported; {duplicates} already present; {} empty or invalid row(s) skipped.",
         parsed.skipped
     ));
+    if parsed.totp_dropped > 0 {
+        ui::warn(&format!(
+            "{} item(s) were imported WITHOUT their TOTP secret: it was not a time-based (TOTP) secret \
+             cakepass can use (e.g. a Steam or counter-based code). Keep using your authenticator app for those.",
+            parsed.totp_dropped
+        ));
+    }
     drop(parsed);
 
     if prompt::confirm(&format!("Do you want to overwrite and delete {} now?", file.display()))? {
@@ -1183,18 +1831,18 @@ fn info(paths: &VaultPaths) -> Result<()> {
             match storage::read_header(&paths.file) {
                 Ok(h) => {
                     println!("  Format version:   {}", h.version);
+                    println!("  Security level:   {}", level_name(&h.kdf));
                     println!(
-                        "  Key derivation:   Argon2id, {} MiB, {} iterations, {} lanes{}",
-                        h.kdf.memory_kib / 1024,
-                        h.kdf.iterations,
-                        h.kdf.parallelism,
-                        if h.kdf.weaker_than_default() { " (lighter than recommended)" } else { "" }
+                        "  Key derivation:   {}{}",
+                        h.kdf.describe(),
+                        if h.kdf.weaker_than_standard() { " (lighter than recommended)" } else { "" }
                     );
+                    println!("  Key file:         {}", key_file_status(h.key_file));
                     println!("  Encryption:       XChaCha20-Poly1305");
                     if h.version >= 2 {
                         println!(
-                            "  Second layer:     every item field (username, e-mail, URL, password/key, notes) \
-                             encrypted separately (XChaCha20-Poly1305, own HKDF subkey)"
+                            "  Second layer:     every item field (username, e-mail, URL, password/key, notes, \
+                             card, SSH key and TOTP fields) encrypted separately (XChaCha20-Poly1305, own HKDF subkey)"
                         );
                     } else {
                         println!("  Second layer:     not yet (old format; upgraded when opened)");
@@ -1224,6 +1872,7 @@ fn info(paths: &VaultPaths) -> Result<()> {
     println!("{}", ui::bold("Settings"));
     println!("  Animation:        {}", if cfg.animation { "on" } else { "off" });
     println!("  Auto-lock:        after {} minute(s) of inactivity", cfg.lock_timeout_minutes);
+    println!("  Key file path:    {}", cfg.keyfile.as_ref().map_or("-".into(), |p| p.display().to_string()));
     println!("  Settings file:    {}", config::path().map_or("-".to_string(), |p| p.display().to_string()));
 
     println!("{}", ui::bold("System"));
@@ -1245,7 +1894,285 @@ fn info(paths: &VaultPaths) -> Result<()> {
     Ok(())
 }
 
+/// "required: /path (found)" / "not used".
+fn key_file_status(required: bool) -> String {
+    if !required {
+        return "not used".into();
+    }
+    match key_file_path() {
+        None => "required, but none is set (use --keyfile PATH or `cakepass config set keyfile PATH`)".into(),
+        Some(p) => {
+            // Only looks whether it is there; the contents are not read.
+            let found = fs::symlink_metadata(&p).is_ok_and(|m| m.is_file());
+            format!("required: {} ({})", p.display(), if found { "found" } else { "NOT FOUND right now" })
+        }
+    }
+}
+
+/// `cakepass security` without options: the level, the key file and the
+/// unlock time measured on this computer. Needs no password.
+fn security_show(paths: &VaultPaths) -> Result<()> {
+    let h = storage::read_header(&paths.file)?;
+    println!("{}", ui::bold("CakePass security"));
+    println!("  Vault:            {} (format version {})", paths.file.display(), h.version);
+    let level = SecurityLevel::of(&h.kdf);
+    println!("  Security level:   {}", level.map_or("custom", SecurityLevel::title));
+    println!(
+        "  Key derivation:   {}{}",
+        h.kdf.describe(),
+        if h.kdf.weaker_than_standard() { " (lighter than recommended)" } else { "" }
+    );
+    println!("  Key file:         {}", key_file_status(h.key_file));
+    ui::info("Measuring how long unlocking takes on this computer…");
+    match crypto::measure_unlock(&h.kdf) {
+        Ok(d) => println!("  Unlock time:      about {} on this computer (measured just now)", seconds(d)),
+        Err(e) => println!("  Unlock time:      cannot run here right now: {e}"),
+    }
+    println!("{}", ui::bold("Levels"));
+    for l in SecurityLevel::ALL {
+        let mark = if level == Some(l) { "  ← this vault" } else { "" };
+        println!(
+            "  {:<9} {:>4} MiB  needs about {} MiB free{mark}",
+            l.name(),
+            l.params().memory_kib / 1024,
+            l.min_available_mib()
+        );
+    }
+    ui::info("Change it:  cakepass security --level standard|high|maximum");
+    if h.key_file {
+        ui::info(
+            "Key file:   cakepass security --new-keyfile PATH (another one)   |   --no-keyfile (stop using one)",
+        );
+    } else {
+        ui::info("Key file:   cakepass keyfile create PATH, then cakepass security --new-keyfile PATH");
+    }
+    Ok(())
+}
+
+/// Read a key file that is about to protect a vault, with the checks that
+/// only make sense then (exists, is not the vault itself, not next to it).
+pub(super) fn load_new_key_file(path: &Path, paths: &VaultPaths) -> Result<LoadedKeyFile> {
+    let path = absolute_path(path);
+    if fs::symlink_metadata(&path).is_err() {
+        return Err(Error::InvalidInput(format!(
+            "there is no file at {}. Make a new key file first with `cakepass keyfile create {}`",
+            path.display(),
+            path.display()
+        )));
+    }
+    if keyfile::same_file(&path, &paths.file) || keyfile::same_file(&path, &paths.backup) {
+        return Err(Error::InvalidInput(
+            "the vault file cannot be its own key file (it changes every time it is saved)".into(),
+        ));
+    }
+    let loaded = keyfile::load(&path)?;
+    for w in &loaded.warnings {
+        ui::warn(w);
+    }
+    let same_folder = match (path.parent().map(fs::canonicalize), fs::canonicalize(paths.dir())) {
+        (Some(Ok(a)), Ok(b)) => a == b,
+        _ => false,
+    };
+    if same_folder {
+        ui::warn(
+            "The key file is in the same folder as the vault. Anyone who copies that folder (or the \
+             disk) gets both, and then the key file adds nothing. Keep it somewhere else, e.g. on a USB stick.",
+        );
+    }
+    Ok(loaded)
+}
+
+/// Store the path of the key file in the settings, unless they already point
+/// to a key file of another vault. `previous` is the key file this vault used
+/// until now (when it is in the settings, it is replaced).
+pub(super) fn remember_key_file(new: &Path, previous: Option<&Path>) {
+    let mut cfg = config::load();
+    match cfg.keyfile.as_deref() {
+        Some(p) if p == new => return,
+        Some(p) if Some(p) != previous => {
+            ui::info(&format!(
+                "Your settings point to another key file ({}), maybe for another vault; they were not \
+                 changed. Open this vault with --keyfile {}, or set it with `cakepass config set keyfile {}`.",
+                p.display(),
+                new.display(),
+                new.display()
+            ));
+            return;
+        }
+        _ => {}
+    }
+    let Some(text) = new.to_str().and_then(config::parse_keyfile_path) else {
+        ui::info("The key file path cannot be stored in the settings; give it with --keyfile each time.");
+        return;
+    };
+    cfg.keyfile = Some(text.clone());
+    match config::save(&cfg) {
+        Ok(()) => {
+            set_configured_key_file(Some(text));
+            ui::info(&format!(
+                "Saved in your settings: keyfile={} (only the path), so you do not have to type it.",
+                new.display()
+            ));
+        }
+        Err(e) => ui::warn(&format!("The key file path was not saved in the settings: {e}")),
+    }
+}
+
+/// Keep the key file of the settings that this process uses in step with the
+/// settings file (e.g. the screen mode opened right after the setup wizard).
+pub(super) fn set_configured_key_file(path: Option<PathBuf>) {
+    key_file_setting().configured = path;
+}
+
+/// Remove the key file from the settings if it is the one this vault used.
+fn forget_key_file(removed: Option<&Path>) {
+    let mut cfg = config::load();
+    if removed.is_some() && cfg.keyfile.as_deref() == removed {
+        cfg.keyfile = None;
+        match config::save(&cfg) {
+            Ok(()) => {
+                set_configured_key_file(None);
+                ui::info("Removed the key file path from your settings.");
+            }
+            Err(e) => ui::warn(&format!("The settings were not changed: {e}")),
+        }
+    }
+}
+
+/// The plain warning about losing a key file.
+pub(super) fn key_file_loss_warning() {
+    ui::banner(&[
+        "Keep a copy of your key file somewhere else (a second USB stick).",
+        "If you lose the key file and every copy of it, your vault is lost",
+        "for good: there is no recovery, not even with the right password.",
+        "Back up the key file SEPARATELY from the vault: a vault backup is",
+        "useless without the key file, and both together protect nothing.",
+    ]);
+}
+
+/// `cakepass security --level/--new-keyfile/--no-keyfile`: re-key the vault
+/// with the same master password (fresh salt), atomically, backup included.
+/// `open` is the vault when it is already unlocked (in `cakepass shell`).
+fn security_change(paths: &VaultPaths, open: Option<&mut UnlockedVault>, a: &SecurityArgs) -> Result<()> {
+    let (cur_kdf, cur_kf) = match &open {
+        Some(uv) => (uv.kdf(), uv.uses_key_file()),
+        None => {
+            let h = preflight(paths)?;
+            (h.kdf, h.key_file)
+        }
+    };
+    let target_kdf = a.level.map_or(cur_kdf, SecurityLevel::params);
+    let target_kf = !a.no_keyfile && (cur_kf || a.new_keyfile.is_some());
+    if target_kdf == cur_kdf && a.new_keyfile.is_none() && target_kf == cur_kf {
+        match a.level {
+            Some(l) => ui::info(&format!("The vault already uses the {} level; nothing changed.", l.name())),
+            None => ui::info("This vault does not use a key file; nothing changed."),
+        }
+        return Ok(());
+    }
+    // Everything that can be checked is checked before the password is typed.
+    crypto::ensure_memory(&target_kdf, MemoryUse::Create)?;
+    let new_path = a.new_keyfile.as_deref().map(absolute_path);
+    let new_kf = new_path.as_deref().map(|p| load_new_key_file(p, paths)).transpose()?;
+    let cur_path = key_file_path().filter(|_| cur_kf);
+    let kf = key_file_with_warnings(cur_kf)?;
+    let in_shell = open.is_some();
+    let pw = prompt::secret(if in_shell {
+        "Current master password (to confirm): "
+    } else {
+        "Master password: "
+    })?;
+    let mut owned = None;
+    let uv: &mut UnlockedVault = match open {
+        Some(uv) => {
+            if !uv.verify_password(credentials(&pw, &kf))? {
+                explain_failure(&Error::Decrypt, cur_kf);
+                return Err(Error::Decrypt);
+            }
+            uv
+        }
+        None => {
+            let opened = UnlockedVault::open(paths.clone(), credentials(&pw, &kf));
+            let mut uv = opened.inspect_err(|e| explain_failure(e, cur_kf))?;
+            after_unlock(&mut uv);
+            owned.insert(uv)
+        }
+    };
+    let pepper = match (&new_kf, a.no_keyfile) {
+        (Some(new), _) => Some(&new.pepper),
+        (None, true) => None,
+        (None, false) => kf.as_ref().map(|k| &k.pepper),
+    };
+    ui::info(&format!("Re-encrypting the vault ({}, a fresh salt)…", target_kdf.describe()));
+    let start = Instant::now();
+    uv.rekey(Credentials::new(pw.expose_secret().as_bytes(), pepper), target_kdf)?;
+    let took = start.elapsed();
+    drop(pw);
+    drop(kf);
+    drop(new_kf);
+
+    if target_kdf != cur_kdf {
+        ui::success(&format!(
+            "Security level: {} ({}). Unlocking takes about {} on this computer.",
+            SecurityLevel::of(&target_kdf).map_or("custom", SecurityLevel::title),
+            target_kdf.describe(),
+            seconds(took)
+        ));
+    }
+    if let Some(p) = &new_path {
+        ui::success(&format!(
+            "The vault now needs the key file {} as well as the master password.",
+            p.display()
+        ));
+        remember_key_file(p, cur_path.as_deref());
+        // In `cakepass shell`, re-checks from now on use the new key file.
+        key_file_setting().explicit = Some(p.clone());
+        key_file_loss_warning();
+    }
+    if a.no_keyfile && cur_kf {
+        ui::success("The vault no longer needs a key file: the master password alone opens it.");
+        forget_key_file(cur_path.as_deref());
+    }
+    ui::info("All items and the .bak backup now use the new key.");
+    if new_path.is_some() || (a.no_keyfile && cur_kf) {
+        ui::warn(
+            "Copies of the vault you made yourself earlier still open the old way (the old key file, \
+             or without one). Make new copies, and delete the old ones if they could fall into the wrong hands.",
+        );
+    }
+    Ok(())
+}
+
+/// `cakepass keyfile create PATH`.
+fn keyfile_command(action: KeyfileAction) -> Result<()> {
+    match action {
+        KeyfileAction::Create { path } => {
+            let path = absolute_path(&path);
+            let warnings = keyfile::create(&path)?;
+            ui::success(&format!(
+                "Key file created: {} ({} random bytes, only you can read it).",
+                path.display(),
+                keyfile::NEW_KEY_FILE_LEN
+            ));
+            for w in warnings {
+                ui::warn(&w);
+            }
+            key_file_loss_warning();
+            ui::info(&format!("Use it for your vault:  cakepass security --new-keyfile {}", path.display()));
+            Ok(())
+        }
+    }
+}
+
 fn completions(shell: clap_complete::Shell) -> Result<()> {
     clap_complete::generate(shell, &mut args::command(), "cakepass", &mut io::stdout());
+    Ok(())
+}
+
+/// `cakepass man`: the manual page in roff, made from the same definition as
+/// `--help` (so it never goes out of date). Packaging writes it to
+/// `/usr/share/man/man1/cakepass.1`.
+fn man_page() -> Result<()> {
+    clap_mangen::Man::new(args::command()).render(&mut io::stdout())?;
     Ok(())
 }

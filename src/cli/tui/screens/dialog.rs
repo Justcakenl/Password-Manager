@@ -8,6 +8,8 @@ use std::cell::Cell;
 
 use zeroize::Zeroizing;
 
+use cakepass::crypto::SecurityLevel;
+
 use super::super::grid::{Grid, Rect, str_width, wrap};
 use super::super::input::TextInput;
 use super::super::keys::{Event, Key};
@@ -118,6 +120,8 @@ pub enum PromptPurpose {
     RepeatMaster(Zeroizing<String>),
     /// The master password, to read the vault again.
     Reload,
+    /// The current master password, before switching to this security level.
+    ConfirmLevel(SecurityLevel),
 }
 
 pub struct Prompt {
@@ -199,6 +203,111 @@ impl Prompt {
     }
 }
 
+/// What was chosen in a [`Picker`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Picked {
+    /// The first row: a new item instead of an existing one.
+    New,
+    Name(String),
+}
+
+/// Choose an item by its name: typing narrows the list, ↑ ↓ choose, Enter
+/// takes it. The first row is always "a new item". Only names are shown
+/// (they are not secret; `cakepass list` prints them too).
+pub struct Picker {
+    pub title: String,
+    pub lines: Vec<String>,
+    pub new_label: &'static str,
+    pub names: Vec<String>,
+    pub filter: TextInput,
+    /// The selected row of `visible()` (0 = the new-item row).
+    pub sel: usize,
+}
+
+impl Picker {
+    /// Rows of the list at most (the dialog grows up to this).
+    const ROWS: u16 = 8;
+
+    pub fn new(title: &str, lines: Vec<String>, new_label: &'static str, names: Vec<String>) -> Picker {
+        Picker { title: title.into(), lines, new_label, names, filter: TextInput::new(false), sel: 0 }
+    }
+
+    /// The names that match what was typed (case-insensitive, anywhere).
+    pub fn visible(&self) -> Vec<&str> {
+        let f = self.filter.as_str().trim().to_lowercase();
+        self.names.iter().map(String::as_str).filter(|n| n.to_lowercase().contains(&f)).collect()
+    }
+
+    /// `Some(Some(_))`: chosen, `Some(None)`: cancelled, `None`: still choosing.
+    pub fn handle(&mut self, ev: Event) -> Option<Option<Picked>> {
+        let rows = self.visible().len() + 1;
+        let key = match ev {
+            Event::Paste(text) => {
+                if self.filter.insert_str(&text) {
+                    self.sel = 0;
+                }
+                return None;
+            }
+            Event::Key(k) => k,
+        };
+        match key {
+            Key::Esc => return Some(None),
+            Key::Up => self.sel = self.sel.saturating_sub(1),
+            Key::Down => self.sel = (self.sel + 1).min(rows - 1),
+            Key::PageUp => self.sel = self.sel.saturating_sub(Self::ROWS as usize),
+            Key::PageDown => self.sel = (self.sel + Self::ROWS as usize).min(rows - 1),
+            Key::Enter => {
+                return Some(Some(match self.sel {
+                    0 => Picked::New,
+                    i => Picked::Name(self.visible()[i - 1].to_string()),
+                }));
+            }
+            k => {
+                if self.filter.edit(k) {
+                    // The first match, or the new-item row when nothing matches.
+                    self.sel = usize::from(!self.visible().is_empty());
+                }
+            }
+        }
+        None
+    }
+
+    pub fn draw(&self, g: &mut Grid, area: Rect) -> Vec<Hint> {
+        let visible = self.visible();
+        let rows = (visible.len() as u16 + 1).min(Self::ROWS);
+        let (inner, y) = text_box(g, area, &self.title, &self.lines, rows + 3, false);
+        // The search line.
+        let y = y + 1;
+        let label = "Find";
+        g.print(inner.x + 1, y, 5, label, Style::ACCENT_BOLD);
+        let fx = inner.x + 7;
+        let fw = inner.w.saturating_sub(9);
+        let cursor = self.filter.draw(g, Rect::new(fx, y, fw, 1), Style::BOLD, None);
+        g.hline(fx, y + 1, fw, Style::DIM);
+        g.set_cursor(Some(cursor));
+        // The list, scrolled so the selection is visible (in a small window
+        // the box may have room for fewer rows than asked for).
+        let rows = rows.min(inner.bottom().saturating_sub(y + 2)).max(1);
+        let top = self.sel.saturating_sub(rows as usize - 1);
+        let names = std::iter::once(self.new_label).chain(visible.iter().copied());
+        let lw = inner.w.saturating_sub(2);
+        for (row, (i, name)) in names.enumerate().skip(top).take(rows as usize).enumerate() {
+            let ly = y + 2 + row as u16;
+            if ly >= inner.bottom() {
+                break;
+            }
+            let style = match (i == self.sel, i == 0) {
+                (true, _) => Style::SELECTED,
+                (false, true) => Style::ACCENT_BOLD,
+                (false, false) => Style::PLAIN,
+            };
+            g.fill(Rect::new(inner.x + 1, ly, lw, 1), style);
+            g.print(inner.x + 2, ly, lw.saturating_sub(1), name, style);
+        }
+        vec![("type", "to find"), ("↑↓", "choose"), ("Enter", "OK"), ("Esc", "cancel")]
+    }
+}
+
 /// A message with an OK button.
 pub struct Message {
     pub title: String,
@@ -234,18 +343,26 @@ impl HelpPage {
                 "Keys: the list",
                 &[
                     ("↑ ↓  PgUp PgDn  Home End", "choose an item"),
-                    ("← →  Tab", "All · Logins · API keys · Notes"),
+                    ("← →  Tab", "All · Logins · API keys · Cards · IDs · SSH · Notes · 2FA (hide some: s)"),
                     ("/", "search (name, type, tags, username, e-mail, URL)"),
                     ("", "any key that is not a shortcut (a capital, a digit) starts the search too"),
                     ("Esc", "clear the search"),
-                    ("Enter  v", "show / hide password, key and notes (hides itself after 10 s)"),
-                    ("c", "copy the password, API key or note (cleared after 20 s)"),
+                    ("Enter  v", "show / hide the secrets and notes (hides itself after 10 s)"),
+                    (
+                        "c",
+                        "copy the password, API key, note, card number, private key or document number \
+                         (cleared after the clip-time: 20 s unless set otherwise)",
+                    ),
                     ("u  m", "copy the username / the e-mail address"),
+                    ("t", "show and copy the current two-factor (TOTP) code"),
+                    ("", "the 2FA tab lists every item with a code; there Enter or c copies it, a adds one"),
+                    ("p", "copy the public key of an SSH key"),
+                    ("f", "pin or unpin as a favorite (★; favorites come first)"),
                     ("a  n", "add an item"),
                     ("e", "edit the selected item"),
                     ("d  Del", "delete it (asks first)"),
                     ("g", "password generator"),
-                    ("s", "settings: animation, auto-lock, master password"),
+                    ("s", "settings: animation, auto-lock, tabs, master password"),
                     ("l", "lock: wipe the key from memory and close"),
                     ("q  Ctrl+C", "quit (locks too)"),
                 ],
@@ -257,8 +374,9 @@ impl HelpPage {
                     ("← →  Home End", "move in the text; on Type: choose the type"),
                     ("Backspace  Del", "delete a character"),
                     ("Ctrl+U", "clear the field"),
-                    ("Enter", "next field (in Notes: a new line)"),
-                    ("Ctrl+R", "show / hide the password"),
+                    ("Enter", "next field (in Notes and a private key: a new line)"),
+                    ("Ctrl+R", "show / hide the password (and the other hidden fields)"),
+                    ("2FA secret", "paste the secret under a site's QR code; Ctrl+U there removes the code"),
                     ("Ctrl+G", "password generator"),
                     ("Ctrl+S", "save"),
                     ("Esc", "cancel (asks first when you changed something)"),
@@ -273,7 +391,7 @@ impl HelpPage {
                     ("r", "a new password"),
                     ("v", "show / hide it"),
                     ("e", "type your own instead (asked twice)"),
-                    ("c", "copy it (the clipboard is cleared after 20 s)"),
+                    ("c", "copy it (the clipboard is cleared after the clip-time, 20 s by default)"),
                     ("Enter", "use it (from the list: save it as a new login)"),
                     ("Esc", "cancel"),
                 ],
@@ -282,9 +400,14 @@ impl HelpPage {
                 "Keys: settings",
                 &[
                     ("↑ ↓", "choose a setting"),
-                    ("← →", "change it (saved right away)"),
+                    (
+                        "← →",
+                        "change it (saved right away); on Tabs: choose a type; on Security level: a level",
+                    ),
                     ("PgUp PgDn", "auto-lock +10 / -10 minutes"),
-                    ("Enter", "switch / change the master password"),
+                    ("Enter", "switch / change the master password / apply the chosen security level"),
+                    ("Enter  Space", "on Tabs: show or hide the tab of that type (its items stay under All)"),
+                    ("", "the unlock time of a level is measured on this computer when you choose it"),
                     ("Esc", "back to the list"),
                 ],
             ),

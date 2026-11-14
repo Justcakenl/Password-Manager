@@ -301,7 +301,9 @@ fn info_works_without_password() {
         contains("Argon2id, 8 MiB")
             .and(contains("Permissions:      600"))
             .and(contains("Core dumps off:   yes"))
-            .and(contains("Format version:   2"))
+            .and(contains("Format version:   3"))
+            .and(contains("Security level:   custom"))
+            .and(contains("Key file:         not used"))
             .and(contains("encrypted separately")),
     );
 }
@@ -538,17 +540,25 @@ fn config_file(v: &Vaulty) -> std::path::PathBuf {
 #[test]
 fn setup_saves_settings_and_creates_the_vault() {
     let v = Vaulty::new();
-    // animation? n | lock minutes: 10 | master password, repeated
-    v.run(&["setup"], &format!("n\n10\n{PW}\n{PW}\n")).success().stderr(
-        contains("Step 1 of 3")
-            .and(contains("Step 2 of 3"))
-            .and(contains("Step 3 of 3"))
+    // animation? n | lock minutes: 10 | level: 1 (standard) | make a passphrase? n |
+    // master password, repeated | key file? (Enter = no)
+    v.run(&["setup"], &format!("n\n10\n1\nn\n{PW}\n{PW}\n\n")).success().stderr(
+        contains("Step 1 of 5")
+            .and(contains("Step 2 of 5"))
+            .and(contains("Step 3 of 5 — Security level"))
+            .and(contains("High (recommended)"))
+            .and(contains("Standard: unlocking takes about"))
+            .and(contains("Step 4 of 5 — Master password"))
+            .and(contains("Make a strong passphrase for me? [Y/n]"))
+            .and(contains("Step 5 of 5 — Extra protection: a key file"))
+            .and(contains("No key file."))
             .and(contains("Settings saved"))
             .and(contains("Vault created"))
             .and(contains("All set!")),
     );
     // (the real setup uses full-strength Argon2; --kdf-* flags are exercised in the next test)
     assert!(v.path.exists());
+    v.run(&["info"], "").success().stdout(contains("Security level:   standard"));
     let cfg = std::fs::read_to_string(config_file(&v)).unwrap();
     assert!(cfg.contains("animation=off") && cfg.contains("lock_timeout_minutes=10"), "{cfg}");
     // The vault works, and `info` shows the saved settings.
@@ -561,11 +571,13 @@ fn setup_saves_settings_and_creates_the_vault() {
 #[test]
 fn setup_with_empty_answers_uses_the_defaults() {
     let v = Vaulty::new();
+    // (the level comes from the flags; "n" = type my own password; Enter = no key file)
     v.run(
         &["setup", FAST_KDF[0], FAST_KDF[1], FAST_KDF[2], FAST_KDF[3], FAST_KDF[4], FAST_KDF[5]],
-        &format!("\n\n{PW}\n{PW}\n"),
+        &format!("\n\nn\n{PW}\n{PW}\n\n"),
     )
-    .success();
+    .success()
+    .stderr(contains("Using the settings from the command line").and(contains("Step 3 of 5")));
     let cfg = std::fs::read_to_string(config_file(&v)).unwrap();
     assert!(cfg.contains("animation=on") && cfg.contains("lock_timeout_minutes=5"), "{cfg}");
     assert!(v.path.exists());
@@ -593,16 +605,18 @@ fn setup_rejects_bad_answers_and_weak_passwords() {
     v.run(&["setup"], "y\n99999\n").failure().stderr(contains("between 1 and 1440"));
     assert!(!v.path.exists(), "no vault after bad answers");
     // A weak master password is refused; no vault is created.
-    v.run(&["setup", FAST_KDF[0], FAST_KDF[1]], "y\n5\npassword123\npassword123\n")
+    v.run(&["setup", FAST_KDF[0], FAST_KDF[1]], "y\n5\nn\npassword123\npassword123\n")
         .failure()
         .stderr(contains("too weak"));
+    // A level this program does not know.
+    v.run(&["setup"], "y\n5\n9\n").failure().stderr(contains("choose 1, 2 or 3"));
     assert!(!v.path.exists());
 }
 
 #[test]
 fn setup_asks_for_a_password_twice() {
     let v = Vaulty::new();
-    v.run(&["setup", FAST_KDF[0], FAST_KDF[1]], &format!("y\n5\n{PW}\n{PW}x\n"))
+    v.run(&["setup", FAST_KDF[0], FAST_KDF[1]], &format!("y\n5\nn\n{PW}\n{PW}x\n"))
         .failure()
         .stderr(contains("do not match"));
     assert!(!v.path.exists());
@@ -624,7 +638,7 @@ fn config_show_and_set() {
     let cfg = std::fs::read_to_string(config_file(&v)).unwrap();
     assert_eq!(
         cfg.lines().filter(|l| !l.starts_with('#')).collect::<Vec<_>>(),
-        ["animation=off", "lock_timeout_minutes=12"]
+        ["animation=off", "lock_timeout_minutes=12", "clip_time_seconds=20"]
     );
 
     // On/off words are flexible; bad values and unknown keys are refused.
@@ -633,6 +647,16 @@ fn config_show_and_set() {
     v.run(&["config", "set", "lock-timeout", "0"], "").failure().stderr(contains("between 1 and 1440"));
     v.run(&["config", "set", "lock-timeout", "soon"], "").failure();
     v.run(&["config", "set", "colour", "red"], "").failure();
+    // The clipboard time: 5 to 300 seconds; 0 ("never") and a day are refused.
+    v.run(&["config", "set", "clip-time", "45"], "")
+        .success()
+        .stdout(contains("clip-time:     45 second(s)"));
+    for bad in ["0", "4", "301", "86400", "soon"] {
+        v.run(&["config", "set", "clip-time", bad], "")
+            .failure()
+            .stderr(contains("clip-time must be a whole number of seconds between 5 and 300"));
+    }
+    assert!(std::fs::read_to_string(config_file(&v)).unwrap().contains("clip_time_seconds=45\n"));
     // Failed changes left the file alone.
     assert!(std::fs::read_to_string(config_file(&v)).unwrap().contains("animation=on"));
 }
@@ -840,11 +864,11 @@ fn nothing_readable_is_written_to_disk() {
         let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode & 0o077, 0, "{} is not private ({mode:o})", path.display());
     }
-    // The settings file holds only the two settings, no user data.
+    // The settings file holds only the settings, no user data.
     let cfg = files.iter().find(|(p, _)| p.ends_with("cakepass/config")).expect("settings file");
     let cfg = String::from_utf8(cfg.1.clone()).unwrap();
     let data_lines: Vec<&str> = cfg.lines().filter(|l| !l.starts_with('#') && !l.is_empty()).collect();
-    assert_eq!(data_lines, ["animation=off", "lock_timeout_minutes=7"]);
+    assert_eq!(data_lines, ["animation=off", "lock_timeout_minutes=7", "clip_time_seconds=20"]);
 }
 
 #[test]
@@ -856,4 +880,1047 @@ fn old_kluis_folders_are_moved_to_cakepass() {
     k.run(&["config"], "").success().stdout(contains("9 minute"));
     assert!(cfg_home.join("cakepass").join("config").exists());
     assert!(!cfg_home.join("kluis").exists());
+}
+
+// ───────────────────────── security levels and key files (0.4) ─────────────────────────
+
+/// The "error: …" line of a failed run.
+fn error_line(a: &assert_cmd::assert::Assert) -> String {
+    let err = String::from_utf8_lossy(&a.get_output().stderr).into_owned();
+    err.lines().find(|l| l.starts_with("error:")).unwrap_or_default().to_string()
+}
+
+/// A folder that plays the USB stick.
+fn usb(v: &Vaulty) -> PathBuf {
+    let d = v.dir().join("usb");
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+fn make_key_file(v: &Vaulty, name: &str) -> PathBuf {
+    let kf = usb(v).join(name);
+    v.run(&["keyfile", "create", kf.to_str().unwrap()], "").success();
+    kf
+}
+
+/// A vault (light Argon2 settings) that needs the key file `usb/cakepass.key`.
+fn init_with_key_file(v: &Vaulty) -> PathBuf {
+    let kf = make_key_file(v, "cakepass.key");
+    v.cmd()
+        .args(["--keyfile", kf.to_str().unwrap(), "init"])
+        .args(FAST_KDF)
+        .write_stdin(format!("{PW}\n{PW}\n"))
+        .assert()
+        .success()
+        .stderr(
+            contains("Vault created")
+                .and(contains("needs the key file"))
+                .and(contains("Saved in your settings")),
+        );
+    kf
+}
+
+#[test]
+fn keyfile_create_never_overwrites_and_is_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let v = Vaulty::new();
+    let kf = usb(&v).join("cakepass.key");
+    let kf_s = kf.to_str().unwrap();
+    v.run(&["keyfile", "create", kf_s], "")
+        .success()
+        .stderr(contains("Key file created").and(contains("no recovery")).and(contains("--new-keyfile")));
+    let bytes = std::fs::read(&kf).unwrap();
+    assert_eq!(bytes.len(), 64);
+    assert_eq!(std::fs::metadata(&kf).unwrap().permissions().mode() & 0o777, 0o600);
+    v.run(&["keyfile", "create", kf_s], "").failure().stderr(contains("will not overwrite"));
+    assert_eq!(std::fs::read(&kf).unwrap(), bytes, "untouched");
+    let other = usb(&v).join("second.key");
+    v.run(&["keyfile", "create", other.to_str().unwrap()], "").success();
+    assert_ne!(std::fs::read(&other).unwrap(), bytes, "random");
+    let nowhere = v.dir().join("no-such-folder").join("k");
+    v.run(&["keyfile", "create", nowhere.to_str().unwrap()], "").failure().stderr(contains("does not exist"));
+}
+
+#[test]
+fn a_vault_with_a_key_file() {
+    let v = Vaulty::new();
+    let kf = init_with_key_file(&v);
+    let kf_s = kf.to_str().unwrap();
+    // Only the path is in the settings, never the contents.
+    let cfg = std::fs::read(config_file(&v)).unwrap();
+    let key = std::fs::read(&kf).unwrap();
+    assert!(String::from_utf8_lossy(&cfg).contains(&format!("keyfile={kf_s}\n")));
+    assert!(!cfg.windows(16).any(|w| key.windows(16).any(|k| k == w)), "no key bytes in the settings");
+    // The settings point to it, so everything works as usual.
+    v.add("GitHub", "john", ITEM_PW);
+    v.run(&["get", "github", "--show"], &format!("{PW}\n")).success().stdout(contains(ITEM_PW));
+    v.run(&["info"], "").success().stdout(
+        contains("Format version:   3").and(contains("Key file:         required:")).and(contains("(found)")),
+    );
+    v.run(&["config"], "").success().stdout(contains(format!("keyfile:       {kf_s}")));
+
+    // Without the key file: a clear error, before the password is even asked.
+    v.run(&["config", "set", "keyfile", "none"], "").success();
+    v.run(&["get", "github", "--show"], &format!("{PW}\n")).failure().stdout(contains(ITEM_PW).not()).stderr(
+        contains("needs its key file")
+            .and(contains("--keyfile PATH"))
+            .and(contains("CAKEPASS_KEYFILE"))
+            .and(contains("config set keyfile"))
+            .and(contains("Master password").not()),
+    );
+    // Given with --keyfile (before or after the command) or in the environment.
+    v.run(&["--keyfile", kf_s, "get", "github", "--show"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains(ITEM_PW));
+    v.run(&["get", "github", "--show", "--keyfile", kf_s], &format!("{PW}\n")).success();
+    v.cmd()
+        .env("CAKEPASS_KEYFILE", &kf)
+        .args(["get", "github", "--show"])
+        .write_stdin(format!("{PW}\n"))
+        .assert()
+        .success()
+        .stdout(contains(ITEM_PW));
+
+    // A wrong key file and a wrong password give exactly the same error.
+    let other = make_key_file(&v, "other.key");
+    let wrong_kf =
+        v.cmd().env("CAKEPASS_KEYFILE", &other).arg("list").write_stdin(format!("{PW}\n")).assert().failure();
+    let wrong_pw =
+        v.cmd().env("CAKEPASS_KEYFILE", &kf).arg("list").write_stdin("not-it\n").assert().failure();
+    assert_eq!(error_line(&wrong_kf), error_line(&wrong_pw));
+    assert!(error_line(&wrong_kf).contains("decryption failed"));
+    for a in [&wrong_kf, &wrong_pw] {
+        assert!(String::from_utf8_lossy(&a.get_output().stderr).contains("the key file used was"));
+    }
+
+    // --keyfile beats the environment, the environment beats the settings.
+    v.run(&["config", "set", "keyfile", other.to_str().unwrap()], "").success();
+    v.cmd().env("CAKEPASS_KEYFILE", &kf).arg("list").write_stdin(format!("{PW}\n")).assert().success();
+    v.cmd()
+        .env("CAKEPASS_KEYFILE", &other)
+        .args(["--keyfile", kf_s, "list"])
+        .write_stdin(format!("{PW}\n"))
+        .assert()
+        .success();
+
+    // The USB stick is not plugged in: say so plainly, with the path.
+    let gone = v.dir().join("unplugged").join("cakepass.key");
+    v.run(&["config", "set", "keyfile", gone.to_str().unwrap()], "").success().stderr(contains("no file at"));
+    v.run(&["list"], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("cannot be read").and(contains(gone.to_str().unwrap())).and(contains("plugged in")));
+
+    // The backup needs the same key file.
+    let bak = v.dir().join("vault.enc.bak");
+    v.cmd()
+        .env("CAKEPASS_KEYFILE", &kf)
+        .args(["--vault", bak.to_str().unwrap(), "list"])
+        .write_stdin(format!("{PW}\n"))
+        .assert()
+        .success();
+    v.cmd()
+        .env("CAKEPASS_KEYFILE", &other)
+        .args(["--vault", bak.to_str().unwrap(), "list"])
+        .write_stdin(format!("{PW}\n"))
+        .assert()
+        .failure()
+        .stderr(contains("decryption failed"));
+}
+
+#[test]
+fn a_key_file_that_is_not_needed_is_mentioned() {
+    let v = Vaulty::new().init();
+    let kf = make_key_file(&v, "k.key");
+    v.run(&["--keyfile", kf.to_str().unwrap(), "list"], &format!("{PW}\n"))
+        .success()
+        .stderr(contains("does not use a key file"));
+}
+
+#[test]
+fn security_levels_and_key_files_can_be_changed_and_keep_everything() {
+    let v = Vaulty::new().init();
+    v.add("GitHub", "john", ITEM_PW);
+    v.run(&["security"], "").success().stdout(
+        contains("Security level:   custom")
+            .and(contains("Key file:         not used"))
+            .and(contains("Unlock time:      about"))
+            .and(contains("maximum   1024 MiB")),
+    );
+    // Another level: same password, everything kept.
+    v.run(&["security", "--level", "standard"], &format!("{PW}\n"))
+        .success()
+        .stderr(contains("Security level: Standard").and(contains("Unlocking takes about")));
+    v.run(&["info"], "").success().stdout(contains("Security level:   standard"));
+    v.run(&["get", "github", "--show"], &format!("{PW}\n")).success().stdout(contains(ITEM_PW));
+    // Nothing to change: no password asked.
+    v.run(&["security", "--level", "standard"], "")
+        .success()
+        .stderr(contains("already uses the standard level"));
+    v.run(&["security", "--no-keyfile"], "").success().stderr(contains("does not use a key file"));
+
+    // Turn the key file on.
+    let kf = make_key_file(&v, "first.key");
+    v.run(&["security", "--new-keyfile", kf.to_str().unwrap()], &format!("{PW}\n")).success().stderr(
+        contains("now needs the key file")
+            .and(contains("Saved in your settings"))
+            .and(contains("no recovery"))
+            .and(contains("Copies of the vault you made yourself earlier")),
+    );
+    v.run(&["get", "github", "--show"], &format!("{PW}\n")).success().stdout(contains(ITEM_PW));
+    v.run(&["security"], "").success().stdout(contains("Key file:         required:"));
+    let bak = v.dir().join("vault.enc.bak");
+    v.cmd()
+        .env("CAKEPASS_KEYFILE", v.dir().join("usb").join("missing"))
+        .args(["--vault", bak.to_str().unwrap(), "list"])
+        .write_stdin(format!("{PW}\n"))
+        .assert()
+        .failure()
+        .stderr(contains("cannot be read"));
+
+    // Rotate it: the old key file opens nothing any more; the settings follow.
+    let kf2 = make_key_file(&v, "second.key");
+    v.run(&["security", "--new-keyfile", kf2.to_str().unwrap()], &format!("{PW}\n")).success();
+    v.run(&["config"], "").success().stdout(contains("second.key"));
+    v.cmd().env("CAKEPASS_KEYFILE", &kf).arg("list").write_stdin(format!("{PW}\n")).assert().failure();
+    v.run(&["list"], &format!("{PW}\n")).success().stdout(contains("GitHub"));
+
+    // Remove it: the master password alone opens the vault again.
+    v.run(&["security", "--no-keyfile"], &format!("{PW}\n"))
+        .success()
+        .stderr(contains("no longer needs a key file").and(contains("Removed the key file path")));
+    v.run(&["config"], "").success().stdout(contains("keyfile:       none"));
+    v.run(&["get", "github", "--show"], &format!("{PW}\n")).success().stdout(contains(ITEM_PW));
+    v.run(&["info"], "").success().stdout(contains("Key file:         not used"));
+    // A wrong password changes nothing.
+    v.run(&["security", "--level", "high"], "wrong\n").failure().stderr(contains("decryption failed"));
+    v.run(&["info"], "").success().stdout(contains("Security level:   standard"));
+}
+
+#[test]
+fn security_refuses_bad_key_files_before_asking_anything() {
+    let v = Vaulty::new().init();
+    let missing = usb(&v).join("not-made-yet.key");
+    v.run(&["security", "--new-keyfile", missing.to_str().unwrap()], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("cakepass keyfile create").and(contains("Master password").not()));
+    v.run(&["security", "--new-keyfile", v.path.to_str().unwrap()], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("cannot be its own key file"));
+    let empty = usb(&v).join("empty");
+    std::fs::write(&empty, b"").unwrap();
+    v.run(&["security", "--new-keyfile", empty.to_str().unwrap()], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("is empty"));
+    let link = usb(&v).join("link.key");
+    std::os::unix::fs::symlink(make_key_file(&v, "real.key"), &link).unwrap();
+    v.run(&["security", "--new-keyfile", link.to_str().unwrap()], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("symbolic link"));
+    // Next to the vault: allowed, with a warning.
+    let beside = v.dir().join("beside.key");
+    v.run(&["keyfile", "create", beside.to_str().unwrap()], "").success();
+    v.run(&["security", "--new-keyfile", beside.to_str().unwrap()], &format!("{PW}\n"))
+        .success()
+        .stderr(contains("same folder as the vault"));
+    v.run(&["passwd", "--kdf-memory", "9"], &format!("{PW}\n{PW2}\n{PW2}\n")).success();
+    v.run(&["list"], &format!("{PW2}\n")).success();
+    v.run(&["info"], "").success().stdout(contains("Argon2id, 9 MiB").and(contains("required:")));
+}
+
+#[test]
+fn the_shell_reconfirms_with_the_key_file() {
+    let v = Vaulty::new();
+    init_with_key_file(&v);
+    v.add("GitHub", "john", ITEM_PW);
+    v.run(&["shell"], &format!("{PW}\nsecurity --level standard\n{PW}\nlist\nexit\n"))
+        .success()
+        .stdout(contains("GitHub"))
+        .stderr(contains("Current master password (to confirm)").and(contains("Security level: Standard")));
+    v.run(&["info"], "").success().stdout(contains("Security level:   standard").and(contains("required:")));
+    // A wrong password in the shell changes nothing.
+    v.run(&["shell"], &format!("{PW}\nsecurity --level high\nwrong\nexit\n"))
+        .success()
+        .stderr(contains("decryption failed"));
+    v.run(&["info"], "").success().stdout(contains("Security level:   standard"));
+}
+
+#[test]
+fn export_and_import_do_not_need_the_key_file() {
+    let a = Vaulty::new();
+    init_with_key_file(&a);
+    a.add("GitHub", "john", ITEM_PW);
+    let export = a.dir().join("export.cakepass");
+    a.run(&["export", export.to_str().unwrap()], &format!("{PW}\n{PW2}\n{PW2}\n"))
+        .success()
+        .stderr(contains("export password ONLY"));
+    let b = Vaulty::new().init();
+    b.run(&["import", export.to_str().unwrap()], &format!("{PW}\n{PW2}\n"))
+        .success()
+        .stderr(contains("1 item(s) added"));
+    b.run(&["get", "github", "--show"], &format!("{PW}\n")).success().stdout(contains(ITEM_PW));
+}
+
+#[test]
+fn the_memory_guard_refuses_before_allocating() {
+    let v = Vaulty::new();
+    // Creating at a level that does not fit: refused, nothing created, no password asked.
+    v.cmd()
+        .env("CAKEPASS_TEST_MEM_AVAILABLE_KIB", "300000")
+        .args(["init", "--level", "high"])
+        .write_stdin(format!("{PW}\n{PW}\n"))
+        .assert()
+        .failure()
+        .stderr(
+            contains("needs about 342 MiB of free memory")
+                .and(contains("lower level"))
+                .and(contains("New master password").not()),
+        );
+    assert!(!v.path.exists());
+    let v = v.init();
+    // Opening a vault whose level this computer cannot run right now.
+    v.cmd()
+        .env("CAKEPASS_TEST_MEM_AVAILABLE_KIB", "4000")
+        .arg("list")
+        .write_stdin(format!("{PW}\n"))
+        .assert()
+        .failure()
+        .stderr(
+            contains("cannot run at the moment")
+                .and(contains("more memory"))
+                .and(contains("Master password").not()),
+        );
+    // Switching to a level that does not fit: refused before the password.
+    v.cmd()
+        .env("CAKEPASS_TEST_MEM_AVAILABLE_KIB", "1000000")
+        .args(["security", "--level", "maximum"])
+        .write_stdin(format!("{PW}\n"))
+        .assert()
+        .failure()
+        .stderr(contains("needs about 1366 MiB").and(contains("Master password").not()));
+    v.cmd()
+        .env("CAKEPASS_TEST_MEM_AVAILABLE_KIB", "4000")
+        .arg("security")
+        .assert()
+        .success()
+        .stdout(contains("cannot run here right now"));
+    v.run(&["list"], &format!("{PW}\n")).success();
+}
+
+#[test]
+fn a_version_2_vault_becomes_version_3_on_its_next_save() {
+    use cakepass::crypto::KdfParams;
+    use cakepass::format::{self, Credentials, VaultKey};
+    let v = Vaulty::new();
+    let fast = KdfParams { memory_kib: 8 * 1024, iterations: 1, parallelism: 1 };
+    let vk = VaultKey::create(Credentials::password(PW.as_bytes()), fast).unwrap();
+    let json = cakepass::vault::Vault::new().to_json().unwrap();
+    let v2 = format::seal_as_version_for_tests(&vk, 2, json.as_slice()).unwrap();
+    std::fs::write(&v.path, &v2).unwrap();
+    let version = |p: &Path| {
+        let b = std::fs::read(p).unwrap();
+        u16::from_le_bytes([b[8], b[9]])
+    };
+    // Reading does not rewrite it (an older cakepass can still open it).
+    v.run(&["list"], &format!("{PW}\n")).success();
+    assert_eq!(std::fs::read(&v.path).unwrap(), v2);
+    v.run(&["info"], "").success().stdout(contains("Format version:   2"));
+    // The next change saves it as version 3; the .bak is the version 2 file.
+    v.add("GitHub", "john", ITEM_PW);
+    assert_eq!(version(&v.path), 3);
+    assert_eq!(std::fs::read(v.dir().join("vault.enc.bak")).unwrap(), v2);
+    v.run(&["get", "github", "--show"], &format!("{PW}\n")).success().stdout(contains(ITEM_PW));
+}
+
+/// Run `cakepass setup` with pipes: answer, read the generated passphrase
+/// from stdout, then type it back (and answer the key file question).
+fn setup_with_passphrase(v: &Vaulty, after: impl FnOnce(&str) -> String) -> (std::process::Output, String) {
+    use std::io::{BufRead, BufReader};
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_cakepass"))
+        .arg("setup")
+        .args(FAST_KDF)
+        .env("CAKEPASS_VAULT", &v.path)
+        .env("NO_COLOR", "1")
+        .env("XDG_CONFIG_HOME", v.dir().join("config-home"))
+        .env_remove("CAKEPASS_KEYFILE")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    // animation: n | lock: Enter | make a passphrase for me: Enter (yes)
+    stdin.write_all(b"n\n\n\n").unwrap();
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    let mut phrase = String::new();
+    let start = Instant::now();
+    while phrase.is_empty() {
+        assert!(start.elapsed() < Duration::from_secs(30), "no passphrase shown");
+        let mut line = String::new();
+        assert!(out.read_line(&mut line).unwrap() > 0, "stdout closed before the passphrase");
+        let t = line.trim();
+        if t.contains('-') && t.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
+            phrase = t.to_string();
+        }
+    }
+    stdin.write_all(after(&phrase).as_bytes()).unwrap();
+    drop(stdin);
+    let output = child.wait_with_output().unwrap();
+    (output, phrase)
+}
+
+#[test]
+fn setup_offers_a_passphrase_and_a_key_file() {
+    let v = Vaulty::new();
+    let kf = usb(&v).join("cakepass.key");
+    let kf_s = kf.to_str().unwrap().to_string();
+    let (out, phrase) = setup_with_passphrase(&v, |p| format!("{p}\ny\n{kf_s}\n"));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    let words = cakepass::generator::wordlist();
+    // 7 words from the EFF list (some EFF words contain a dash themselves).
+    let mut rest = phrase.as_str();
+    for i in 0..7 {
+        let w = words
+            .iter()
+            .filter(|w| rest.starts_with(**w) && (rest.len() == w.len() || rest[w.len()..].starts_with('-')))
+            .max_by_key(|w| w.len())
+            .unwrap_or_else(|| panic!("word {i} of {phrase:?} is not in the list"));
+        rest = rest[w.len()..].strip_prefix('-').unwrap_or("");
+    }
+    assert!(rest.is_empty(), "more than 7 words: {phrase}");
+    for text in [
+        "about 90 bits",
+        "Write it down on paper NOW",
+        "Passphrase confirmed",
+        "Key file created",
+        "Vault created",
+        "no recovery",
+        "Saved in your settings",
+        "All set!",
+    ] {
+        assert!(err.contains(text), "{text} missing:\n{err}");
+    }
+    assert!(!err.contains(&phrase), "the passphrase goes to stdout only");
+    assert_eq!(std::fs::read(&kf).unwrap().len(), 64);
+    // The vault opens with the passphrase and the key file (from the settings) …
+    v.run(&["list"], &format!("{phrase}\n")).success();
+    v.run(&["info"], "").success().stdout(contains("required:"));
+    // … and not without the key file.
+    v.run(&["config", "set", "keyfile", "none"], "").success();
+    v.run(&["list"], &format!("{phrase}\n")).failure().stderr(contains("needs its key file"));
+}
+
+#[test]
+fn a_mistyped_passphrase_creates_nothing() {
+    let v = Vaulty::new();
+    let (out, _) = setup_with_passphrase(&v, |p| format!("{p}x\n"));
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("does not match"));
+    assert!(!v.path.exists());
+}
+
+// ───────────────────────── cards, TOTP and SSH keys (step 12) ─────────────────────────
+
+const CARD_NUMBER: &str = "4111 1111 1111 1111";
+/// RFC 6238's test seed ("12345678901234567890") in base32.
+const TOTP_SEED: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+const PRIVATE_KEY: [&str; 3] =
+    ["-----BEGIN OPENSSH PRIVATE KEY-----", "b3BlbnNzaC1rZXktdjEAAAAA", "-----END OPENSSH PRIVATE KEY-----"];
+
+fn stdout_of(a: &assert_cmd::assert::Assert) -> String {
+    String::from_utf8(a.get_output().stdout.clone()).unwrap()
+}
+
+/// The code for this moment and for the next one (a test may cross a boundary).
+fn current_codes(secret: &str) -> [String; 2] {
+    let t = cakepass::totp::Totp::parse(secret).unwrap();
+    let now = cakepass::vault::now();
+    [t.code_at(now).as_str().to_string(), t.code_at(now + 30).as_str().to_string()]
+}
+
+#[test]
+fn store_get_and_edit_cards() {
+    let k = Vaulty::new().init();
+    // Cardholder, card number (hidden), expiry date, CVV (hidden), notes, tags.
+    k.run(
+        &["add", "Visa", "--type", "card"],
+        &format!("{PW}\nJ. Doe\n{CARD_NUMBER}\n08/29\n737\nPIN in the safe\nbank, visa\n"),
+    )
+    .success()
+    .stderr(contains("Card 'Visa' saved (encrypted)"));
+    // Without --show: cardholder and expiry date; the number and CVV hidden.
+    k.run(&["get", "visa", "--no-copy"], &format!("{PW}\n")).success().stdout(
+        contains("card")
+            .and(contains(format!("{:<16} J. Doe", "Cardholder:")))
+            .and(contains(format!("{:<16} 08/29", "Expiry date:")))
+            .and(contains(format!("{:<16} (hidden; use --show)", "Security code:")))
+            .and(contains("4111").not())
+            .and(contains("737").not()),
+    );
+    // The card number is "the secret": copied by default (no clipboard here).
+    k.run(&["get", "visa"], &format!("{PW}\n"))
+        .failure()
+        .stdout(contains("4111").not())
+        .stderr(contains("no clipboard tool found").and(contains("4111").not()));
+    k.run(&["get", "visa", "--show"], &format!("{PW}\n")).success().stdout(
+        contains(format!("{:<16} {CARD_NUMBER}", "Card number:"))
+            .and(contains(format!("{:<16} 737", "Security code:")))
+            .and(contains("PIN in the safe")),
+    );
+    // Listed, filtered and counted as a card; searchable by cardholder only.
+    k.run(&["list", "--type", "card"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("Visa").and(contains("J. Doe")).and(contains("4111").not()))
+        .stderr(contains("1 item: 1 card"));
+    k.run(&["search", "doe"], &format!("{PW}\n")).success().stdout(contains("Visa"));
+    k.run(&["search", "4111"], &format!("{PW}\n")).success().stderr(contains("Nothing found"));
+    // Edit: a new number, CVV and expiry date, each asked for (not arguments).
+    k.run(
+        &["edit", "visa", "--password", "--cvv", "--expiry"],
+        &format!("{PW}\n5500 0000 0000 0004\n12/31\n123\n"),
+    )
+    .success();
+    k.run(&["get", "visa", "--show"], &format!("{PW}\n")).success().stdout(
+        contains("5500 0000 0000 0004")
+            .and(contains(format!("{:<16} 12/31", "Expiry date:")))
+            .and(contains(format!("{:<16} 123", "Security code:")))
+            .and(contains("4111").not()),
+    );
+    // Interactive edit: Enter keeps a field.
+    k.run(&["edit", "visa"], &format!("{PW}\n\nJane Doe\n\n\nn\nn\nn\n")).success();
+    k.run(&["get", "visa", "--show"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("Jane Doe").and(contains("12/31")).and(contains("5500 0000 0000 0004")));
+    // Options that do not fit a card are refused.
+    k.run(&["add", "X", "--type", "card", "-e", "a@b.nl"], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("a card has no e-mail address"));
+    k.run(&["add", "X", "--type", "card", "--generate"], &format!("{PW}\n")).failure();
+    k.run(&["edit", "visa", "--key-passphrase"], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("for an SSH key"));
+    k.run(&["edit", "visa", "--url", "https://x"], &format!("{PW}\n")).failure();
+    // An empty card number is refused.
+    k.run(&["add", "Empty", "--type", "card", "-u", "x", "-t", ""], &format!("{PW}\n\n"))
+        .failure()
+        .stderr(contains("must not be empty"));
+}
+
+#[test]
+fn store_get_and_edit_ssh_keys() {
+    let k = Vaulty::new().init();
+    // Private key (multi-line, ends with a dot), public key, passphrase (hidden), host, notes, tags.
+    let key_text = PRIVATE_KEY.join("\n");
+    k.run(
+        &["add", "Server", "--type", "ssh-key"],
+        &format!(
+            "{PW}\n{key_text}\n.\nssh-ed25519 AAAAC3Nza me@laptop\nkey passphrase\ngit@github.com\nfingerprint SHA256:x\nwork\n"
+        ),
+    )
+    .success()
+    .stderr(contains("SSH key 'Server' saved (encrypted)"));
+    // Without --show: host and public key; private key and passphrase hidden.
+    let out = k.run(&["get", "server", "--no-copy"], &format!("{PW}\n")).success();
+    let text = stdout_of(&out);
+    assert!(text.contains(&format!("{:<16} git@github.com", "Host:")), "{text}");
+    assert!(text.contains(&format!("{:<16} ssh-ed25519 AAAAC3Nza me@laptop", "Public key:")), "{text}");
+    assert!(text.contains(&format!("{:<16} (hidden; use --show)", "Private key:")), "{text}");
+    assert!(!text.contains("b3BlbnNzaC1rZXkt") && !text.contains("key passphrase"), "{text}");
+    // --show reveals the private key exactly as entered: the label on its own
+    // line, then every line unindented (a copy from the terminal must work).
+    let out = k.run(&["get", "server", "--show"], &format!("{PW}\n")).success();
+    let text = stdout_of(&out);
+    assert!(text.contains(&format!("Private key:\n{key_text}\n")), "not verbatim: {text:?}");
+    for line in PRIVATE_KEY {
+        assert!(text.lines().any(|l| l == line), "{line} is not on a line of its own: {text:?}");
+    }
+    assert!(text.contains(&format!("{:<16} key passphrase", "Passphrase:")), "{text}");
+    // The private key is the secret that is copied; --copy-public copies the public key.
+    k.run(&["get", "server"], &format!("{PW}\n")).failure().stderr(contains("no clipboard tool found"));
+    k.run(&["get", "server", "--copy-public"], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("no clipboard tool found"));
+    k.add("GitHub", "john", ITEM_PW);
+    k.run(&["get", "github", "--copy-public"], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("has no public key"));
+    k.run(&["get", "server", "--copy-public", "--show"], &format!("{PW}\n")).failure();
+    k.run(&["list", "--type", "ssh-key"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("Server").and(contains("git@github.com")).and(contains("GitHub").not()))
+        .stderr(contains("1 item: 1 SSH key"));
+    // Edit: a new private key, public key and passphrase; the host by option.
+    k.run(
+        &["edit", "server", "--password", "--public-key", "--key-passphrase", "--url", "backup.example"],
+        &format!("{PW}\nNEW KEY LINE 1\nNEW KEY LINE 2\n.\nssh-ed25519 BBBB new@laptop\n  spaced pass \n"),
+    )
+    .success();
+    let text = stdout_of(&k.run(&["get", "server", "--show"], &format!("{PW}\n")).success());
+    assert!(text.contains("Private key:\nNEW KEY LINE 1\nNEW KEY LINE 2\n") && !text.contains("b3BlbnNzaC1"));
+    assert!(text.contains("ssh-ed25519 BBBB new@laptop") && text.contains("backup.example"), "{text}");
+    assert!(text.contains(&format!("{:<16}   spaced pass ", "Passphrase:")), "kept exactly: {text}");
+    // Options that do not fit an SSH key are refused; an empty private key too.
+    k.run(&["add", "X", "--type", "ssh-key", "-u", "john"], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("an SSH key has no username"));
+    k.run(&["edit", "server", "--cvv"], &format!("{PW}\n")).failure().stderr(contains("for a card"));
+    k.run(&["edit", "github", "--public-key"], &format!("{PW}\n")).failure();
+    k.run(&["add", "Empty", "--type", "ssh-key", "--url", "", "-t", ""], &format!("{PW}\n.\n"))
+        .failure()
+        .stderr(contains("the private key must not be empty"));
+}
+
+#[test]
+fn an_ssh_private_key_is_shown_byte_for_byte() {
+    // Regression: `get --show` used to indent every line after the first by
+    // the label width (like a note), so a key copied from the terminal was
+    // broken. Lines of OpenSSH width (70), leading spaces and an empty line
+    // must all come back exactly.
+    let k = Vaulty::new().init();
+    let b64 = "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW";
+    let key = format!("{}\n{b64}\n  two leading spaces\n\n{b64}\n{}", PRIVATE_KEY[0], PRIVATE_KEY[2]);
+    k.run(&["add", "TestKey", "--type", "ssh-key"], &format!("{PW}\n{key}\n.\n\n\n\n\n\n")).success();
+    let text = stdout_of(&k.run(&["get", "TestKey", "--show"], &format!("{PW}\n")).success());
+    // The private key is the last field: everything after its label is the key.
+    let (_, printed) = text.split_once("Private key:\n").unwrap_or_else(|| panic!("no key block: {text:?}"));
+    assert_eq!(printed, format!("{key}\n"), "the private key is not printed exactly as entered");
+    // The line mode (`cakepass shell`) goes through the same path.
+    let text = stdout_of(&k.run(&["shell"], &format!("{PW}\nget TestKey --show\nexit\n")).success());
+    assert!(text.contains(&format!("Private key:\n{key}\n")), "line mode: {text:?}");
+}
+
+#[test]
+fn totp_codes_for_two_factor_authentication() {
+    let k = Vaulty::new().init();
+    // `--totp` asks for the secret in a hidden prompt (spaces and case do not matter).
+    let spaced = "gezd gnbv gy3t qojq gezd gnbv gy3t qojq";
+    k.run(
+        &["add", "GitHub", "-u", "john", "-e", "", "--url", "https://github.com", "-t", "", "--totp"],
+        &format!("{PW}\n{ITEM_PW}\n{spaced}\n"),
+    )
+    .success()
+    .stderr(contains("Login 'GitHub' saved").and(contains("--totp` shows the current code")));
+    k.run(&["get", "github", "--no-copy"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("TOTP").and(contains("set (use --totp")).and(contains(TOTP_SEED).not()));
+    // The current code, computed now: the same as an independent computation.
+    let out = k.run(&["get", "github", "--totp", "--no-copy"], &format!("{PW}\n")).success();
+    let text = stdout_of(&out);
+    let codes = current_codes(TOTP_SEED);
+    assert!(codes.iter().any(|c| text.contains(&format!("{:<16} {c}", "TOTP code:"))), "{text} / {codes:?}");
+    assert!(text.contains("Valid for") && !text.contains(TOTP_SEED) && !text.contains(ITEM_PW), "{text}");
+    // Without a clipboard tool the code is still shown (no error).
+    k.run(&["get", "github", "--totp"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("TOTP code"))
+        .stderr(contains("No clipboard tool found"));
+    // A bad secret is refused before anything is saved; the old one stays.
+    k.run(&["edit", "github", "--totp"], &format!("{PW}\nnot base32!\n"))
+        .failure()
+        .stderr(contains("not valid base32"));
+    // Valid base32 but far too short for a real secret (text pasted by mistake).
+    k.run(&["edit", "github", "--totp"], &format!("{PW}\nline one\n"))
+        .failure()
+        .stderr(contains("too short").and(contains("line one").not()));
+    k.run(&["edit", "github", "--totp"], &format!("{PW}\n\n"))
+        .failure()
+        .stderr(contains("must not be empty"));
+    k.run(&["get", "github", "--totp", "--no-copy"], &format!("{PW}\n")).success();
+    // An otpauth:// URI with its own settings (8 digits).
+    k.run(
+        &["edit", "github", "--totp"],
+        &format!("{PW}\notpauth://totp/GitHub:john?secret={TOTP_SEED}&issuer=GitHub&digits=8\n"),
+    )
+    .success();
+    let text = stdout_of(&k.run(&["get", "github", "--totp", "--no-copy"], &format!("{PW}\n")).success());
+    let codes = current_codes(&format!("otpauth://totp/x?secret={TOTP_SEED}&digits=8"));
+    assert!(codes.iter().any(|c| c.len() == 8 && text.contains(c.as_str())), "{text} / {codes:?}");
+    // Removed again.
+    k.run(&["edit", "github", "--no-totp"], &format!("{PW}\n")).success().stderr(contains("removed"));
+    k.run(&["get", "github", "--totp"], &format!("{PW}\n")).failure().stderr(contains("has no TOTP secret"));
+    k.run(&["edit", "github", "--totp", "--no-totp"], &format!("{PW}\n")).failure();
+    // Any type can carry one, e.g. an API key.
+    k.run(
+        &["add", "Cloud", "--type", "api", "-u", "", "-e", "", "--url", "", "-t", "", "--totp"],
+        &format!("{PW}\nsk-cloud-1\n{TOTP_SEED}\n"),
+    )
+    .success();
+    k.run(&["get", "cloud", "--totp", "--no-copy"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("TOTP code"));
+    // The password still is the secret of a login with TOTP.
+    k.run(&["get", "github", "--show"], &format!("{PW}\n")).success().stdout(contains(ITEM_PW));
+}
+
+#[test]
+fn totp_column_is_imported_from_csv() {
+    let k = Vaulty::new().init();
+    let csv = k.dir().join("bitwarden.csv");
+    std::fs::write(
+        &csv,
+        format!(
+            "folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp\n\
+             ,,login,GitHub,,,0,https://github.com,john,pw-1,{TOTP_SEED}\n\
+             ,,login,Steam,,,0,https://steam.example,gamer,pw-2,steam://ABCDE\n"
+        ),
+    )
+    .unwrap();
+    k.run(&["import-csv", csv.to_str().unwrap()], &format!("{PW}\nn\n")).success().stderr(
+        contains("2 item(s) imported").and(contains("1 item(s) were imported WITHOUT their TOTP secret")),
+    );
+    let text = stdout_of(&k.run(&["get", "github", "--totp", "--no-copy"], &format!("{PW}\n")).success());
+    assert!(current_codes(TOTP_SEED).iter().any(|c| text.contains(c.as_str())), "{text}");
+    k.run(&["get", "steam", "--totp"], &format!("{PW}\n")).failure().stderr(contains("has no TOTP secret"));
+}
+
+#[test]
+fn cards_ssh_keys_and_totp_leave_nothing_readable_on_disk() {
+    let k = Vaulty::new().init();
+    let markers = [
+        "zq-holder-4711",
+        "4999123412344711",
+        "zq-exp-4711",
+        "zq-cvv-4711",
+        "zq-card-note-4711",
+        "ZQPRIVATEKEYLINE4711",
+        "zq-public-4711",
+        "zq-passphrase-4711",
+        "zq-host-4711",
+    ];
+    k.run(
+        &["add", "Card", "--type", "card"],
+        &format!("{PW}\nzq-holder-4711\n4999123412344711\nzq-exp-4711\nzq-cvv-4711\nzq-card-note-4711\n\n"),
+    )
+    .success();
+    k.run(
+        &["add", "Key", "--type", "ssh-key", "--url", "zq-host-4711", "-t", ""],
+        &format!("{PW}\nZQPRIVATEKEYLINE4711\n.\nzq-public-4711\nzq-passphrase-4711\n"),
+    )
+    .success();
+    // A distinctive, valid base32 TOTP secret (32 characters).
+    let secret = "ZQZQZQZQMFRGGZDFMZTWQ2LKNNWG23TP".to_string();
+    k.run(&["edit", "card", "--totp"], &format!("{PW}\n{secret}\n")).success();
+    k.run(&["edit", "card", "-t", "x"], &format!("{PW}\n")).success(); // a .bak with all of it
+    let export = k.dir().join("backup.cakepass");
+    k.run(&["export", export.to_str().unwrap()], &format!("{PW}\n{PW2}\n{PW2}\n")).success();
+    let mut files = Vec::new();
+    all_files(k.dir(), &mut files);
+    assert!(files.len() >= 3, "vault, backup and export expected");
+    let markers: Vec<String> = markers.iter().map(|m| m.to_string()).chain([secret.clone()]).collect();
+    for (path, bytes) in &files {
+        for m in &markers {
+            assert!(
+                !bytes.windows(m.len()).any(|w| w == m.as_bytes()),
+                "{m} is readable in {}",
+                path.display()
+            );
+        }
+    }
+    // And it is all there after logging in.
+    let text = stdout_of(&k.run(&["get", "card", "--show"], &format!("{PW}\n")).success());
+    for m in ["zq-holder-4711", "4999123412344711", "zq-exp-4711", "zq-cvv-4711", "zq-card-note-4711"] {
+        assert!(text.contains(m), "{m}: {text}");
+    }
+    let text = stdout_of(&k.run(&["get", "key", "--show"], &format!("{PW}\n")).success());
+    for m in ["ZQPRIVATEKEYLINE4711", "zq-public-4711", "zq-passphrase-4711", "zq-host-4711"] {
+        assert!(text.contains(m), "{m}: {text}");
+    }
+}
+
+// ───────────────────────── step 13: identities, favorites, audit, clip-time, man page ─────────────────────────
+
+#[test]
+fn store_get_and_edit_identity_documents() {
+    let k = Vaulty::new().init();
+    // Full name, number (hidden), issued by, expiry date, notes, tags.
+    k.run(
+        &["add", "Passport", "--type", "identity"],
+        &format!("{PW}\nJane Q. Doe\nNX7731ZQ9\nGemeente Utrecht\n2031-05-14\nNationality: NL\ntravel\n"),
+    )
+    .success()
+    .stderr(contains("Identity 'Passport' saved (encrypted)"));
+    // Without --show: full name, issuer, expiry; the number hidden.
+    k.run(&["get", "passport", "--no-copy"], &format!("{PW}\n")).success().stdout(
+        contains("identity")
+            .and(contains(format!("{:<16} Jane Q. Doe", "Full name:")))
+            .and(contains(format!("{:<16} Gemeente Utrecht", "Issued by:")))
+            .and(contains(format!("{:<16} 2031-05-14", "Expiry date:")))
+            .and(contains(format!("{:<16} (hidden; use --show)", "Number:")))
+            .and(contains("NX7731ZQ9").not()),
+    );
+    // The number is "the secret": copied by default, shown with --show.
+    k.run(&["get", "passport"], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("no clipboard tool found").and(contains("NX7731ZQ9").not()));
+    k.run(&["get", "passport", "--show"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains(format!("{:<16} NX7731ZQ9", "Number:")).and(contains("Nationality: NL")));
+    // Listed and counted as an identity; searchable by name and issuer, not by number.
+    k.run(&["list", "--type", "identity"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("Passport").and(contains("Jane Q. Doe")).and(contains("NX7731ZQ9").not()))
+        .stderr(contains("1 item: 1 identity"));
+    k.run(&["search", "utrecht"], &format!("{PW}\n")).success().stdout(contains("Passport"));
+    k.run(&["search", "NX7731"], &format!("{PW}\n")).success().stderr(contains("Nothing found"));
+    // A bank account without an expiry date: one type for all of them.
+    k.run(
+        &["add", "Bank account", "--type", "iban", "-u", "J. Doe", "--url", "ING", "-t", "bank"],
+        &format!("{PW}\nNL91ABNA0417164300\n\n"),
+    )
+    .success();
+    k.run(&["list", "--type", "identity"], &format!("{PW}\n"))
+        .success()
+        .stderr(contains("2 items: 2 identities"));
+    // Edit: a new number and expiry date (asked for, never arguments), the issuer by option.
+    k.run(
+        &["edit", "passport", "--password", "--expiry", "--url", "Gemeente Amsterdam"],
+        &format!("{PW}\nPX1234567\n2036-01-01\n"),
+    )
+    .success();
+    k.run(&["get", "passport", "--show"], &format!("{PW}\n")).success().stdout(
+        contains("PX1234567")
+            .and(contains("2036-01-01"))
+            .and(contains("Gemeente Amsterdam"))
+            .and(contains("NX7731ZQ9").not()),
+    );
+    // Interactive edit: Enter keeps a field.
+    k.run(&["edit", "passport"], &format!("{PW}\n\nJane Doe\n\n\n\nn\nn\n")).success();
+    k.run(&["get", "passport", "--show"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("Jane Doe").and(contains("2036-01-01")).and(contains("PX1234567")));
+    // Options that do not fit an identity are refused; so is an empty number.
+    k.run(&["add", "X", "--type", "identity", "-e", "a@b.nl"], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("an identity has no e-mail address"));
+    k.run(&["add", "X", "--type", "identity", "--generate"], &format!("{PW}\n")).failure();
+    k.run(&["edit", "passport", "--cvv"], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("--cvv is for a card"));
+    k.run(&["edit", "passport", "--public-key"], &format!("{PW}\n")).failure();
+    k.run(&["edit", "passport", "-e", "x@y.nl"], &format!("{PW}\n")).failure();
+    k.run(&["add", "Empty", "--type", "identity", "-u", "x", "--url", "", "-t", ""], &format!("{PW}\n\n"))
+        .failure()
+        .stderr(contains("the number must not be empty"));
+    // --expiry now fits a card or an identity, still not a login.
+    k.add("GitHub", "john", ITEM_PW);
+    k.run(&["edit", "github", "--expiry"], &format!("{PW}\n"))
+        .failure()
+        .stderr(contains("--expiry is for a card or an identity"));
+}
+
+#[test]
+fn favorites_are_pinned_listed_and_unpinned() {
+    let k = Vaulty::new().init();
+    k.add("GitHub", "john", ITEM_PW);
+    k.add("Mail", "john", ITEM_PW);
+    k.run(&["list", "--favorites"], &format!("{PW}\n")).success().stderr(contains("No favorites yet"));
+    k.run(&["edit", "mail", "--favorite"], &format!("{PW}\n"))
+        .success()
+        .stderr(contains("Item 'Mail' updated").and(contains("Pinned as a favorite")));
+    k.run(&["list", "--favorites"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("Mail").and(contains("GitHub").not()))
+        .stderr(contains("1 item: 1 login"));
+    k.run(&["list", "-f", "--type", "api"], &format!("{PW}\n")).success().stderr(contains("No items match"));
+    k.run(&["get", "mail", "--no-copy"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains(format!("{:<16} yes", "Favorite:")));
+    k.run(&["get", "github", "--no-copy"], &format!("{PW}\n")).success().stdout(contains("Favorite:").not());
+    // Pinning changes nothing else, and nothing secret is asked for.
+    k.run(&["get", "mail", "--show"], &format!("{PW}\n")).success().stdout(contains(ITEM_PW));
+    k.run(&["edit", "mail", "--favorite", "--no-favorite"], &format!("{PW}\n")).failure();
+    k.run(&["edit", "mail", "--no-favorite"], &format!("{PW}\n"))
+        .success()
+        .stderr(contains("No longer a favorite"));
+    k.run(&["list", "--favorites"], &format!("{PW}\n")).success().stderr(contains("No favorites yet"));
+}
+
+#[test]
+fn audit_reports_item_names_and_never_a_secret() {
+    let k = Vaulty::new().init();
+    const WEAK: &str = "dragon12";
+    const SHARED: &str = "Shared-Strong-zq-4711!";
+    const UNIQUE: &str = "Unique-Strong-zq-0815?";
+    k.add("Forum", "john", WEAK);
+    k.add("Mail", "john", SHARED);
+    k.add("Shop", "john", SHARED);
+    k.add("Bank", "john", UNIQUE);
+    k.run(
+        &["add", "Cloud", "--type", "api", "-u", "", "-e", "", "--url", "", "-t", ""],
+        &format!("{PW}\n{SHARED}\n"),
+    )
+    .success();
+    // An empty password (a login without one, e.g. after an import).
+    k.add("Old", "john", UNIQUE);
+    k.run(&["edit", "old", "--password"], &format!("{PW}\n\n")).success();
+    // Not judged: a short card number, a note.
+    k.run(&["add", "Visa", "--type", "card", "-u", "x"], &format!("{PW}\n1234\n\n\n\n\n")).success();
+
+    let out = k.run(&["audit"], &format!("{PW}\n")).success(); // a report, not a gate: exit 0
+    let stdout = stdout_of(&out);
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(stdout.contains("Password health check: 6 logins and API keys"), "{stdout}");
+    assert!(stderr.contains("1 other item not checked"), "{stderr}");
+    assert!(stdout.contains("Weak: 1 (strength below 3 of 4") && stdout.contains("  - Forum\n"), "{stdout}");
+    assert!(stdout.contains("Reused: 3 (") && stdout.contains("; 1 group)"), "{stdout}");
+    assert!(stdout.contains("  - Cloud, Mail, Shop\n"), "{stdout}");
+    assert!(stdout.contains("Stale: 0 (not changed in more than 365 days)"), "{stdout}");
+    assert!(stdout.contains("Empty: 1 (no password or key)") && stdout.contains("  - Old\n"), "{stdout}");
+    assert!(!stdout.contains("Bank") && !stdout.contains("Visa"), "only items with a finding: {stdout}");
+    // SECURITY: no secret (or a piece of one) in anything it printed.
+    for secret in [WEAK, SHARED, UNIQUE, "1234", "Shared-Strong", "zq-4711", "dragon"] {
+        assert!(
+            !stdout.contains(secret) && !stderr.contains(secret),
+            "{secret} was printed:\n{stdout}\n{stderr}"
+        );
+    }
+    // The threshold for stale items; 0 days is refused (everything would be stale).
+    k.run(&["audit", "--older-than", "30"], &format!("{PW}\n"))
+        .success()
+        .stdout(contains("Stale: 0 (not changed in more than 30 days)"));
+    k.run(&["audit", "--older-than", "0"], &format!("{PW}\n")).failure();
+    k.run(&["health"], &format!("{PW}\n")).success().stdout(contains("Password health check"));
+    // A clean vault says so.
+    let clean = Vaulty::new().init();
+    clean.add("Bank", "john", UNIQUE);
+    clean.run(&["audit"], &format!("{PW}\n")).success().stderr(contains("Nothing to improve"));
+    // It is listed in the help.
+    clean.run(&["--help"], "").success().stdout(contains("audit").and(contains("Password health check")));
+}
+
+/// A stand-in for wl-clipboard: the "clipboard" is a file, and the options
+/// of the last copy are written next to it (`<clipboard>.args`). `modern`:
+/// like wl-clipboard 2.3 (knows `--sensitive`); otherwise like an older one,
+/// which does not mention it in `--help` and refuses it.
+fn fake_clipboard_like(dir: &Path, modern: bool) -> (PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = dir.join("fake-bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let clip = dir.join("clipboard.txt");
+    let (help, sensitive) = if modern {
+        ("echo '    --sensitive    Hint that the content is sensitive.'", "")
+    } else {
+        ("echo '    -c, --clear    Instead of copying, clear the clipboard.'", "--sensitive) exit 1 ;;")
+    };
+    let wl_copy = format!(
+        "case \"$1\" in\n--help) {help} ;;\n--clear) : > \"$FAKE_CLIP\" ;;\n{sensitive}\n\
+         *) printf '%s\\n' \"$*\" > \"$FAKE_CLIP.args\"; cat > \"$FAKE_CLIP\" ;;\nesac"
+    );
+    for (name, body) in [("wl-copy", wl_copy.as_str()), ("wl-paste", "cat \"$FAKE_CLIP\" 2>/dev/null")] {
+        let path = bin.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    (bin, clip)
+}
+
+fn fake_clipboard(dir: &Path) -> (PathBuf, PathBuf) {
+    fake_clipboard_like(dir, true)
+}
+
+#[test]
+fn copied_secrets_are_marked_sensitive_for_clipboard_histories() {
+    let k = Vaulty::new().init();
+    k.add("GitHub", "john", ITEM_PW);
+    for modern in [true, false] {
+        let (bin, clip) = fake_clipboard_like(k.dir(), modern);
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+        k.cmd()
+            .args(["get", "github"])
+            .env("PATH", &path)
+            .env("WAYLAND_DISPLAY", "fake-0")
+            .env("FAKE_CLIP", &clip)
+            .write_stdin(format!("{PW}\n"))
+            .assert()
+            .success()
+            .stderr(contains("copied to the clipboard"));
+        assert_eq!(std::fs::read_to_string(&clip).unwrap(), ITEM_PW, "copied (modern: {modern})");
+        let args = std::fs::read_to_string(clip.with_extension("txt.args")).unwrap();
+        // wl-clipboard 2.3 gets the hint; an older one still copies, without it.
+        assert_eq!(args, if modern { "--sensitive\n" } else { "\n" }, "modern: {modern}");
+    }
+}
+
+#[test]
+fn the_clip_time_setting_decides_when_the_clipboard_is_cleared() {
+    let k = Vaulty::new().init();
+    k.add("GitHub", "john", ITEM_PW);
+    k.run(&["config", "set", "clip-time", "5"], "").success();
+    let (bin, clip) = fake_clipboard(k.dir());
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+    k.cmd()
+        .args(["get", "github"])
+        .env("PATH", &path)
+        .env("WAYLAND_DISPLAY", "fake-0")
+        .env("FAKE_CLIP", &clip)
+        .write_stdin(format!("{PW}\n"))
+        .assert()
+        .success()
+        .stderr(contains("it will be cleared in 5 seconds"));
+    let copied = Instant::now();
+    assert_eq!(std::fs::read_to_string(&clip).unwrap(), ITEM_PW, "copied");
+    // Still there after 2 s; gone well before the default 20 s.
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(std::fs::read_to_string(&clip).unwrap(), ITEM_PW, "not cleared too early");
+    while std::fs::read_to_string(&clip).unwrap() == ITEM_PW {
+        assert!(copied.elapsed() < Duration::from_secs(15), "not cleared after the configured 5 seconds");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(copied.elapsed() >= Duration::from_secs(4), "cleared after {:?}", copied.elapsed());
+}
+
+#[test]
+fn the_man_page_is_generated_from_the_commands() {
+    let v = Vaulty::new();
+    let out = v.run(&["man"], "").success();
+    let man = stdout_of(&out);
+    assert!(man.starts_with(".ie") || man.contains(".TH cakepass 1"), "{}", &man[..man.len().min(300)]);
+    for text in ["cakepass", "audit", "completions", "CAKEPASS_VAULT"] {
+        assert!(man.contains(text), "{text} missing from the man page");
+    }
+    assert!(!v.path.exists(), "no vault needed or created");
+}
+
+#[test]
+fn hidden_tabs_are_a_screen_setting_only() {
+    let k = Vaulty::new().init();
+    k.add("GitHub", "john", ITEM_PW);
+    k.run(
+        &["add", "Cloud", "--type", "api", "-u", "", "-e", "", "--url", "", "-t", ""],
+        &format!("{PW}\n{ITEM_PW}-api\n"),
+    )
+    .success();
+    k.run(&["config", "show"], "").success().stdout(contains("hidden-tabs:   none"));
+    // A list of types, any name `--type` takes; stored by their plain names.
+    k.run(&["config", "set", "hidden-tabs", "ssh, API,api"], "")
+        .success()
+        .stdout(contains("hidden-tabs:   api, ssh-key"));
+    let file = || std::fs::read_to_string(config_file(&k)).unwrap();
+    assert!(file().contains("\nhidden_tabs=api,ssh-key\n"), "{}", file());
+    // "All" cannot be hidden; a typo is refused. Neither changes the file.
+    for bad in ["all", "api,All"] {
+        k.run(&["config", "set", "hidden-tabs", bad], "")
+            .failure()
+            .stderr(contains("the All tab cannot be hidden"));
+    }
+    k.run(&["config", "set", "hidden-tabs", "api,cardz"], "").failure().stderr(contains(
+        "hidden-tabs takes types separated by commas (login, api, card, identity, ssh-key, note), or none",
+    ));
+    assert!(file().contains("\nhidden_tabs=api,ssh-key\n"));
+
+    // The setting hides no item anywhere outside the screen: list, search,
+    // get and the line mode see the API key exactly as before.
+    let pw = format!("{PW}\n");
+    k.run(&["list"], &pw).success().stdout(contains("Cloud").and(contains("GitHub")));
+    k.run(&["list", "--type", "api"], &pw).success().stdout(contains("Cloud"));
+    k.run(&["search", "cloud"], &pw).success().stdout(contains("Cloud"));
+    k.run(&["get", "cloud", "--show"], &pw).success().stdout(contains(format!("{ITEM_PW}-api")));
+    k.run(&["shell"], &format!("{PW}\nlist\nexit\n")).success().stdout(contains("Cloud"));
+    k.run(&["audit"], &pw).success().stdout(contains("2 logins and API keys"));
+
+    // Empty or "none" shows every tab again (and drops the line).
+    k.run(&["config", "set", "hidden-tabs", ""], "").success().stdout(contains("hidden-tabs:   none"));
+    assert!(!file().contains("hidden_tabs"), "{}", file());
+    k.run(&["config", "set", "hidden-tabs", "note"], "").success();
+    k.run(&["config", "set", "hidden-tabs", "none"], "").success().stdout(contains("hidden-tabs:   none"));
 }

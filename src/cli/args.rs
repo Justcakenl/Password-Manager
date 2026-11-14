@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 
+use cakepass::crypto::SecurityLevel;
 use cakepass::vault::Kind;
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 
@@ -14,9 +15,15 @@ use super::update::AutoMode;
 /// Version for `cakepass --version`: number + the git commit it was built from.
 const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (commit ", env!("CAKEPASS_GIT_COMMIT"), ")");
 
-/// Parse an item type ("login", "api" or "note") for clap.
+/// Parse an item type ("login", "api", "note", "card", "ssh-key" or "identity") for clap.
 fn parse_kind(s: &str) -> Result<Kind, String> {
-    Kind::parse(s).ok_or_else(|| format!("unknown type '{s}'; choose login, api or note"))
+    Kind::parse(s)
+        .ok_or_else(|| format!("unknown type '{s}'; choose login, api, note, card, ssh-key or identity"))
+}
+
+/// Parse a security level ("standard", "high" or "maximum") for clap.
+fn parse_level(s: &str) -> Result<SecurityLevel, String> {
+    SecurityLevel::parse(s).ok_or_else(|| format!("unknown level '{s}'; choose standard, high or maximum"))
 }
 
 const HELP_TEMPLATE: &str = "{about-with-newline}\nUsage: {usage}\n\n{all-args}{after-help}";
@@ -42,7 +49,7 @@ pub fn shell_command() -> clap::Command {
 #[command(
     name = "cakepass",
     version = VERSION,
-    about = "CakePass – offline, encrypted vault for passwords, API keys and notes\n(command: cakepass)",
+    about = "CakePass – offline, encrypted vault for passwords, API keys, notes, cards, SSH keys and\nidentity documents (command: cakepass)",
     help_template = HELP_TEMPLATE,
     disable_help_flag = true,
     disable_version_flag = true,
@@ -57,10 +64,20 @@ pub fn shell_command() -> clap::Command {
         cakepass add GitHub              add a login (asks for every field)\n  \
         cakepass add OpenAI --type api   store an API key\n  \
         cakepass add Recovery --type note   secure note\n  \
-        cakepass get GitHub              copy the password to the clipboard (20 s)\n  \
+        cakepass add Visa --type card    a bank card or credit card\n  \
+        cakepass add Server --type ssh-key   an SSH key (private key, public key, passphrase)\n  \
+        cakepass add Passport --type identity   a passport, ID card, licence or bank account\n  \
+        cakepass get GitHub              copy the password to the clipboard (cleared after 20 s; see clip-time)\n  \
+        cakepass get GitHub --totp       show and copy the current two-factor (TOTP) code\n  \
+        cakepass edit GitHub --favorite  pin an item; `cakepass list --favorites` shows the pinned ones\n  \
+        cakepass audit                   find weak, reused, old and empty passwords\n  \
         cakepass generate --passphrase   make a passphrase\n  \
         cakepass generate --save Mail    generate, change it if you like, save it\n  \
         cakepass config set animation off   turn the intro animation off\n  \
+        cakepass config set clip-time 45    clear the clipboard after 45 seconds instead of 20\n  \
+        cakepass security                show the security level and key file; change them\n  \
+        cakepass security --level maximum   make guessing your password even more expensive\n  \
+        cakepass keyfile create /run/media/$USER/USB/cakepass.key   a key file for a USB stick\n  \
         cakepass --update                update CakePass to the newest version (your vault is kept)\n\n\
         Passwords are never passed as arguments; you type them in a hidden prompt."
 )]
@@ -68,6 +85,10 @@ pub struct Cli {
     /// Path to the vault file [default: ~/.local/share/cakepass/vault.enc]
     #[arg(long, global = true, env = "CAKEPASS_VAULT", hide_env_values = true, value_name = "PATH")]
     pub vault: Option<PathBuf>,
+
+    /// Key file, for a vault that needs one [default: the `keyfile` setting]
+    #[arg(long, global = true, env = "CAKEPASS_KEYFILE", hide_env_values = true, value_name = "PATH")]
+    pub keyfile: Option<PathBuf>,
 
     /// Do not use colors
     #[arg(long, global = true)]
@@ -116,7 +137,7 @@ pub struct ShellLine {
 
 #[derive(Subcommand, Debug)]
 pub enum Cmd {
-    /// First-time setup: choose animation and lock timeout, set the master password
+    /// First-time setup: animation, lock timeout, security level, master password, key file
     Setup {
         #[command(flatten)]
         kdf: KdfArgs,
@@ -128,10 +149,11 @@ pub enum Cmd {
         kdf: KdfArgs,
     },
 
-    /// Add a login, API key or note (without options, cakepass asks for everything)
+    /// Add a login, API key, note, card, SSH key or identity document (without
+    /// options, cakepass asks for everything)
     Add(AddArgs),
 
-    /// Show an item and copy its secret (password, key, note) to the clipboard
+    /// Show an item and copy its secret (password, key, note, card or document number) to the clipboard
     #[command(alias = "show")]
     Get(GetArgs),
 
@@ -154,9 +176,12 @@ pub enum Cmd {
         /// Only items with this tag
         #[arg(short, long)]
         tag: Option<String>,
-        /// Only this type: login, api or note
+        /// Only this type: login, api, note, card, ssh-key or identity
         #[arg(long = "type", value_name = "TYPE", value_parser = parse_kind)]
         kind: Option<Kind>,
+        /// Only your favorites (pin one with `cakepass edit NAME --favorite`)
+        #[arg(short, long)]
+        favorites: bool,
     },
 
     /// Search name, type, tags, username, e-mail address and URL
@@ -164,6 +189,16 @@ pub enum Cmd {
     Search {
         /// Search term (case-insensitive)
         query: String,
+    },
+
+    /// Password health check: weak, reused, old and empty passwords and API
+    /// keys (offline; shows item names only, never a secret)
+    #[command(alias = "health")]
+    Audit {
+        /// Count an item as old when it was not changed for more than this many days
+        #[arg(long, value_name = "DAYS", default_value_t = cakepass::audit::DEFAULT_STALE_DAYS,
+              value_parser = clap::value_parser!(u64).range(1..=36_500))]
+        older_than: u64,
     },
 
     /// Generate a password or passphrase; in a terminal you can view, edit,
@@ -208,7 +243,17 @@ pub enum Cmd {
     /// Show information about the vault and security (no password needed)
     Info,
 
-    /// Show or change settings (animation, lock timeout)
+    /// Show the security level and key file; with options, change them
+    /// (asks for the master password)
+    Security(SecurityArgs),
+
+    /// Key files: a second secret for your vault, e.g. on a USB stick
+    Keyfile {
+        #[command(subcommand)]
+        action: KeyfileAction,
+    },
+
+    /// Show or change settings (animation, lock timeout, clipboard time)
     Config {
         #[command(subcommand)]
         action: Option<ConfigAction>,
@@ -233,6 +278,9 @@ pub enum Cmd {
         /// bash, zsh or fish
         shell: clap_complete::Shell,
     },
+
+    /// Print the manual page (roff), e.g. `cakepass man > cakepass.1`
+    Man,
 }
 
 /// What `cakepass config` can do.
@@ -245,7 +293,9 @@ pub enum ConfigAction {
         /// Which setting
         #[arg(value_enum)]
         key: ConfigKey,
-        /// The new value (animation: on/off; lock-timeout: minutes)
+        /// The new value (animation: on/off; lock-timeout: minutes; clip-time:
+        /// seconds, 5 to 300; hidden-tabs: types separated by commas, or none;
+        /// keyfile: a path, or none)
         value: String,
     },
 }
@@ -257,6 +307,42 @@ pub enum ConfigKey {
     Animation,
     /// Lock CakePass (screen and line mode) after this many minutes of inactivity
     LockTimeout,
+    /// Clear the clipboard this many seconds after copying a secret (5 to 300; default 20)
+    ClipTime,
+    /// Leave these type tabs out of the screen mode, e.g. "api,ssh-key" ("none" shows all; the items stay under All)
+    HiddenTabs,
+    /// Where your key file is, for a vault that needs one (only the path is stored)
+    Keyfile,
+}
+
+/// What `cakepass keyfile` can do.
+#[derive(Subcommand, Debug, Clone)]
+pub enum KeyfileAction {
+    /// Make a new key file with 64 random bytes (never overwrites a file)
+    Create {
+        /// Where to put it, e.g. on a USB stick
+        path: PathBuf,
+    },
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct SecurityArgs {
+    /// Switch to this level: standard (64 MiB), high (256 MiB) or maximum (1 GiB)
+    #[arg(long, value_parser = parse_level, value_name = "LEVEL")]
+    pub level: Option<SecurityLevel>,
+    /// From now on, require this key file (turns the key file on, or changes it)
+    #[arg(long, value_name = "PATH", conflicts_with = "no_keyfile")]
+    pub new_keyfile: Option<PathBuf>,
+    /// Stop requiring a key file (the master password alone opens the vault)
+    #[arg(long)]
+    pub no_keyfile: bool,
+}
+
+impl SecurityArgs {
+    /// Whether anything should change (otherwise: only show).
+    pub fn changes_something(&self) -> bool {
+        self.level.is_some() || self.new_keyfile.is_some() || self.no_keyfile
+    }
 }
 
 #[derive(Args, Debug, Clone)]
@@ -278,24 +364,35 @@ pub struct UpdateArgs {
     pub auto: Option<AutoMode>,
 }
 
-#[derive(Args, Debug, Clone)]
-#[command(next_help_heading = "Argon2id settings")]
+#[derive(Args, Debug, Clone, Default)]
+#[command(next_help_heading = "Security level (Argon2id settings)")]
 pub struct KdfArgs {
-    /// Memory use in MiB
-    #[arg(long, default_value_t = 64, value_name = "MiB")]
-    pub kdf_memory: u32,
-    /// Number of iterations
-    #[arg(long, default_value_t = 3, value_name = "N")]
-    pub kdf_iterations: u32,
-    /// Number of parallel lanes
-    #[arg(long, default_value_t = 4, value_name = "N")]
-    pub kdf_parallelism: u32,
+    /// standard (64 MiB), high (256 MiB) or maximum (1 GiB) [default: high; setup asks]
+    #[arg(long, value_parser = parse_level, value_name = "LEVEL")]
+    pub level: Option<SecurityLevel>,
+    /// Memory use in MiB (overrides the level)
+    #[arg(long, value_name = "MiB")]
+    pub kdf_memory: Option<u32>,
+    /// Number of iterations (overrides the level)
+    #[arg(long, value_name = "N")]
+    pub kdf_iterations: Option<u32>,
+    /// Number of parallel lanes (overrides the level)
+    #[arg(long, value_name = "N")]
+    pub kdf_parallelism: Option<u32>,
 }
 
 impl KdfArgs {
-    /// The recommended default settings.
+    /// Nothing given: the setup wizard asks for the level.
     pub fn default_values() -> KdfArgs {
-        KdfArgs { kdf_memory: 64, kdf_iterations: 3, kdf_parallelism: 4 }
+        KdfArgs::default()
+    }
+
+    /// Whether the command line chose the Argon2 settings.
+    pub fn is_explicit(&self) -> bool {
+        self.level.is_some()
+            || self.kdf_memory.is_some()
+            || self.kdf_iterations.is_some()
+            || self.kdf_parallelism.is_some()
     }
 }
 
@@ -349,16 +446,19 @@ pub struct GenArgs {
 pub struct AddArgs {
     /// Name of the item, e.g. "GitHub"
     pub name: String,
-    /// Type of item: login, api (API key/token) or note
+    /// Type of item: login, api (API key/token), note, card (bank/credit card), ssh-key or
+    /// identity (passport, ID card, driving licence, bank account, membership)
     #[arg(long = "type", short = 'k', value_name = "TYPE", value_parser = parse_kind, default_value = "login")]
     pub kind: Kind,
-    /// Username (for an API key: account or key ID)
+    /// Username (for an API key: account or key ID; for a card: the cardholder name;
+    /// for an identity: the full name)
     #[arg(short, long)]
     pub username: Option<String>,
     /// E-mail address that belongs to this item
     #[arg(short, long)]
     pub email: Option<String>,
-    /// Web address (for an API key: the service)
+    /// Web address (for an API key: the service; for an SSH key: the host; for an
+    /// identity: who issued it)
     #[arg(long)]
     pub url: Option<String>,
     /// Tags, separated by commas
@@ -367,6 +467,10 @@ pub struct AddArgs {
     /// Generate the password (instead of typing it yourself)
     #[arg(short, long)]
     pub generate: bool,
+    /// Also store a TOTP secret for two-factor codes (asked in a hidden prompt:
+    /// the base32 secret or the otpauth:// link the site gives you)
+    #[arg(long)]
+    pub totp: bool,
     #[command(flatten)]
     pub gen_opts: GenArgs,
 }
@@ -384,8 +488,14 @@ pub struct GetArgs {
     /// Copy the e-mail address instead of the secret
     #[arg(long, conflicts_with_all = ["show", "copy_username"])]
     pub copy_email: bool,
+    /// Copy the public key of an SSH key instead of the private key
+    #[arg(long, conflicts_with_all = ["show", "copy_username", "copy_email"])]
+    pub copy_public: bool,
+    /// Show the current two-factor (TOTP) code and copy it (cleared like a password)
+    #[arg(long, conflicts_with_all = ["show", "copy_username", "copy_email", "copy_public"])]
+    pub totp: bool,
     /// Copy nothing
-    #[arg(long, conflicts_with_all = ["copy_username", "copy_email"])]
+    #[arg(long, conflicts_with_all = ["copy_username", "copy_email", "copy_public"])]
     pub no_copy: bool,
 }
 
@@ -396,19 +506,19 @@ pub struct EditArgs {
     /// New name
     #[arg(long, value_name = "NAME")]
     pub rename: Option<String>,
-    /// New username
+    /// New username (for a card: the cardholder name; for an identity: the full name)
     #[arg(short, long)]
     pub username: Option<String>,
     /// New e-mail address
     #[arg(short, long)]
     pub email: Option<String>,
-    /// New web address
+    /// New web address (for an SSH key: the host; for an identity: who issued it)
     #[arg(long)]
     pub url: Option<String>,
     /// New tags (replaces the old ones), separated by commas
     #[arg(short, long, value_delimiter = ',')]
     pub tags: Option<Vec<String>>,
-    /// Type a new password or API key (hidden prompt)
+    /// Type a new password, API key, card number, private key or document number (hidden prompt)
     #[arg(long, conflicts_with = "generate")]
     pub password: bool,
     /// Generate a new password
@@ -417,6 +527,30 @@ pub struct EditArgs {
     /// Type new notes (for a note: the new contents)
     #[arg(long)]
     pub notes: bool,
+    /// Card or identity: type a new expiry date
+    #[arg(long)]
+    pub expiry: bool,
+    /// Card: type a new security code (hidden prompt)
+    #[arg(long)]
+    pub cvv: bool,
+    /// SSH key: type a new public key
+    #[arg(long)]
+    pub public_key: bool,
+    /// SSH key: type a new passphrase for the private key (hidden prompt)
+    #[arg(long)]
+    pub key_passphrase: bool,
+    /// Set or replace the TOTP secret for two-factor codes (hidden prompt)
+    #[arg(long, conflicts_with = "no_totp")]
+    pub totp: bool,
+    /// Remove the TOTP secret
+    #[arg(long)]
+    pub no_totp: bool,
+    /// Pin the item as a favorite (`cakepass list --favorites`)
+    #[arg(long, conflicts_with = "no_favorite")]
+    pub favorite: bool,
+    /// Unpin the item
+    #[arg(long)]
+    pub no_favorite: bool,
     #[command(flatten)]
     pub gen_opts: GenArgs,
 }
@@ -431,6 +565,35 @@ mod tests {
         shell_command().debug_assert();
         let help = command().find_subcommand_mut("generate").unwrap().render_help().to_string();
         assert!(help.contains("[default: 24]") && help.contains("Usage:"));
+        let help = command().find_subcommand_mut("security").unwrap().render_help().to_string();
+        assert!(help.contains("--level") && help.contains("--new-keyfile") && help.contains("--no-keyfile"));
+        let help = command().render_help().to_string();
+        assert!(help.contains("--keyfile"), "the global key file option");
+    }
+
+    #[test]
+    fn levels_and_key_files_on_the_command_line() {
+        use clap::FromArgMatches;
+        let parse = |args: &[&str]| {
+            let m = command().try_get_matches_from(std::iter::once("cakepass").chain(args.iter().copied()));
+            m.and_then(|m| Cli::from_arg_matches(&m))
+        };
+        let cli = parse(&["init", "--level", "Maximum"]).unwrap();
+        let Some(Cmd::Init { kdf }) = cli.command else { panic!() };
+        assert_eq!(kdf.level, Some(SecurityLevel::Maximum));
+        assert!(kdf.is_explicit());
+        assert!(!KdfArgs::default_values().is_explicit());
+        assert!(parse(&["init", "--level", "ultra"]).is_err());
+        // The global key file option works before and after the command.
+        let cli = parse(&["list", "--keyfile", "/k"]).unwrap();
+        assert_eq!(cli.keyfile.as_deref(), Some(std::path::Path::new("/k")));
+        let cli = parse(&["--keyfile", "/k", "security", "--new-keyfile", "/n"]).unwrap();
+        let Some(Cmd::Security(s)) = cli.command else { panic!() };
+        assert!(s.changes_something() && s.new_keyfile.is_some() && cli.keyfile.is_some());
+        assert!(parse(&["security", "--new-keyfile", "/n", "--no-keyfile"]).is_err(), "conflict");
+        let cli = parse(&["security"]).unwrap();
+        let Some(Cmd::Security(s)) = cli.command else { panic!() };
+        assert!(!s.changes_something());
     }
 
     #[test]
@@ -452,5 +615,18 @@ mod tests {
             }
         }
         check(&command());
+        // The fields that came with cards, TOTP and SSH keys are secrets
+        // too (or sit next to them): always asked for, never a value here.
+        for (sub, expected) in [
+            ("add", &["totp"][..]),
+            ("get", &["copy_public", "totp"]),
+            ("edit", &["expiry", "cvv", "public_key", "key_passphrase", "totp", "no_totp"]),
+        ] {
+            let cmd = command().find_subcommand(sub).unwrap().clone();
+            for id in expected {
+                let arg = cmd.get_arguments().find(|a| a.get_id() == *id).expect(id);
+                assert!(!arg.get_action().takes_values(), "option {id} of {sub} accepts a value");
+            }
+        }
     }
 }

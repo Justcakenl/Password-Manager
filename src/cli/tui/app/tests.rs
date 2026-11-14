@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 
 use zeroize::Zeroizing;
 
-use cakepass::crypto::KdfParams;
+use cakepass::crypto::{KdfParams, KeyFilePepper, SecurityLevel};
+use cakepass::format::Credentials;
 use cakepass::storage::{UnlockedVault, VaultPaths};
 use cakepass::vault::{Entry, Kind, NewEntry};
 
@@ -41,6 +42,7 @@ fn add(uv: &mut UnlockedVault, name: &str, kind: Kind, user: &str, secret: &str,
         url: if kind == Kind::Note { String::new() } else { "https://example.org".into() },
         notes: notes.into(),
         tags: vec!["work".into()],
+        ..Default::default()
     };
     commands::add_entry(uv, fields).unwrap();
 }
@@ -52,7 +54,7 @@ impl T {
 
     fn with(fill: impl FnOnce(&mut UnlockedVault)) -> T {
         let dir = tempfile::tempdir().unwrap();
-        let mut uv = UnlockedVault::create(paths(&dir), PW.as_bytes(), FAST).unwrap();
+        let mut uv = UnlockedVault::create(paths(&dir), Credentials::password(PW.as_bytes()), FAST).unwrap();
         fill(&mut uv);
         let clip = Rc::new(RefCell::new(Vec::new()));
         let log = clip.clone();
@@ -64,6 +66,8 @@ impl T {
         let cfg_path = dir.path().join("config");
         let mut app = App::new(uv, Config::default(), Some(cfg_path), Duration::from_secs(300), copier, now);
         app.resize((80, 24));
+        // Never run Argon2 at a real level just to show a time: 1 ms per 256 KiB.
+        app.measurer = Box::new(|p: &KdfParams| Ok(Duration::from_millis(u64::from(p.memory_kib) / 256)));
         T { dir, app, clip, now }
     }
 
@@ -114,7 +118,7 @@ impl T {
 
     /// The vault as it is on disk now.
     fn reopen(&self, pw: &str) -> UnlockedVault {
-        UnlockedVault::open(paths(&self.dir), pw.as_bytes()).unwrap()
+        UnlockedVault::open(paths(&self.dir), Credentials::password(pw.as_bytes())).unwrap()
     }
 
     fn toast(&self) -> String {
@@ -172,6 +176,7 @@ fn add_a_login_with_the_form() {
     assert!(s.contains("••••••••••") && !s.contains("P4ss"), "the password is masked while typing:\n{s}");
     t.key(Key::Ctrl('r'));
     assert!(t.screen().contains("P4ss-wörd!"), "Ctrl+R shows it");
+    t.key(Key::Down); // the 2FA secret (optional; left empty)
     t.key(Key::Down);
     t.typ("line one");
     t.key(Key::Enter); // a new line inside the notes
@@ -213,8 +218,9 @@ fn add_an_api_key_by_pasting_and_a_note() {
     t.key(Key::Down);
     t.key(Key::Left); // login → note
     t.key(Key::Down); // tags
+    t.key(Key::Down); // 2FA secret (a note may have one too)
     t.key(Key::Down); // content
-    assert!(!t.screen().contains("Username"));
+    assert!(!t.screen().contains("Username") && t.screen().contains("2FA secret"));
     t.typ("ssid: home");
     t.key(Key::Enter);
     t.typ("pass: 1234");
@@ -346,13 +352,15 @@ fn search_and_tabs_filter_the_list() {
     t.typ("sk-test");
     assert!(t.app.view.is_empty() && t.screen().contains("No items match."));
     t.key(Key::Esc);
-    // Tabs.
+    // Tabs: All · Logins · API keys · Cards · IDs · SSH · Notes · 2FA.
     t.key(Key::Right);
     assert_eq!(t.app.tab, Tab::Logins);
     assert_eq!(t.app.view.len(), 1);
-    t.keys(&[Key::Right, Key::Right]);
+    t.keys(&[Key::Right, Key::Right, Key::Right, Key::Right, Key::Right]);
     assert_eq!(t.app.tab, Tab::Notes);
     assert_eq!(t.app.selected().unwrap().name(), "Recovery codes");
+    t.key(Key::Right);
+    assert_eq!((t.app.tab, t.app.view.len()), (Tab::TwoFactor, 0), "no item has a TOTP secret");
     t.key(Key::Right);
     assert_eq!(t.app.tab, Tab::All);
     // Pasting outside the search does nothing at all.
@@ -478,7 +486,10 @@ fn settings_are_saved() {
     }
     assert_eq!(t.app.cfg.lock_timeout_minutes, 1, "never below one minute");
     let saved = crate::cli::config::load_from(&t.dir.path().join("config"));
-    assert_eq!(saved, Config { animation: false, lock_timeout_minutes: 1 });
+    assert_eq!(
+        saved,
+        Config { animation: false, lock_timeout_minutes: 1, keyfile: None, ..Config::default() }
+    );
     t.key(Key::Esc);
     assert!(matches!(t.app.screen, Screen::Main));
 }
@@ -487,7 +498,7 @@ fn settings_are_saved() {
 fn change_the_master_password() {
     let mut t = T::sample();
     t.key(Key::Char('s'));
-    t.keys(&[Key::Down, Key::Down, Key::Enter]);
+    t.keys(&[Key::Down, Key::Down, Key::Down, Key::Enter]); // past the Tabs row
     assert!(t.screen().contains("current master password"));
     t.typ("wrong");
     assert!(t.screen().contains("•••••") && !t.screen().contains("wrong"), "hidden input");
@@ -505,7 +516,7 @@ fn change_the_master_password() {
     t.key(Key::Enter);
     assert!(t.screen().contains("Master password changed"), "{}", t.screen());
     t.key(Key::Enter);
-    assert!(UnlockedVault::open(paths(&t.dir), PW.as_bytes()).is_err());
+    assert!(UnlockedVault::open(paths(&t.dir), Credentials::password(PW.as_bytes())).is_err());
     let uv = t.reopen(PW2);
     assert_eq!(get(&uv, "github").password(uv.item_key()).unwrap().as_str(), "gh-Secret-1");
     // The open vault keeps working with the new key.
@@ -655,4 +666,745 @@ fn startup_notices_are_shown_once() {
     assert!(s.contains("─ Please note ─"), "the title sits cleanly in the border: {s}");
     t.key(Key::Enter);
     assert!(t.app.modals.is_empty());
+}
+
+#[test]
+fn the_security_level_row_measures_lazily_and_switches_the_level() {
+    let mut t = T::sample();
+    let measured = Rc::new(RefCell::new(Vec::new()));
+    let log = measured.clone();
+    t.app.measurer = Box::new(move |p: &KdfParams| {
+        log.borrow_mut().push(p.memory_kib);
+        Ok(Duration::from_millis(u64::from(p.memory_kib) / 256))
+    });
+    t.key(Key::Char('s'));
+    t.keys(&[Key::Down, Key::Down, Key::Down]); // to the master password
+    assert!(measured.borrow().is_empty(), "nothing is measured before the row is shown");
+    t.key(Key::Down);
+    let s = t.screen();
+    assert!(s.contains("Security level") && s.contains("High (recommended)"), "{s}");
+    assert_eq!(*measured.borrow(), [256 * 1024], "the shown level is measured once");
+    assert!(s.contains("Unlock here ≈ 1.02 s") && s.contains("needs 342 MiB free"), "{s}");
+    assert!(s.contains("custom · Argon2id, 8 MiB"), "the current (test) settings: {s}");
+    t.key(Key::Left);
+    assert!(t.screen().contains("Standard") && t.screen().contains("Unlock here ≈ 0.26 s"));
+    t.key(Key::Left); // stays at Standard
+    t.key(Key::Right);
+    t.key(Key::Left);
+    assert_eq!(*measured.borrow(), [256 * 1024, 64 * 1024], "each level is measured only once");
+    // Enter: asks for the master password; a wrong one changes nothing.
+    t.key(Key::Enter);
+    let s = t.screen();
+    assert!(s.contains("Change the security level") && s.contains("current master password"), "{s}");
+    assert!(s.contains("Unlocking will take about 0.26 s"), "{s}");
+    t.typ("wrong");
+    t.key(Key::Enter);
+    assert!(t.screen().contains("Wrong master password"), "{}", t.screen());
+    t.typ(PW);
+    t.key(Key::Enter);
+    let s = t.screen();
+    assert!(s.contains("Security level changed") && s.contains("Standard level"), "{s}");
+    t.key(Key::Enter);
+    assert!(t.screen().contains("(current)"));
+    // On disk: Standard, same password, everything still there; the backup too.
+    let uv = t.reopen(PW);
+    assert_eq!(uv.kdf(), KdfParams::STANDARD);
+    assert_eq!(uv.security_level(), Some(SecurityLevel::Standard));
+    assert_eq!(get(&uv, "github").password(uv.item_key()).unwrap().as_str(), "gh-Secret-1");
+    let bak = VaultPaths::for_file(t.dir.path().join("vault.enc")).backup;
+    assert_eq!(cakepass::storage::read_header(&bak).unwrap().kdf, KdfParams::STANDARD);
+    // Enter on the level the vault already has does nothing.
+    t.key(Key::Enter);
+    assert!(t.toast().contains("already uses the Standard"), "{}", t.toast());
+}
+
+#[test]
+fn a_level_this_computer_cannot_run_is_explained() {
+    let mut t = T::new();
+    t.app.measurer = Box::new(|p: &KdfParams| {
+        if p.memory_kib > 256 * 1024 {
+            cakepass::crypto::check_memory_with(p, Some(900 * 1024), cakepass::crypto::MemoryUse::Create)?;
+        }
+        Ok(Duration::from_millis(5))
+    });
+    t.key(Key::Char('s'));
+    t.keys(&[Key::Down, Key::Down, Key::Down, Key::Down, Key::Right]);
+    let s = t.screen_at(120, 30);
+    assert!(s.contains("Maximum") && s.contains("needs about 1366 MiB of free memory"), "{s}");
+}
+
+/// A vault with a key file, for the screen mode tests.
+fn key_file_vault() -> (T, std::path::PathBuf) {
+    let mut t = T::sample();
+    let kf_path = t.dir.path().join("usb.key");
+    cakepass::keyfile::create(&kf_path).unwrap();
+    let kf = cakepass::keyfile::load(&kf_path).unwrap();
+    t.app.uv.rekey(Credentials::new(PW.as_bytes(), Some(&kf.pepper)), FAST).unwrap();
+    t.app.key_file = Some(kf_path.clone());
+    (t, kf_path)
+}
+
+fn reopen_with(t: &T, pw: &str, kf: &std::path::Path) -> cakepass::Result<UnlockedVault> {
+    let pepper: KeyFilePepper = cakepass::keyfile::load(kf).unwrap().pepper;
+    UnlockedVault::open(paths(&t.dir), Credentials::new(pw.as_bytes(), Some(&pepper)))
+}
+
+#[test]
+fn a_vault_with_a_key_file_in_the_screen_mode() {
+    let (mut t, kf_path) = key_file_vault();
+    let s = t.screen();
+    assert!(s.contains("GitHub"));
+    t.key(Key::Char('s'));
+    assert!(t.screen_at(120, 30).contains("required:"), "{}", t.screen_at(120, 30));
+    // Changing the master password re-reads the key file and keeps it.
+    t.keys(&[Key::Down, Key::Down, Key::Down, Key::Enter]);
+    t.typ("wrong");
+    t.key(Key::Enter);
+    assert!(t.screen().contains("Wrong master password (or key file)"), "{}", t.screen());
+    t.typ(PW);
+    t.key(Key::Enter);
+    t.typ(PW2);
+    t.key(Key::Enter);
+    t.typ(PW2);
+    t.key(Key::Enter);
+    assert!(t.screen().contains("Master password changed"), "{}", t.screen());
+    t.key(Key::Enter);
+    let uv = reopen_with(&t, PW2, &kf_path).unwrap();
+    assert!(uv.uses_key_file(), "the key file is still required");
+    assert!(matches!(
+        UnlockedVault::open(paths(&t.dir), Credentials::password(PW2.as_bytes())),
+        Err(cakepass::Error::KeyFileRequired)
+    ));
+    drop(uv);
+    // The USB stick is gone: a clear message, nothing changes.
+    let moved = t.dir.path().join("moved.key");
+    std::fs::rename(&kf_path, &moved).unwrap();
+    t.key(Key::Enter); // change the master password again
+    t.typ(PW2);
+    t.key(Key::Enter);
+    let s = t.screen();
+    assert!(s.contains("cannot be read") && s.contains("plugged in"), "{s}");
+    t.key(Key::Esc);
+    std::fs::rename(&moved, &kf_path).unwrap();
+    // Reloading after another window changed the vault reads the key file too.
+    let mut other = reopen_with(&t, PW2, &kf_path).unwrap();
+    add(&mut other, "From elsewhere", Kind::Login, "x", "y", "");
+    drop(other);
+    t.key(Key::Esc);
+    t.key(Key::Char('d'));
+    t.key(Key::Char('y'));
+    assert!(t.screen().contains("was NOT saved"), "{}", t.screen());
+    t.key(Key::Enter);
+    t.typ(PW2);
+    t.key(Key::Enter);
+    assert!(t.toast().starts_with("Vault reloaded."), "{}", t.toast());
+}
+
+// ───────────────────────── cards, TOTP and SSH keys ─────────────────────────
+
+/// RFC 6238's test seed in base32: at t = 59 the 6-digit code is 287082.
+const TOTP_SEED: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+
+fn new_types() -> T {
+    T::with(|uv| {
+        add(uv, "GitHub", Kind::Login, "john", "gh-Secret-1", "");
+        let fields = |name: &str, kind| NewEntry { name: name.into(), kind, ..Default::default() };
+        let card = NewEntry {
+            username: "J. Doe".into(),
+            password: "4111 1111 1111 1111".into(),
+            expiry: "08/29".into(),
+            cvv: "737".into(),
+            ..fields("Visa", Kind::Card)
+        };
+        let key = NewEntry {
+            url: "git@github.com".into(),
+            password: "-----BEGIN KEY-----\nzq-private-line\n-----END KEY-----".into(),
+            public_key: "ssh-ed25519 AAAA me@laptop".into(),
+            passphrase: "zq-passphrase".into(),
+            ..fields("Server key", Kind::SshKey)
+        };
+        commands::add_entry(uv, card).unwrap();
+        commands::add_entry(uv, key).unwrap();
+        let (vault, key) = uv.parts_mut();
+        vault.update("GitHub", |e| e.set_totp_secret(key, TOTP_SEED)).unwrap();
+        uv.save().unwrap();
+    })
+}
+
+fn select(t: &mut T, name: &str) {
+    t.app.select_name(name);
+    assert_eq!(t.app.selected().unwrap().name(), name);
+}
+
+#[test]
+fn cards_and_ssh_keys_in_the_list_and_details() {
+    let mut t = new_types();
+    let s = t.screen();
+    assert!(s.contains("Cards 1") && s.contains("SSH 1") && s.contains("Logins 1"), "{s}");
+    // The list shows the cardholder and the host; nothing secret anywhere.
+    for text in ["card", "ssh", "J. Doe", "git@github.c"] {
+        assert!(s.contains(text), "{text} missing:\n{s}");
+    }
+    select(&mut t, "Visa");
+    let s = t.screen();
+    for text in ["Cardholder", "08/29", "Card number", "CVV"] {
+        assert!(s.contains(text), "{text} missing:\n{s}");
+    }
+    assert!(!s.contains("4111") && !s.contains("737"), "hidden until revealed:\n{s}");
+    t.key(Key::Enter);
+    let s = t.screen();
+    assert!(s.contains("4111 1111 1111 1111") && s.contains("737"), "{s}");
+    t.later(REVEAL_SECS);
+    assert!(!t.screen().contains("4111"), "hides itself");
+    select(&mut t, "Server key");
+    let s = t.screen();
+    for text in ["Host", "git@github.com", "Public key", "ssh-ed25519 AAAA", "Passphrase", "Private key"] {
+        assert!(s.contains(text), "{text} missing:\n{s}");
+    }
+    assert!(!s.contains("zq-private-line") && !s.contains("zq-passphrase"), "{s}");
+    t.key(Key::Enter);
+    let s = t.screen();
+    assert!(s.contains("zq-private-line") && s.contains("-----END KEY-----") && s.contains("zq-passphrase"));
+    // c copies the private key, p the public key.
+    t.key(Key::Char('c'));
+    t.key(Key::Char('p'));
+    assert_eq!(t.clip.borrow()[0], "-----BEGIN KEY-----\nzq-private-line\n-----END KEY-----");
+    assert_eq!(t.clip.borrow()[1], "ssh-ed25519 AAAA me@laptop");
+    assert_eq!(t.toast(), "The public key copied (test-clipboard)");
+    select(&mut t, "Visa");
+    t.key(Key::Char('p'));
+    assert!(t.toast().contains("Only an SSH key"), "{}", t.toast());
+    t.key(Key::Char('u'));
+    assert_eq!(t.clip.borrow().last().unwrap(), "J. Doe");
+    // The tabs filter by the new types.
+    t.app.select_name("GitHub");
+    t.keys(&[Key::Right, Key::Right, Key::Right]);
+    assert_eq!((t.app.tab, t.app.view.len()), (Tab::Cards, 1));
+    t.keys(&[Key::Right, Key::Right]); // past the (empty) IDs tab
+    assert_eq!((t.app.tab, t.app.selected().unwrap().name()), (Tab::SshKeys, "Server key"));
+}
+
+#[test]
+fn the_totp_code_is_computed_shown_and_copied() {
+    let mut t = new_types();
+    t.app.clock = || 59;
+    select(&mut t, "GitHub");
+    let s = t.screen();
+    assert!(s.contains("TOTP") && s.contains("set (t shows it)") && !s.contains("287082"), "{s}");
+    t.key(Key::Char('t'));
+    assert_eq!(t.clip.borrow().as_slice(), ["287082"], "the RFC 6238 code at t = 59");
+    assert_eq!(t.toast(), "The TOTP code copied (test-clipboard)", "the code is not kept in a message");
+    assert!(t.screen().contains("287082  (1 s)"), "{}", t.screen());
+    // Computed again for every frame: the next period has another code.
+    t.app.clock = || 60;
+    let s = t.screen();
+    assert!(!s.contains("287082") && s.contains("(30 s)"), "{s}");
+    // Hidden after a while, and when another item is chosen.
+    t.later(REVEAL_SECS);
+    assert!(!t.screen().contains("(30 s)"));
+    t.key(Key::Char('t'));
+    assert!(t.screen().contains("(30 s)"));
+    t.key(Key::Down);
+    assert!(!t.screen().contains("(30 s)"), "hidden when the selection changes");
+    // An item without a TOTP secret says how to add one.
+    select(&mut t, "Visa");
+    t.key(Key::Char('t'));
+    assert!(t.toast().contains("has no TOTP secret") && t.toast().contains("--totp"), "{}", t.toast());
+    assert_eq!(t.clip.borrow().len(), 2);
+}
+
+#[test]
+fn the_2fa_tab_lists_every_code_like_an_authenticator_app() {
+    let mut t = new_types();
+    {
+        // A TOTP secret on a card too: the tab is not about one type.
+        let (vault, key) = t.app.uv.parts_mut();
+        vault.update("Visa", |e| e.set_totp_secret(key, TOTP_SEED)).unwrap();
+    }
+    t.app.refilter();
+    t.app.clock = || 59;
+    assert!(tab_bar(&t).contains("2FA 2"), "with its count, in 80 columns: {}", tab_bar(&t));
+    // ← from All goes straight to it.
+    t.key(Key::Left);
+    assert_eq!(t.app.tab, Tab::TwoFactor);
+    let names: Vec<&str> = t.app.view.iter().map(|&i| t.app.entries()[i].name()).collect();
+    assert_eq!(names, ["GitHub", "Visa"], "only the items with a TOTP secret");
+    // Every row shows its code (in two halves) and the seconds left; the
+    // details show the next code as well. Nothing else secret is shown.
+    let s = t.screen();
+    assert_eq!(s.matches("287 082    1s").count(), 2, "{s}");
+    assert!(s.contains("287082  (1 s)") && s.contains("Next code") && s.contains("359152"), "{s}");
+    assert!(!s.contains("gh-Secret-1") && !s.contains("4111") && !s.contains("Server key"), "{s}");
+    // Computed again for every frame.
+    t.app.clock = || 60;
+    let s = t.screen();
+    assert!(s.contains("359 152   30s") && !s.contains("287"), "{s}");
+    assert!(s.contains("969429"), "the next code after 359152: {s}");
+    // Enter and c copy the code of the selected row (not the password).
+    t.key(Key::Enter);
+    t.key(Key::Down);
+    t.key(Key::Char('c'));
+    assert_eq!(t.clip.borrow().as_slice(), ["359152", "359152"]);
+    assert_eq!(t.toast(), "The TOTP code copied (test-clipboard)");
+    assert_eq!(t.app.tab, Tab::TwoFactor, "copying stays on the tab");
+    // Under a dialog the codes are dots.
+    t.key(Key::Char('?'));
+    let s = t.screen();
+    assert!(!s.contains("359") && !s.contains("969429"), "{s}");
+    t.key(Key::Esc);
+    assert!(t.screen().contains("359 152"));
+    // The search works inside the tab.
+    t.typ("Vis");
+    assert_eq!(t.app.view.len(), 1);
+    assert_eq!(t.app.selected().unwrap().name(), "Visa");
+    t.key(Key::Esc);
+    // In the other tabs Enter still shows the password, c copies it.
+    t.key(Key::Right);
+    assert_eq!(t.app.tab, Tab::All);
+    select(&mut t, "GitHub");
+    t.key(Key::Char('c'));
+    assert_eq!(t.clip.borrow().last().unwrap(), "gh-Secret-1");
+    let s = t.screen();
+    assert!(s.contains("set (t shows it)") && !s.contains("Next code"), "{s}");
+}
+
+#[test]
+fn add_a_2fa_code_from_the_2fa_tab() {
+    let mut t = new_types();
+    t.app.clock = || 59;
+    t.key(Key::Left);
+    assert_eq!((t.app.tab, t.app.view.len()), (Tab::TwoFactor, 1));
+    // a: which item gets the code? Only items without one, and a new login.
+    t.key(Key::Char('a'));
+    let Some(Modal::Picker(p)) = t.app.modals.last() else { panic!("no picker") };
+    assert_eq!(p.names, ["Server key", "Visa"]);
+    let s = t.screen();
+    assert!(s.contains("Add a 2FA code") && s.contains("+ New login") && s.contains("can't scan it?"), "{s}");
+    // In the smallest window too; the selection stays in view when scrolling.
+    t.app.resize((60, 16));
+    for _ in 0..2 {
+        t.key(Key::Down);
+    }
+    let small = t.screen_at(60, 16);
+    assert!(small.contains("Add a 2FA code") && small.contains("Visa"), "{small}");
+    t.app.resize((80, 24));
+    t.keys(&[Key::Up, Key::Up]);
+    // Typing narrows the list and selects the first match.
+    t.typ("vis");
+    let Some(Modal::Picker(p)) = t.app.modals.last() else { panic!("no picker") };
+    assert_eq!((p.visible(), p.sel), (vec!["Visa"], 1));
+    t.key(Key::Enter);
+    // The edit form of that item, on the 2FA secret.
+    let Screen::Form(f) = &t.app.screen else { panic!("no form") };
+    assert_eq!(f.focus, Field::Totp);
+    assert!(t.screen().contains("Edit 'Visa'") && t.screen().contains("2FA secret"));
+    // A typo is refused before saving: the form stays, the cursor stays on
+    // the field, and the message does not repeat what was typed.
+    t.paste("zq-not-a-secret-1");
+    assert!(!t.screen().contains("zq-not"), "hidden while typing:\n{}", t.screen());
+    t.key(Key::Ctrl('s'));
+    let Screen::Form(f) = &t.app.screen else { panic!("the form closed") };
+    assert_eq!(f.focus, Field::Totp);
+    let s = t.screen();
+    assert!(s.contains("Not a valid 2FA secret") && !s.contains("zq-not"), "{s}");
+    // Valid base32 but too short for a real secret: refused too.
+    t.key(Key::Ctrl('u'));
+    t.paste("line one");
+    t.key(Key::Ctrl('s'));
+    assert!(matches!(t.app.screen, Screen::Form(_)), "not saved");
+    let s = t.screen();
+    assert!(s.contains("too short") && !s.contains("line one"), "{s}");
+    // The secret as sites show it: in groups, lower case.
+    t.key(Key::Ctrl('u'));
+    t.paste("gezd gnbv gy3t qojq gezd gnbv gy3t qojq");
+    t.key(Key::Ctrl('r'));
+    assert!(t.screen().contains("gezd gnbv"), "Ctrl+R shows it");
+    t.key(Key::Ctrl('s'));
+    assert!(matches!(t.app.screen, Screen::Main));
+    assert_eq!(t.toast(), "Item 'Visa' updated. Its 2FA code is in the 2FA tab.");
+    assert_eq!((t.app.tab, t.app.view.len()), (Tab::TwoFactor, 2));
+    assert_eq!(t.app.selected().unwrap().name(), "Visa");
+    assert_eq!(t.screen().matches("287 082").count(), 2, "{}", t.screen());
+    let uv = t.reopen(PW);
+    let visa = get(&uv, "Visa");
+    assert_eq!(visa.totp(uv.item_key()).unwrap().unwrap().code_at(59).as_str(), "287082");
+    assert_eq!(visa.password(uv.item_key()).unwrap().as_str(), "4111 1111 1111 1111", "the rest is kept");
+}
+
+#[test]
+fn a_new_login_with_a_2fa_code_and_removing_a_code() {
+    let mut t = new_types();
+    t.app.clock = || 59;
+    t.key(Key::Left);
+    // Esc closes the question; a with no match left still offers a new login.
+    t.key(Key::Char('a'));
+    t.key(Key::Esc);
+    assert!(t.app.modals.is_empty() && matches!(t.app.screen, Screen::Main));
+    t.key(Key::Char('a'));
+    t.typ("nothing like this");
+    let Some(Modal::Picker(p)) = t.app.modals.last() else { panic!("no picker") };
+    assert_eq!(p.sel, 0);
+    t.key(Key::Enter);
+    let Screen::Form(f) = &t.app.screen else { panic!("no form") };
+    assert!(matches!(f.mode, super::super::screens::form::Mode::Add) && f.kind == Kind::Login);
+    assert!(t.toast().contains("paste the 2FA secret"), "{}", t.toast());
+    t.typ("Mail");
+    t.keys(&[Key::Down; 6]); // type, username, e-mail, URL, tags, password
+    t.typ("mail-pw-1");
+    t.key(Key::Down);
+    t.paste(TOTP_SEED);
+    t.key(Key::Ctrl('s'));
+    assert_eq!(t.toast(), "Login 'Mail' saved (encrypted). Its 2FA code is in the 2FA tab.");
+    assert_eq!(t.app.view.len(), 2);
+    // Removing a code: edit, the 2FA secret says "(unchanged)", Ctrl+U, save.
+    select(&mut t, "GitHub");
+    t.key(Key::Char('e'));
+    t.keys(&[Key::Down; 6]); // username, e-mail, URL, tags, password, 2FA secret
+    let Screen::Form(f) = &t.app.screen else { panic!("no form") };
+    assert_eq!(f.focus, Field::Totp);
+    assert!(t.screen().contains("(unchanged)"));
+    t.key(Key::Ctrl('u'));
+    t.key(Key::Ctrl('s'));
+    assert_eq!(t.toast(), "Item 'GitHub' updated.");
+    let uv = t.reopen(PW);
+    assert!(!get(&uv, "GitHub").has_totp() && get(&uv, "Mail").has_totp());
+    assert_eq!(get(&uv, "GitHub").password(uv.item_key()).unwrap().as_str(), "gh-Secret-1");
+    // Opening and saving an item without touching the field keeps its code.
+    select(&mut t, "Mail");
+    t.key(Key::Char('e'));
+    t.key(Key::Ctrl('s'));
+    assert!(t.reopen(PW).vault.get("Mail").unwrap().has_totp());
+}
+
+#[test]
+fn the_2fa_tab_without_codes_says_how_to_add_one() {
+    let mut t = T::sample();
+    t.key(Key::Left);
+    assert_eq!((t.app.tab, t.app.view.len()), (Tab::TwoFactor, 0));
+    let s = t.screen();
+    assert!(s.contains("No two-factor codes yet.") && s.contains("Press a to add one"), "{s}");
+    // Enter on an empty tab does nothing (and does not fail).
+    t.key(Key::Enter);
+    assert!(t.clip.borrow().is_empty() && t.app.toast.is_none());
+    // Narrow and small windows still draw it.
+    for (w, h) in [(60, 16), (70, 30), (100, 30)] {
+        t.app.resize((w, h));
+        assert!(t.screen_at(w, h).contains("2FA"), "{}", t.screen_at(w, h));
+    }
+}
+
+#[test]
+fn add_a_card_and_an_ssh_key_with_the_form() {
+    let mut t = T::new();
+    t.key(Key::Char('a'));
+    t.typ("Visa");
+    t.key(Key::Down); // Type
+    t.keys(&[Key::Right, Key::Right]); // login → API key → card
+    assert!(t.screen().contains("Cardholder") && !t.screen().contains("E-mail"), "{}", t.screen());
+    t.key(Key::Down);
+    t.typ("J. Doe");
+    t.key(Key::Down);
+    t.typ("08/29");
+    t.keys(&[Key::Down, Key::Down]); // tags, card number
+    t.typ("4111111111111111");
+    t.key(Key::Down);
+    t.typ("737");
+    let s = t.screen();
+    assert!(!s.contains("4111") && !s.contains("737"), "the number and CVV are masked:\n{s}");
+    t.key(Key::Ctrl('r'));
+    assert!(t.screen().contains("4111111111111111") && t.screen().contains("737"), "Ctrl+R shows both");
+    t.key(Key::Ctrl('g'));
+    assert!(t.app.modals.is_empty(), "no generator for a card number");
+    t.key(Key::Ctrl('s'));
+    assert_eq!(t.toast(), "Card 'Visa' saved (encrypted).");
+
+    t.key(Key::Char('a'));
+    t.typ("Server key");
+    t.key(Key::Down);
+    t.keys(&[Key::Left, Key::Left]); // login → note → SSH key
+    t.key(Key::Down);
+    t.typ("git@github.com");
+    t.key(Key::Down);
+    t.typ("ssh-ed25519 AAAA me@laptop");
+    t.keys(&[Key::Down, Key::Down]); // tags, private key
+    t.paste("-----BEGIN KEY-----\nline 2\n-----END KEY-----\n");
+    t.key(Key::Down); // on the last line: to the passphrase
+    t.typ("pass phrase");
+    assert!(!t.screen().contains("line 2") && !t.screen().contains("pass phrase"), "{}", t.screen());
+    t.key(Key::Ctrl('s'));
+    assert_eq!(t.toast(), "SSH key 'Server key' saved (encrypted).");
+
+    let uv = t.reopen(PW);
+    let k = uv.item_key();
+    let card = get(&uv, "visa");
+    assert_eq!(card.kind(), Kind::Card);
+    assert_eq!(card.username(k).unwrap().as_str(), "J. Doe");
+    assert_eq!(card.expiry(k).unwrap().as_str(), "08/29");
+    assert_eq!(card.password(k).unwrap().as_str(), "4111111111111111");
+    assert_eq!(card.cvv(k).unwrap().as_str(), "737");
+    let key = get(&uv, "server key");
+    assert_eq!(key.kind(), Kind::SshKey);
+    assert_eq!(key.password(k).unwrap().as_str(), "-----BEGIN KEY-----\nline 2\n-----END KEY-----\n");
+    assert_eq!(key.public_key(k).unwrap().as_str(), "ssh-ed25519 AAAA me@laptop");
+    assert_eq!(key.passphrase(k).unwrap().as_str(), "pass phrase");
+    assert_eq!(key.url(k).unwrap().as_str(), "git@github.com");
+}
+
+#[test]
+fn edit_keeps_or_replaces_the_hidden_card_and_key_fields() {
+    let mut t = new_types();
+    select(&mut t, "Visa");
+    t.key(Key::Char('e'));
+    let s = t.screen();
+    assert_eq!(s.matches("(unchanged)").count(), 2, "card number and CVV:\n{s}");
+    assert!(!s.contains("4111") && !s.contains("737"), "{s}");
+    // Down to the CVV (name, cardholder, expiry, tags, card number, CVV) and replace it.
+    t.keys(&[Key::Down, Key::Down, Key::Down, Key::Down, Key::Down]);
+    t.typ("999");
+    t.key(Key::Ctrl('s'));
+    assert_eq!(t.toast(), "Item 'Visa' updated.");
+    select(&mut t, "Server key");
+    t.key(Key::Char('e'));
+    // Name, host, public key, tags, private key: Enter on the unchanged key moves on.
+    t.keys(&[Key::Down, Key::Down, Key::Down, Key::Down, Key::Enter]);
+    t.typ("new pass");
+    t.key(Key::Ctrl('s'));
+    let uv = t.reopen(PW);
+    let k = uv.item_key();
+    let card = get(&uv, "visa");
+    assert_eq!(card.cvv(k).unwrap().as_str(), "999");
+    assert_eq!(card.password(k).unwrap().as_str(), "4111 1111 1111 1111", "unchanged");
+    let key = get(&uv, "server key");
+    assert_eq!(key.passphrase(k).unwrap().as_str(), "new pass");
+    assert_eq!(key.password(k).unwrap().as_str(), "-----BEGIN KEY-----\nzq-private-line\n-----END KEY-----");
+    assert!(get(&uv, "github").has_totp(), "editing elsewhere does not touch the TOTP secret");
+}
+
+#[test]
+fn new_types_render_at_the_minimum_size() {
+    let mut t = new_types();
+    for name in ["Visa", "Server key", "GitHub"] {
+        select(&mut t, name);
+        t.key(Key::Enter);
+        let s = t.screen_at(60, 16);
+        assert!(s.contains(name), "{s}");
+        t.key(Key::Enter);
+        t.key(Key::Char('e'));
+        let s = t.screen_at(60, 16);
+        assert!(s.contains("Save") && s.contains("Notes"), "{s}");
+        t.key(Key::Esc);
+    }
+    t.key(Key::Char('a'));
+    t.key(Key::Down);
+    let s = t.screen_at(60, 16);
+    assert!(s.contains(" ID ") && s.contains("SSH key") && s.contains(" note "), "all six types fit:\n{s}");
+}
+
+#[test]
+fn a_revealed_private_key_is_a_preview_and_c_copies_it_exactly() {
+    // The details pane is a framed column next to the list, so a revealed
+    // private key is a preview: lines wider than the pane end in an ellipsis
+    // and do not survive a mouse copy. The exact key is what `c` copies.
+    let b64 = "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW";
+    let key = format!("-----BEGIN KEY-----\n{b64}\n  two leading spaces\n\n{b64}\n-----END KEY-----");
+    let stored = key.clone();
+    let mut t = T::with(move |uv| {
+        let fields =
+            NewEntry { name: "TestKey".into(), kind: Kind::SshKey, password: stored, ..Default::default() };
+        commands::add_entry(uv, fields).unwrap();
+    });
+    t.key(Key::Enter);
+    let s = t.screen();
+    assert!(s.contains("-----BEGIN KEY-----") && s.contains("two leading spaces"), "{s}");
+    assert!(!s.contains(b64), "a 70-column line cannot fit in the details pane at 80x24:\n{s}");
+    assert!(s.contains("…"), "a clipped line is marked as clipped:\n{s}");
+    t.key(Key::Char('c'));
+    assert_eq!(t.clip.borrow().as_slice(), [key.as_str()], "c copies the key byte for byte");
+}
+
+// ───────────────────────── identities, favorites, clip-time ─────────────────────────
+
+#[test]
+fn add_an_identity_with_the_form_and_see_it_in_the_list() {
+    let mut t = T::new();
+    t.key(Key::Char('a'));
+    t.typ("Passport");
+    t.key(Key::Down); // Type
+    t.keys(&[Key::Right, Key::Right, Key::Right]); // login → API key → card → ID
+    let s = t.screen();
+    assert!(s.contains("Full name") && s.contains("Issued by") && s.contains("Expiry date"), "{s}");
+    assert!(!s.contains("E-mail") && !s.contains("CVV"), "only the fields of an identity:\n{s}");
+    t.key(Key::Down);
+    t.typ("Jane Q. Doe");
+    t.key(Key::Down);
+    t.typ("Gemeente Utrecht");
+    t.key(Key::Down);
+    t.typ("2031-05-14");
+    t.keys(&[Key::Down, Key::Down]); // tags, number
+    t.typ("NX7731ZQ9");
+    assert!(!t.screen().contains("NX7731ZQ9"), "the number is masked while typing");
+    t.key(Key::Ctrl('g'));
+    assert!(t.app.modals.is_empty(), "no generator for a document number");
+    t.key(Key::Ctrl('s'));
+    assert_eq!(t.toast(), "Identity 'Passport' saved (encrypted).");
+    // The list: type tag, full name; the details: issuer, expiry, the number as dots.
+    let s = t.screen();
+    assert!(s.contains("id ") && s.contains("Jane Q. Doe") && s.contains("IDs 1"), "{s}");
+    assert!(s.contains("Gemeente Utrecht") && s.contains("2031-05-14") && s.contains("Number"), "{s}");
+    assert!(!s.contains("NX7731ZQ9"), "{s}");
+    t.key(Key::Enter);
+    assert!(t.screen().contains("NX7731ZQ9"), "revealed");
+    t.key(Key::Char('c'));
+    t.key(Key::Char('u'));
+    assert_eq!(t.clip.borrow().as_slice(), ["NX7731ZQ9", "Jane Q. Doe"]);
+    t.key(Key::Char('m'));
+    assert!(t.toast().contains("no e-mail address"), "{}", t.toast());
+
+    let uv = t.reopen(PW);
+    let k = uv.item_key();
+    let e = get(&uv, "passport");
+    assert_eq!(e.kind(), Kind::Identity);
+    assert_eq!(e.username(k).unwrap().as_str(), "Jane Q. Doe");
+    assert_eq!(e.url(k).unwrap().as_str(), "Gemeente Utrecht");
+    assert_eq!(e.expiry(k).unwrap().as_str(), "2031-05-14");
+    assert_eq!(e.password(k).unwrap().as_str(), "NX7731ZQ9");
+}
+
+#[test]
+fn f_pins_a_favorite_with_a_star_and_puts_it_first() {
+    let mut t = T::sample();
+    // Recovery codes is last (by name); pin it.
+    t.app.select_name("Recovery codes");
+    t.key(Key::Char('f'));
+    assert_eq!(t.toast(), "'Recovery codes' pinned as a favorite (f again unpins it).");
+    let s = t.screen();
+    // The line of `name` in the list column (the details pane is on the right).
+    let row =
+        |name: &str| s.lines().position(|l| l.chars().take(44).collect::<String>().contains(name)).unwrap();
+    assert!(row("Recovery codes") < row("GitHub") && row("GitHub") < row("OpenAI"), "favorites first:\n{s}");
+    assert!(s.lines().any(|l| l.contains("★Recovery codes")), "the star:\n{s}");
+    assert!(!s.lines().any(|l| l.contains("★GitHub")));
+    assert_eq!(t.app.selected().unwrap().name(), "Recovery codes", "the selection follows the item");
+    // Saved at once, and only the flag changed.
+    let uv = t.reopen(PW);
+    let e = get(&uv, "recovery codes");
+    assert!(e.is_favorite() && !get(&uv, "github").is_favorite());
+    // Without UTF-8 the star is a plain *.
+    let mut g = Grid::new(80, 24, &ASCII);
+    t.app.draw(&mut g, t.now);
+    assert!(g.text().lines().any(|l| l.contains("*Recovery codes")), "{}", g.text());
+    // f again unpins it; the list is back in name order.
+    t.key(Key::Char('f'));
+    assert_eq!(t.toast(), "'Recovery codes' is no longer a favorite.");
+    let s = t.screen();
+    // The line of `name` in the list column (the details pane is on the right).
+    let row =
+        |name: &str| s.lines().position(|l| l.chars().take(44).collect::<String>().contains(name)).unwrap();
+    assert!(row("GitHub") < row("Recovery codes") && !s.contains('★'), "{s}");
+    assert!(!get(&t.reopen(PW), "recovery codes").is_favorite());
+    // `f` is a shortcut now, not the start of a search.
+    assert!(!t.app.searching);
+}
+
+#[test]
+fn the_copy_message_follows_the_clip_time_setting() {
+    let mut t = T::sample();
+    t.app.cfg.clip_time_secs = 45;
+    t.key(Key::Char('c'));
+    assert!(t.screen().contains("the clipboard is cleared in 45 s"), "{}", t.screen());
+    t.later(44);
+    assert!(t.screen().contains("cleared in 1 s"), "{}", t.screen());
+}
+
+// ───────────────────────── hidden tabs ─────────────────────────
+
+/// The tab bar: the second line of the screen.
+fn tab_bar(t: &T) -> String {
+    t.screen().lines().nth(1).unwrap_or_default().to_string()
+}
+
+#[test]
+fn hiding_a_tab_in_the_settings_keeps_its_items_under_all() {
+    let mut t = T::sample();
+    t.keys(&[Key::Right, Key::Right]);
+    assert_eq!(t.app.tab, Tab::Api);
+    assert!(tab_bar(&t).contains("API keys 1"), "{}", tab_bar(&t));
+    // Settings, the Tabs row: every type with a mark, ← → choose, Enter hides.
+    t.key(Key::Char('s'));
+    t.keys(&[Key::Down, Key::Down]);
+    let s = t.screen();
+    assert!(s.contains("Tabs") && s.contains("✔Logins  ✔API keys  ✔Cards  ✔IDs  ✔SSH  ✔Notes"), "{s}");
+    assert!(s.contains("Enter: show or hide its tab (its items stay under All)."), "{s}");
+    t.key(Key::Right);
+    t.key(Key::Enter);
+    assert_eq!(t.toast(), "The API keys tab is hidden; its items stay under All.");
+    assert!(t.screen().contains("✔Logins  ✖API keys  ✔Cards"), "{}", t.screen());
+    assert_eq!(t.app.cfg.hidden_tabs, [Kind::Api]);
+    // Saved at once, in the same settings file as the other settings.
+    let saved = crate::cli::config::load_from(&t.dir.path().join("config"));
+    assert_eq!(saved.hidden_tabs, [Kind::Api]);
+    assert!(std::fs::read_to_string(t.dir.path().join("config")).unwrap().contains("hidden_tabs=api\n"));
+    // Back in the list: the API tab is gone, the list moved to All, and the
+    // API key is still there.
+    t.key(Key::Esc);
+    assert_eq!(t.app.tab, Tab::All);
+    let bar = tab_bar(&t);
+    assert!(!bar.contains("API") && bar.contains("All 3") && bar.contains("Logins 1"), "{bar}");
+    assert!(bar.contains("Notes 1"), "{bar}");
+    let s = t.screen();
+    assert!(s.contains("OpenAI") && s.contains("GitHub") && s.contains("Recovery codes"), "{s}");
+    assert_eq!(t.app.view.len(), 3, "hiding a tab hides no item");
+    // ← → skip the hidden tab, both ways (and still go round).
+    t.key(Key::Right);
+    assert_eq!(t.app.tab, Tab::Logins);
+    t.key(Key::Right);
+    assert_eq!(t.app.tab, Tab::Cards, "past the hidden API tab");
+    t.keys(&[Key::Left, Key::Left]);
+    assert_eq!(t.app.tab, Tab::All);
+    t.keys(&[Key::Left, Key::Left]);
+    assert_eq!(t.app.tab, Tab::Notes);
+    t.keys(&[Key::Tab, Key::Tab]);
+    assert_eq!(t.app.tab, Tab::All);
+    // The search still finds it.
+    t.typ("open");
+    assert_eq!(t.app.selected().unwrap().name(), "OpenAI");
+    t.key(Key::Esc);
+    t.key(Key::Esc);
+    // Enter or Space on the same type shows the tab again.
+    t.key(Key::Char('s'));
+    t.keys(&[Key::Down, Key::Down, Key::Right, Key::Char(' ')]);
+    assert_eq!(t.toast(), "The API keys tab is shown again.");
+    assert!(t.app.cfg.hidden_tabs.is_empty());
+    assert!(!std::fs::read_to_string(t.dir.path().join("config")).unwrap().contains("hidden_tabs"));
+    t.key(Key::Esc);
+    assert!(tab_bar(&t).contains("API keys 1"), "{}", tab_bar(&t));
+}
+
+#[test]
+fn with_every_type_tab_hidden_only_all_and_2fa_are_left() {
+    let mut t = T::sample();
+    t.app.cfg.hidden_tabs = Kind::ALL.to_vec();
+    let bar = tab_bar(&t);
+    assert!(bar.contains("All 3") && !bar.contains("Logins") && !bar.contains("Notes"), "{bar}");
+    assert!(bar.contains("2FA 0"), "2FA is not a type, so it cannot be hidden: {bar}");
+    for k in [Key::Right, Key::Left, Key::Tab, Key::BackTab] {
+        t.key(k);
+        assert_eq!(t.app.tab, Tab::TwoFactor);
+        t.key(k);
+        assert_eq!(t.app.tab, Tab::All);
+    }
+    assert_eq!(t.app.view.len(), 3);
+    // The Tabs row without UTF-8, and in a narrow window (one type at a time).
+    t.key(Key::Char('s'));
+    t.keys(&[Key::Down, Key::Down]);
+    let mut g = Grid::new(80, 24, &ASCII);
+    t.app.draw(&mut g, t.now);
+    assert!(g.text().contains("xLogins  xAPI keys  xCards  xIDs  xSSH  xNotes"), "{}", g.text());
+    t.app.resize((60, 16));
+    assert!(t.screen_at(60, 16).contains("‹ Logins: hidden ›"), "{}", t.screen_at(60, 16));
+    t.keys(&[Key::Right, Key::Enter]);
+    assert!(t.screen_at(60, 16).contains("‹ API keys: shown ›"), "{}", t.screen_at(60, 16));
+    // ← → stop at the ends.
+    t.keys(&[Key::Right; 9]);
+    assert!(t.screen_at(60, 16).contains("‹ Notes: hidden ›"), "{}", t.screen_at(60, 16));
 }

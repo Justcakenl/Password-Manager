@@ -225,6 +225,27 @@ impl io::Write for CountingWriter {
     }
 }
 
+/// How much of the stack [`scrub_stack`] overwrites.
+pub const STACK_SCRUB_BYTES: usize = 64 * 1024;
+
+/// Overwrite the stack area just below the caller with zeros.
+///
+/// SECURITY: some library code keeps secrets in local variables (for
+/// example Argon2's first hash H0 is computed from the password and the
+/// key-file pepper by a BLAKE2b hasher on the stack). Stack memory is never
+/// freed, so the global allocator cannot wipe it. Calling this right after
+/// such a computation reuses the same stack area for a large zeroed array,
+/// which overwrites what the deeper calls left behind. Best effort: it
+/// covers [`STACK_SCRUB_BYTES`], far more than those calls use.
+#[inline(never)]
+pub fn scrub_stack() {
+    let mut area = [0u8; STACK_SCRUB_BYTES];
+    // `zeroize` uses volatile writes, so the compiler cannot skip them even
+    // though the array is never read.
+    area.zeroize();
+    std::hint::black_box(&area);
+}
+
 /// Result of [`harden_process`], for `cakepass info`.
 #[derive(Debug, Clone, Copy)]
 pub struct Hardening {

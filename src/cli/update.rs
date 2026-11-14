@@ -9,7 +9,8 @@
 //!   or password in memory.
 //! - Your vault (`~/.local/share/cakepass/`) lives outside the installation and
 //!   is never overwritten. Beforehand we make an extra copy (`.pre-update-…`).
-//!   Newer versions read older vault formats and convert them when opened; an
+//!   Newer versions read older vault formats and write the newest format on
+//!   the next save (CakePass 0.4 writes format 3, which 0.3 cannot read); an
 //!   older version cleanly refuses a newer format.
 //! - We only fetch new commits with `git merge --ff-only`. That never rewrites
 //!   your history. If you have changes of your own in the folder, we stop.
@@ -234,7 +235,7 @@ fn is_installed(commit: &str) -> bool {
 
 /// The installed commit; can be overridden in debug builds for tests.
 fn installed_commit() -> Option<String> {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "test-hooks"))]
     if let Ok(c) = std::env::var("CAKEPASS_TEST_INSTALLED_COMMIT") {
         return is_hex(&c).then_some(c);
     }
@@ -242,7 +243,7 @@ fn installed_commit() -> Option<String> {
 }
 
 fn running_as_root() -> bool {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "test-hooks"))]
     if std::env::var_os("CAKEPASS_TEST_ALLOW_ROOT").is_some() {
         return false;
     }
@@ -476,7 +477,8 @@ fn apply(s: &Situation, count: usize, lines: &[String], opts: &Options, vault: &
     CachedStatus::default().write_if(false, "");
     ui::success("CakePass has been updated. Start `cakepass` again to use the new version.");
     ui::info(
-        "Your vault was not touched. If there is a new vault format, it is converted automatically the next time you unlock.",
+        "Your vault was not touched. If there is a new vault format, your vault is converted automatically \
+         the next time it is saved (the extra backup above keeps the old format).",
     );
     Ok(())
 }

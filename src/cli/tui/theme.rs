@@ -32,6 +32,8 @@ const GREEN: u8 = 114;
 const YELLOW: u8 = 221;
 const BLUE: u8 = 117;
 const SAND: u8 = 222;
+const LAVENDER: u8 = 183;
+const PEACH: u8 = 216;
 
 impl Style {
     const fn new(fg: u8, bg: u8, attrs: u8) -> Style {
@@ -61,6 +63,9 @@ impl Style {
             Kind::Login => Style::new(PINK, 0, 0),
             Kind::Api => Style::new(BLUE, 0, 0),
             Kind::Note => Style::new(SAND, 0, 0),
+            Kind::Card => Style::new(GREEN, 0, 0),
+            Kind::SshKey => Style::new(LAVENDER, 0, 0),
+            Kind::Identity => Style::new(PEACH, 0, 0),
         }
     }
 }
@@ -85,6 +90,8 @@ pub struct Glyphs {
     pub left: char,
     pub right: char,
     pub marker: char,
+    /// Before the name of a favorite in the list.
+    pub star: char,
     pub check: char,
     pub cross: char,
     pub up_down: &'static str,
@@ -109,6 +116,7 @@ pub static UNICODE: Glyphs = Glyphs {
     left: '‹',
     right: '›',
     marker: '▌',
+    star: '★',
     check: '✔',
     cross: '✖',
     up_down: "↑↓",
@@ -132,6 +140,7 @@ pub static ASCII: Glyphs = Glyphs {
     left: '<',
     right: '>',
     marker: '>',
+    star: '*',
     check: '+',
     cross: 'x',
     up_down: "Up/Down",
@@ -155,6 +164,7 @@ pub fn ascii_for(c: char) -> char {
         '✔' => '+',
         '✖' => 'x',
         '▌' => '>',
+        '★' => '*',
         c => c,
     }
 }

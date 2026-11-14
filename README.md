@@ -1,15 +1,44 @@
 # CakePass 🍰
 
+**CakePass is a small, offline password manager for the Linux terminal. It keeps your passwords, API keys and secure notes in one strongly encrypted file on your own computer, and you use it with the arrow keys.**
+
+![License: MIT](https://img.shields.io/badge/license-MIT-pink)
+![Platform: Linux](https://img.shields.io/badge/platform-Linux-informational)
+![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange)
+![Status: beta](https://img.shields.io/badge/status-beta-yellow)
+
 ![CakePass login screen](docs/cakepass-login.gif)
 
-An **offline vault for the terminal** on Arch Linux, for **passwords, API keys
-and secure notes**. The command is called `cakepass`.
-Everything lives in one encrypted file on your own computer.
-No cloud, no account, no telemetry. The program itself never makes a network
-connection; only `cakepass --update` lets `git` fetch your newest version.
+CakePass keeps everything in **one encrypted file** on your own machine. No
+cloud, no account, no telemetry: the program itself never makes a network
+connection. You use it with the **arrow keys** (no commands to remember), or with
+single commands in scripts.
 
-**Made by the [cake-cli](https://github.com/Justcakenl/passcode-manager-cli-) project.**
 Free and open source under the [MIT license](LICENSE).
+
+## What you get
+
+- 🔐 **Strong encryption.** Argon2id + XChaCha20-Poly1305, plus a second layer
+  that encrypts every field (username, e-mail, URL, password, notes, card and
+  SSH-key fields, TOTP secret) on its own.
+  An optional **key file** (for example on a USB stick) makes a stolen vault
+  useless on its own. [How strong is this, really?](#how-strong-is-this-really)
+- ⌨️ **Arrow-key screen.** Tabs, live search, add/edit forms, a password
+  generator and settings: no typing of commands. [See it](#using-the-screen-arrow-keys).
+- 🗝️ **Logins, API keys, bank cards, SSH keys, identity documents and notes** in
+  one place, with
+  e-mail addresses, tags and favorites.
+- 🩺 **Password health check** (`cakepass audit`): weak, reused, old and empty
+  passwords, offline, without ever printing one.
+- 🔢 **Two-factor codes (TOTP)** on any item: the six-digit code of your
+  authenticator app, computed offline from the stored secret.
+- 📋 **Clipboard that cleans up.** Copied secrets are wiped after 20 seconds
+  (or the time you set: `cakepass config set clip-time`).
+- 🧹 **Careful with memory.** Secrets are wiped after use; core dumps are off;
+  the screen and scrollback are cleared when you lock.
+- ⏲️ **Auto-lock** after the idle time you choose.
+- 🪶 **Small and light.** One static-ish binary (about 5 MB), no runtime, no
+  background service.
 
 > ⚠️ **Status: beta.** The cryptography comes from well-known, audited
 > RustCrypto crates, but CakePass itself has **not been audited by an outside
@@ -18,13 +47,47 @@ Free and open source under the [MIT license](LICENSE).
 > before you trust it with everything. Found a security problem? See
 > [SECURITY.md](SECURITY.md).
 
-## Install in one line
+## Install
 
-You need an **Arch Linux** computer (and a user that may use `sudo`):
+CakePass runs on **Linux** (tested on Arch Linux and Ubuntu 24.04, x86_64).
+Pick the line that fits you:
+
+| You use… | Go to |
+|---|---|
+| Arch Linux, Manjaro, EndeavourOS, CachyOS | [**Arch family: one line**](#arch-family-one-line), or [from the AUR](#arch-family-from-the-aur-yay-paru) with yay or paru |
+| Ubuntu, Debian, Linux Mint, Pop!_OS, Zorin, Raspberry Pi OS | [**Any other Linux, step by step**](#any-other-linux-step-by-step) → Debian family |
+| Fedora, RHEL, AlmaLinux, Rocky Linux | [step by step](#any-other-linux-step-by-step) → Fedora family |
+| openSUSE | [step by step](#any-other-linux-step-by-step) → openSUSE |
+| Alpine, Void, Gentoo, NixOS, anything else | [step by step](#any-other-linux-step-by-step) → Other |
+| Windows (WSL), ChromeOS (Linux), Android (Termux), macOS | see [Other devices](#other-devices-wsl-chromebook-raspberry-pi-mac) |
+
+### Arch family: one line
+
+You need a user that may use `sudo`. Open a terminal and run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Justcakenl/passcode-manager-cli-/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Justcakenl/Password-Manager/main/install.sh | bash
 ```
+
+The installer is a short, readable script ([`install.sh`](install.sh)); read it
+first, as you should with any script you pipe into `bash`. It:
+
+1. Checks that you are on Arch Linux and not root.
+2. Installs what it needs with `pacman` (`base-devel`, `git`, `rust`, and a
+   clipboard tool for your session). Asks for your sudo password.
+3. Downloads the source code with `git` into `~/cakepass`.
+4. Builds, **tests** and installs the package with `makepkg`, and asks whether
+   you want CakePass in your application menu (an icon that opens it in a
+   terminal; Enter = yes). Rather just type `cakepass`? Answer `n`, or pass
+   `--no-shortcut`.
+5. Starts the **first-time setup**: intro animation yes/no, auto-lock minutes,
+   **security level**, your **master password** (it offers to make a strong
+   passphrase for you) and optionally a **key file**.
+
+Your vault is never touched by the installer. Run it again any time to update.
+Options go after `bash -s --`, e.g. `... | bash -s -- --yes --no-setup`:
+`--yes` (no confirmations), `--no-setup`, `--no-shortcut`, `--dir DIR`, `--branch B`,
+`--uninstall` (removes the program, keeps your vault), `--help`.
 
 <details>
 <summary>The repository (or your fork) is private? Use your GitHub login</summary>
@@ -34,61 +97,290 @@ download has no login. Log in once with the GitHub CLI
 (`sudo pacman -S github-cli && gh auth login`), then run:
 
 ```bash
-gh api repos/Justcakenl/passcode-manager-cli-/contents/install.sh \
+gh api repos/Justcakenl/Password-Manager/contents/install.sh \
   -H "Accept: application/vnd.github.raw" | bash
-```
-
-or the same thing with `curl`:
-
-```bash
-curl -fsSL -H "Authorization: Bearer $(gh auth token)" \
-  -H "Accept: application/vnd.github.raw" \
-  https://api.github.com/repos/Justcakenl/passcode-manager-cli-/contents/install.sh | bash
 ```
 
 </details>
 
-Add options after `bash -s --`, for example `... | bash -s -- --yes --no-setup`.
-
-**What the installer does** (it is a short, readable script; look at
-[`install.sh`](install.sh) before you run it, as you should with any script you pipe into `bash`):
-
-1. Checks that you are on Arch Linux, not as root.
-2. Installs the tools it needs with `pacman` (`base-devel`, `git`, `rust`, and a
-   clipboard tool for your session). Asks for your sudo password.
-3. Downloads the source code with `git` into `~/cakepass` (a public repository
-   needs no login; for a private one it uses `gh`, an SSH key, or a login prompt).
-4. Builds, **tests** and installs the package with `makepkg`.
-5. Starts the **first-time setup**: do you want the intro animation, after how
-   many minutes should it auto-lock, and your **master password**.
-
-Your vault is never touched by the installer. Run it again any time to update.
-Options: `--yes` (no confirmations), `--no-setup`, `--dir DIR`, `--branch B`,
-`--uninstall` (removes the program, keeps your vault), `--help`.
-
-Prefer to do it by hand? See [Manual install](#manual-install).
+When it is done, type `cakepass`. That is all. Skip to
+[Check that it works](#check-that-it-works).
 
 > **Used an early version?** The command used to be called `kluis`. Run the
 > installer again: the old package is replaced and your old `kluis` folders are
 > moved to `cakepass` automatically, so your vault is kept.
 
+### Arch family: from the AUR (yay, paru)
+
+The package is built and tested (`packaging/aur/PKGBUILD` +
+`.SRCINFO`); it is **not published on the AUR yet** (coming soon).
+Already use an AUR helper? Once it's published, CakePass will be on the
+AUR as **`cakepass-git`** (it builds the newest version of the `main`
+branch, and runs the tests while building):
+
+```bash
+yay -S cakepass-git      # or: paru -S cakepass-git
+```
+
+Until then, use the one-line installer above. Then type `cakepass` (the
+first time it starts the setup). Your AUR helper
+also does the updates: `yay -Syu --devel` (or `paru -Syu --devel`) picks up new
+commits. `cakepass --update` and its daily check are for an installation made
+with the one-line installer above, which remains the way to go without an AUR
+helper. The two cannot be installed side by side.
+
+### Any other Linux, step by step
+
+Seven small steps. You need about **1 GB of free RAM** and a few minutes for the
+first build. Everything is installed in your own home folder, so only step 1
+needs `sudo`.
+
+#### Step 1: install a compiler, git and curl
+
+Choose your family and paste the line:
+
+<details open>
+<summary><b>Debian family</b>: Ubuntu, Debian, Linux Mint, Pop!_OS, Zorin, Raspberry Pi OS</summary>
+
+```bash
+sudo apt update
+sudo apt install -y build-essential git curl
+```
+
+</details>
+
+<details>
+<summary><b>Fedora family</b>: Fedora, RHEL, AlmaLinux, Rocky Linux</summary>
+
+```bash
+sudo dnf install -y gcc git curl
+```
+
+</details>
+
+<details>
+<summary><b>openSUSE</b></summary>
+
+```bash
+sudo zypper install -y gcc git curl
+```
+
+</details>
+
+<details>
+<summary><b>Other</b>: Alpine, Void, Gentoo, NixOS, …</summary>
+
+Install a C compiler (`gcc` or `clang`), `git` and `curl` with your package
+manager. For example, Alpine: `sudo apk add build-base git curl`; Void:
+`sudo xbps-install -S base-devel git curl`. (Alpine and the others are not
+tested; see [Other devices](#other-devices-wsl-chromebook-raspberry-pi-mac).)
+
+</details>
+
+Want to copy passwords to the clipboard? Add **one** clipboard tool, depending
+on your desktop (not sure? type `echo $XDG_SESSION_TYPE`):
+
+| Session | Package | Debian family | Fedora family | openSUSE |
+|---|---|---|---|---|
+| Wayland (GNOME, KDE Plasma 6, Sway, Hyprland) | `wl-clipboard` | `sudo apt install -y wl-clipboard` | `sudo dnf install -y wl-clipboard` | `sudo zypper install -y wl-clipboard` |
+| X11 (i3, Xfce, older sessions) | `xclip` | `sudo apt install -y xclip` | `sudo dnf install -y xclip` | `sudo zypper install -y xclip` |
+
+No clipboard tool (a server, SSH)? CakePass still works: `--show` prints a
+password on screen instead of copying it.
+
+#### Step 2: install Rust (version 1.88 or newer)
+
+First look whether you already have a new enough Rust:
+
+```bash
+rustc --version
+```
+
+If it prints **1.88 or higher**, skip to step 3. If the command is not found, or
+the version is lower (Ubuntu and Debian ship old versions), install the official
+toolchain with `rustup`. Press Enter to accept the default choice:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Then make it available in this terminal and check:
+
+```bash
+. "$HOME/.cargo/env"
+rustc --version
+```
+
+#### Step 3: download CakePass
+
+```bash
+git clone https://github.com/Justcakenl/Password-Manager.git ~/Passcode-Manager
+cd ~/Passcode-Manager
+```
+
+(Behind a private repository or fork? Log in first with `gh auth login` and use
+`gh repo clone Justcakenl/Password-Manager ~/Passcode-Manager`.)
+
+> **Keep this folder.** You will use it to update later.
+
+#### Step 4: build it
+
+```bash
+cargo build --release --locked
+```
+
+The first build takes **1 to 5 minutes** (about 80 seconds on a normal laptop).
+On a small board such as a Raspberry Pi, limit the parallel jobs so it does not
+run out of memory: `cargo build --release --locked -j 2`.
+
+Want to run the tests too? `cargo test --locked` (a couple of minutes more).
+
+#### Step 5: install the program
+
+For just you (no `sudo`):
+
+```bash
+install -Dm755 target/release/cakepass ~/.local/bin/cakepass
+```
+
+Check that `~/.local/bin` is in your `PATH`:
+
+```bash
+echo "$PATH" | tr ':' '\n' | grep -x "$HOME/.local/bin" || echo "NOT in PATH"
+```
+
+If it says `NOT in PATH`, add it and open a new terminal:
+
+```bash
+# bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+# zsh
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+# fish
+fish_add_path ~/.local/bin
+```
+
+Prefer a system-wide install for all users? Use
+`sudo install -Dm755 target/release/cakepass /usr/local/bin/cakepass` instead.
+
+#### Step 6 (optional): tab completion
+
+Press Tab to complete commands. Run the line for your shell:
+
+```bash
+# bash
+mkdir -p ~/.local/share/bash-completion/completions
+cakepass completions bash > ~/.local/share/bash-completion/completions/cakepass
+
+# zsh (and add  fpath=(~/.zfunc $fpath)  before "compinit" in ~/.zshrc)
+mkdir -p ~/.zfunc && cakepass completions zsh > ~/.zfunc/_cakepass
+
+# fish
+mkdir -p ~/.config/fish/completions
+cakepass completions fish > ~/.config/fish/completions/cakepass.fish
+```
+
+The manual page (`man cakepass`) works the same way:
+
+```bash
+mkdir -p ~/.local/share/man/man1 && cakepass man > ~/.local/share/man/man1/cakepass.1
+```
+
+An entry with the CakePass icon in your application launcher (it opens
+CakePass in a terminal), from the CakePass folder:
+
+```bash
+install -Dm0644 packaging/cakepass.desktop ~/.local/share/applications/cakepass.desktop
+install -Dm0644 assets/icons/cakepass-app-icon.svg ~/.local/share/icons/hicolor/scalable/apps/cakepass.svg
+```
+
+(The Arch package installs all of these for you.)
+
+#### Step 7: first run
+
+```bash
+cakepass
+```
+
+With no vault yet, the [first-time setup](#first-time-setup) starts by itself.
+
+### Check that it works
+
+```bash
+cakepass --version     # prints a version, e.g. "cakepass 0.4.0 (commit …)"
+cakepass info          # shows your vault and system checks; needs no password
+```
+
+If `cakepass` is "command not found", your `PATH` is missing the folder you
+installed to (step 5). More help: [Troubleshooting](#troubleshooting).
+
+### Update to a newer version
+
+- **Arch family** (installed with the one-liner): `cakepass --update`, or run
+  the installer again. See [Updating](#updating).
+- **Everyone else** (installed step by step), from your `~/Passcode-Manager` folder:
+
+  ```bash
+  cd ~/Passcode-Manager
+  git pull --ff-only
+  cargo build --release --locked
+  install -Dm755 target/release/cakepass ~/.local/bin/cakepass
+  cakepass --version
+  ```
+
+  Your vault is never touched by an update, but a new version may upgrade the
+  vault format the next time it **saves**. Make a [backup](#backups) first.
+  (`cakepass --update` and the daily update check need Arch's `makepkg`, so on
+  other systems they say they cannot run. The four lines above are the update.)
+
+### Uninstall
+
+```bash
+rm -f ~/.local/bin/cakepass                          # the program
+rm -f ~/.local/share/bash-completion/completions/cakepass ~/.zfunc/_cakepass \
+      ~/.config/fish/completions/cakepass.fish       # completions, if you added them
+rm -rf ~/Passcode-Manager                            # the source folder
+```
+
+On Arch family: `sudo pacman -R cakepass` (or the installer with `--uninstall`).
+**Your vault is not removed**: it stays in `~/.local/share/cakepass/` and your
+settings in `~/.config/cakepass/`. Delete those yourself only if you are sure you
+no longer need your passwords (see [Backups](#backups)).
+
+### Other devices (WSL, Chromebook, Raspberry Pi, Mac)
+
+| Device | Works? | Notes |
+|---|---|---|
+| Normal Linux PC or laptop (x86_64) | ✅ tested | Arch and Ubuntu 24.04 |
+| Raspberry Pi, other ARM64 (aarch64) boards | 🟡 should work, not tested | Use a 64-bit OS. Build with `-j 2`. On boards with 1 GB of RAM choose the *Standard* [security level](#security-levels-and-key-files); CakePass refuses a level that does not fit in free memory |
+| 32-bit systems (i686, armv7) | ❔ not tested | Argon2 needs a lot of memory; use the Standard level |
+| Windows with WSL 2 (Ubuntu) | 🟡 should work | Install it in the Linux side with the Debian steps. There is no Linux clipboard tool by default, so use `--show` |
+| ChromeOS "Linux development environment" | 🟡 should work | It is Debian: use the Debian steps. Clipboard: `--show` |
+| Android (Termux) | ❔ not tested | |
+| macOS, BSD, native Windows | ❌ not supported | CakePass uses Linux features (`/proc`, `prctl`, `mlock` rules) |
+| Alpine (musl), Void, Gentoo, NixOS | 🟡 should work, not tested | Follow the steps with your package manager |
+
+Got it running somewhere that is not marked ✅? Please tell us in an issue.
+
 ## Contents
 
+0. [Install](#install)
 1. [First-time setup](#first-time-setup)
 2. [Using the screen (arrow keys)](#using-the-screen-arrow-keys)
 3. [Daily use (commands)](#daily-use-commands)
-4. [Item types: logins, API keys and notes](#item-types-logins-api-keys-and-notes)
+4. [Item types: logins, API keys, cards, identities, SSH keys and notes](#item-types-logins-api-keys-cards-identities-ssh-keys-and-notes)
 5. [Generating passwords](#generating-passwords)
 6. [Login screen, settings and auto-lock](#login-screen-settings-and-auto-lock)
-7. [Switching from another password manager (CSV)](#switching-from-another-password-manager-csv)
-8. [Backups](#backups)
-9. [Updating](#updating)
-10. [Forgot your master password?](#forgot-your-master-password)
-11. [How the security works](#how-the-security-works)
-12. [Security review and remaining risks](#security-review-and-remaining-risks)
-13. [Troubleshooting](#troubleshooting)
-14. [Manual install](#manual-install)
-15. [For later](#for-later)
+7. [Security levels and key files](#security-levels-and-key-files)
+8. [Switching from another password manager (CSV)](#switching-from-another-password-manager-csv)
+9. [Backups](#backups)
+10. [Updating](#updating)
+11. [Forgot your master password?](#forgot-your-master-password)
+12. [How the security works](#how-the-security-works)
+13. [How strong is this, really?](#how-strong-is-this-really)
+14. [Security review and remaining risks](#security-review-and-remaining-risks)
+15. [Troubleshooting](#troubleshooting)
+16. [For later](#for-later)
 
 ---
 
@@ -101,14 +393,25 @@ cakepass setup
 ```
 
 ```text
-Step 1 of 3 — Startup animation
+Step 1 of 5 — Startup animation
   Play the animation at startup? [Y/n]
-Step 2 of 3 — Auto-lock
+Step 2 of 5 — Auto-lock
   Lock after how many minutes of inactivity? [5]
-Step 3 of 3 — Master password
-  New master password:
-  Repeat master password:
-✔ Vault created: ~/.local/share/cakepass/vault.enc
+Step 3 of 5 — Security level
+    1  Standard            works on any computer; unlocks fastest (64 MiB; needs ~86 MiB free)
+    2  High (recommended)  about 1 s to unlock; needs ~342 MiB free memory (256 MiB)
+    3  Maximum             about 3-5 s to unlock; needs ~1366 MiB free memory (1 GiB)
+  Choose 1, 2 or 3 [2]:
+✔ High (recommended): unlocking takes about 0.81 s on this computer.
+Step 4 of 5 — Master password
+  Make a strong passphrase for me? [Y/n]
+  Your master password (7 random words, about 90 bits):
+      lantern-oyster-bulky-scenic-dwarf-grape-mosaic     ← an example; yours is random
+warning: Write it down on paper NOW …
+  Type it again to confirm:
+Step 5 of 5 — Extra protection: a key file (optional)
+  Create a key file? [y/N]
+✔ Vault created: ~/.local/share/cakepass/vault.enc (security level: high)
 ```
 
 - **Animation**: the 3D CakePass logo that spins in when you start the program.
@@ -116,13 +419,25 @@ Step 3 of 3 — Master password
   `cakepass config set animation off`.
 - **Auto-lock**: after this many idle minutes CakePass (the screen and the line
   mode) locks itself and wipes your secrets from memory.
-- **Master password**: the **only** key to your vault. `cakepass` checks it with
-  zxcvbn (score 3 of 4 or higher). A great choice is a phrase of five or more
-  random words; let cakepass make one: `cakepass generate --passphrase --show`.
+- **Security level**: how much memory Argon2id uses for every unlock (and so
+  for every guess of someone who stole the file). **High** is the default;
+  **Standard** suits small or old computers; **Maximum** makes guessing four
+  times as expensive again and takes a few seconds to unlock. Once you choose,
+  CakePass measures the unlock time on your computer. Change it any time with
+  `cakepass security --level …` ([details](#security-levels-and-key-files)).
+- **Master password**: the key to your vault. Press Enter at "Make a strong
+  passphrase for me?" and CakePass makes **7 random words** (about 90 bits),
+  shows them **once** and asks you to type them back: **write them on paper
+  first**. Or answer `n` and type your own; it must reach zxcvbn score 3 of 4.
   If you forget it, your data is gone ([details](#forgot-your-master-password)).
+- **Key file (optional)**: a small random file, for example on a USB stick,
+  that is needed *as well as* the master password. A stolen vault file is
+  useless without it. **Lose it and the vault is lost**, so keep a copy
+  ([details](#key-files)).
 
 If a vault already exists, `cakepass setup` only asks the first two questions and
-leaves your vault exactly as it is.
+leaves your vault exactly as it is. Scripts can skip the level question with
+`cakepass setup --level standard|high|maximum` (or the `--kdf-*` options).
 
 The vault goes to `~/.local/share/cakepass/vault.enc` (or
 `$XDG_DATA_HOME/cakepass/vault.enc`). Use `--vault <path>` or the environment
@@ -142,7 +457,7 @@ and **`?`** shows them all.
 
 ```text
  CakePass  vault.enc                                              locks in 4:59
- All 3   Logins 1   API keys 1   Notes 1                               / search
+ All 3  Logins 1  API keys 1  Cards 0  IDs 0  SSH 0  Notes 1           / search
 ┌─ Items ───────────────────────────────────┬─ Details ────────────────────────┐
 │▌ login  GitHub               john         │ Name        GitHub               │
 │  api    OpenAI               proj-1       │ Type        login                │
@@ -164,11 +479,15 @@ and **`?`** shows them all.
 | Key | What it does |
 |---|---|
 | ↑ ↓, PgUp PgDn, Home End | choose an item |
-| ← → (or Tab) | switch between All · Logins · API keys · Notes |
+| ← → (or Tab) | switch between All · Logins · API keys · Cards · IDs (identities) · SSH (keys) · Notes · 2FA; tabs you do not use can be hidden (see Settings below) |
 | `/` | search in name, type, tags, username, e-mail and URL (never in passwords or notes). Any key that is not a shortcut (a capital letter, a digit) starts the search too. Esc clears it |
-| Enter or `v` | show / hide the password, API key and notes. They hide themselves after **10 seconds**, and when you choose another item or open another screen |
-| `c` | copy the password, API key or note to the clipboard; it is **cleared after 20 seconds** |
-| `u` / `m` | copy the username / the e-mail address |
+| Enter or `v` | show / hide the password, API key, card number and CVV, private key and passphrase, and notes. They hide themselves after **10 seconds**, and when you choose another item or open another screen |
+| `c` | copy the password, API key, card number, private key, document number or note to the clipboard; it is **cleared after 20 seconds** (or your `clip-time`) |
+| `u` / `m` | copy the username (cardholder) / the e-mail address |
+| `t` | show the current two-factor (TOTP) code with its seconds left, and copy it (cleared like a password) |
+| 2FA tab | every item with a TOTP secret and its **current code**, live, with the seconds left (red in the last 5), like an authenticator app; the details also show the next code. There **Enter** or `c` copies the code, and **`a` adds one**: choose the account (or a new login) and paste the secret. ← from All goes straight to it |
+| `f` | pin or unpin the item as a **favorite**: a ★ before its name, and favorites come first in the list |
+| `p` | copy the public key of an SSH key |
 | `a` or `n` | add an item |
 | `e` | edit the selected item |
 | `d` or Delete | delete it (asks first; the answer is "no" unless you choose "Delete") |
@@ -180,19 +499,26 @@ and **`?`** shows them all.
 
 **Adding and editing** (`a`, `e`): a form with the fields Name, Type, Username
 (for an API key: Account/ID), E-mail, URL, Tags, Password (or API key) and Notes.
+A card has Cardholder, Expiry date, Card number and CVV instead; an SSH key has
+Host, Public key, Private key (several lines; paste it) and Passphrase. Every
+type also has an optional, hidden **2FA secret**: paste the secret a site shows
+under its QR code (see [Two-factor codes](#two-factor-codes-totp)). A typo is
+refused when you save, with the cursor back on the field.
 
 | Key | What it does |
 |---|---|
 | ↑ ↓, Tab, Shift+Tab | move between the fields (Enter goes to the next field) |
 | ← → Home End, Backspace Delete | edit the text; Ctrl+U clears the field |
-| ← → on *Type* | login, API key or note (a note has only a name, tags and its text) |
-| Ctrl+R | show / hide the password while you type |
-| Ctrl+G | open the generator; Enter puts the password in the field |
-| Enter in *Notes* | a new line |
+| ← → on *Type* | login, API key, card, SSH key or note (a note has only a name, tags and its text) |
+| Ctrl+R | show / hide the password (and the other hidden fields) while you type |
+| Ctrl+G | open the generator; Enter puts the password in the field (logins and API keys) |
+| Enter in *Notes* or a private key | a new line |
 | Ctrl+S (or the Save button) | save |
 | Esc | cancel (asks first when you changed something) |
 
-When you edit an item, the password field shows `•••••••• (unchanged)`. Leave it
+When you edit an item, the password field shows `•••••••• (unchanged)` (so do a
+stored CVV, passphrase and 2FA secret; Ctrl+U on the 2FA secret and saving
+removes the code). Leave it
 and the password stays as it is; type and you replace it; Ctrl+R shows it.
 Pasting (Ctrl+Shift+V) works in every field, also for long API keys: pasted text
 is always just text, it never triggers a shortcut.
@@ -205,9 +531,21 @@ your own (twice), `c` copies it, Enter uses it, Esc cancels. Opened from the lis
 Enter asks for a name and saves it as a new login (like `cakepass generate --save`).
 
 **Settings** (`s`): the startup animation (on/off), the auto-lock time (← → one
-minute, PgUp/PgDn ten), **Change master password** (asks for the current one
-first, then a new strong one twice), and information about your vault, the
-version and the clipboard tool. Changes are saved at once.
+minute, PgUp/PgDn ten), the **Tabs** (← → choose a type, Enter or Space shows
+or hides its tab), **Change master password** (asks for the current one
+first, then a new strong one twice), the **Security level** (← → choose a
+level; the first time a level is shown CakePass measures how long unlocking
+takes on this computer; Enter switches after you type your master password),
+and information about your vault (level, key file), the version and the
+clipboard tool. Changes are saved at once.
+
+**Hiding tabs.** Never store SSH keys or API keys? Hide those tabs, so ← →
+only goes through the ones you use. The Tabs row in the settings shows every
+type with ✔ (shown) or ✖ (hidden); the same setting is
+`cakepass config set hidden-tabs api,ssh-key` (`none` shows them all again).
+Hiding a tab hides **no items**: they stay in the **All** tab (which cannot be
+hidden), and `list`, `search` and `get` show them as always. It only changes
+which tabs the screen offers.
 
 Good to know:
 
@@ -233,12 +571,16 @@ password in a hidden prompt (you see nothing while typing, that is on purpose).
 |---|---|
 | Add an item (cakepass asks for each field) | `cakepass add GitHub` |
 | Add with options and a generated password | `cakepass add GitHub -u john -e john@example.org --url https://github.com -t work,code --generate` |
-| Copy the password to the clipboard (20 s) | `cakepass get GitHub` |
+| Copy the password to the clipboard (cleared after 20 s; change it with `cakepass config set clip-time 45`) | `cakepass get GitHub` |
 | Copy the username / the e-mail address instead | `cakepass get GitHub --copy-username` / `--copy-email` |
 | Show password and notes on screen | `cakepass get GitHub --show` |
+| The current two-factor (TOTP) code, copied | `cakepass get GitHub --totp` |
+| Add or replace / remove the TOTP secret | `cakepass edit GitHub --totp` / `--no-totp` |
 | List all items (no secrets) | `cakepass list` |
 | Only items with a tag / of a type | `cakepass list --tag work` / `cakepass list --type api` |
+| Pin an item as a favorite / unpin it / list only favorites | `cakepass edit GitHub --favorite` / `--no-favorite` / `cakepass list --favorites` |
 | Search name, type, tags, username, e-mail, URL | `cakepass search git` |
+| Check for weak, reused, old and empty passwords | `cakepass audit` (see [Password health check](#password-health-check)) |
 | Change an item (asks per field) | `cakepass edit GitHub` |
 | Only generate a new password | `cakepass edit GitHub --generate` |
 | Change only the e-mail address | `cakepass edit GitHub --email john@work.example` (`-e ""` clears it) |
@@ -246,8 +588,12 @@ password in a hidden prompt (you see nothing while typing, that is on purpose).
 | Rename | `cakepass edit GitHub --rename "GitHub work"` |
 | Remove | `cakepass rm GitHub` |
 | Change the master password | `cakepass passwd` |
+| Security level, key file and unlock time (no password needed) | `cakepass security` |
+| Another security level | `cakepass security --level standard`, `high` or `maximum` |
+| Make a key file / start using it / stop using it | `cakepass keyfile create PATH` / `cakepass security --new-keyfile PATH` / `cakepass security --no-keyfile` |
+| Open a vault with its key file | `cakepass --keyfile PATH list` (or `CAKEPASS_KEYFILE`, or `cakepass config set keyfile PATH`) |
 | Information about the vault and security (no password needed) | `cakepass info` |
-| Help | `cakepass --help` or `cakepass add --help` |
+| Help | `cakepass --help` or `cakepass add --help`; the manual page: `man cakepass` (or `cakepass man`) |
 
 Tips:
 
@@ -262,18 +608,61 @@ Tips:
   `my-generator | cakepass add Site -u john --url x -t y`. Do **not** use
   `echo secret | ...`, because then the secret is in your shell history.
 
+### Password health check
+
+`cakepass audit` (or `cakepass health`) looks at the passwords and API keys in
+your vault and tells you which ones to change. It works entirely offline: no
+"has this leaked?" lookup, nothing is sent anywhere.
+
+```text
+$ cakepass audit
+Master password:
+Password health check: 4 logins and API keys
+(1 other item not checked: cards, SSH keys, identities and notes have no password to judge.)
+
+Weak: 1 (strength below 3 of 4: easy to guess)
+  - Forum
+Reused: 2 (the same password or key in more than one item; 1 group)
+  - Mail, Shop
+Stale: 0 (not changed in more than 365 days)
+Empty: 0 (no password or key)
+
+Change a password with `cakepass edit <name> --generate` (and on the website), most urgent first: reused, then weak.
+```
+
+- **Weak** uses the same strength check (zxcvbn) and the same minimum as the
+  master password: a score of 3 out of 4.
+- **Reused**: when one site leaks such a password, every other account with it
+  is open too. Change these first.
+- **Stale**: not changed in more than a year; `--older-than 90` for another
+  number of days. It goes by the item's date of last change, so editing only
+  the notes or tags of an item also counts as a change.
+- **Empty**: a login or API key without a password.
+- Only logins and API keys are checked: a card number, private key or passport
+  number is not something you choose or renew like a password.
+- It only ever prints the **names** of items, never a password, its length or
+  anything derived from it, and it changes nothing. It always ends with exit
+  code 0: it is a report, not a test that fails.
+
 ---
 
-## Item types: logins, API keys and notes
+## Item types: logins, API keys, cards, identities, SSH keys and notes
 
-You can store three kinds of things. All of them are encrypted equally strongly
-(see [How the security works](#how-the-security-works)).
+You can store six kinds of things. All of them are encrypted equally strongly,
+field by field (see [How the security works](#how-the-security-works)).
 
 | Type | What | Add it with |
 |---|---|---|
 | **login** | username, e-mail address, URL, password, notes | `cakepass add GitHub` |
 | **api** | account/key ID, e-mail address, service, the API key or token, notes | `cakepass add OpenAI --type api` |
+| **card** | cardholder name, card number, expiry date, security code (CVV), notes | `cakepass add Visa --type card` |
+| **identity** | full name, the number (passport, ID card, driving licence, bank account/IBAN, membership), who issued it, expiry date, notes | `cakepass add Passport --type identity` |
+| **ssh-key** | private key (several lines), public key, passphrase, host, notes | `cakepass add "GitHub key" --type ssh-key` |
 | **note** | multi-line text, e.g. recovery codes, PINs, Wi-Fi | `cakepass add "Recovery codes" --type note` |
+
+Any item can be pinned as a **favorite** (`cakepass edit NAME --favorite`, or `f`
+in the screen) and can carry a **TOTP secret** for two-factor codes; see
+[Two-factor codes (TOTP)](#two-factor-codes-totp) below.
 
 ```text
 $ cakepass add OpenAI --type api
@@ -298,10 +687,165 @@ Type or paste the text of your note (it is stored encrypted):
 ```
 
 - `cakepass get OpenAI` copies the API key to the clipboard (20 s); `cakepass get "Recovery codes"` copies the note text. With `--show` you see it on screen.
-- `cakepass list --type api` or `--type note` shows only that type.
+- `cakepass list --type api` or `--type note` (`card`, `ssh-key`) shows only that type.
 - Replace a key: `cakepass edit OpenAI --password`. Change a note: `cakepass edit "Recovery codes" --notes`.
 - An API key is typed in a hidden prompt (pasting with Ctrl+Shift+V works); it
   never ends up in your shell history.
+
+### Bank cards
+
+```text
+$ cakepass add Visa --type card
+Master password:
+Cardholder name (optional): J. Doe
+Card number (hidden input; pasting is fine):
+Expiry date, e.g. 08/29 (optional): 08/29
+Security code / CVV (hidden input, optional):
+Notes (optional, one line): PIN in the safe
+Tags, separated by commas (optional): bank
+✔ Card 'Visa' saved (encrypted).
+
+$ cakepass get Visa --no-copy
+Name:            Visa
+Type:            card
+Cardholder:      J. Doe
+Expiry date:     08/29
+Tags:            bank
+Modified:        2026-11-04 16:32 UTC
+Notes:           (hidden; use --show)
+Card number:     (hidden; use --show)
+Security code:   (hidden; use --show)
+```
+
+- The card number is the secret of a card: `cakepass get Visa` copies it, `--show`
+  shows it together with the security code.
+- Change parts: `cakepass edit Visa --password` (a new card number), `--expiry`,
+  `--cvv`. Each asks in a prompt; the number and the CVV are hidden.
+- There is no PIN field on purpose: put it in the notes if you must keep it
+  here. The brand (Visa, Mastercard) can be a tag.
+
+### Identity documents
+
+One type for the numbers you look up now and then: a passport or ID card, a
+driving licence, a bank account (IBAN), a membership.
+
+```text
+$ cakepass add Passport --type identity
+Master password:
+Full name (optional): Jane Doe
+Number: document, account (IBAN) or membership number (hidden input; pasting is fine):
+Issued by, e.g. a government office or bank (optional): Gemeente Utrecht
+Expiry date, e.g. 2031-05-14 (optional): 2031-05-14
+Notes (optional, one line): Nationality: NL
+Tags, separated by commas (optional): travel
+✔ Identity 'Passport' saved (encrypted).
+
+$ cakepass get Passport --no-copy
+Name:            Passport
+Type:            identity
+Full name:       Jane Doe
+Issued by:       Gemeente Utrecht
+Expiry date:     2031-05-14
+Tags:            travel
+Modified:        2026-11-04 19:52 UTC
+Notes:           (hidden; use --show)
+Number:          (hidden; use --show)
+```
+
+- The number is the secret of an identity: `cakepass get Passport` copies it,
+  `--show` shows it. It is typed in a hidden prompt, like a card number, so it
+  does not end up in your terminal's scrollback; check it with `--show`.
+- Leave the expiry date empty for something that does not expire (a bank
+  account, a membership). Put anything else (country, BIC, licence classes)
+  in the notes.
+- Change parts: `cakepass edit Passport --password` (a new number),
+  `--expiry`, `-u` (the full name), `--url` (who issued it).
+- `--type id`, `passport`, `iban`, `licence` and `membership` all mean
+  `identity`.
+
+### SSH keys
+
+```text
+$ cakepass add "GitHub key" --type ssh-key
+Master password:
+Paste the private key (PEM or OpenSSH format; it is stored encrypted):
+  Hidden input: nothing appears while you type or paste. Finish with a line containing only a dot (.) or press Ctrl+D.
+│
+│
+│
+│
+Public key (optional, one line, e.g. ssh-ed25519 AAAA… me@laptop): ssh-ed25519 AAAAC3Nza me@laptop
+Passphrase of the private key (hidden input, optional):
+Host (optional, e.g. git@github.com): git@github.com
+Notes (optional, one line):
+Tags, separated by commas (optional): work
+✔ SSH key 'GitHub key' saved (encrypted).
+```
+
+- The private key is **hidden while you paste it**, like every other secret: each
+  line you paste or type only shows a new `│`, and you finish with a line holding
+  only a dot. Check what was stored with `--show`. (The screen's form hides it
+  too, until Ctrl+R.)
+- `cakepass get "GitHub key"` copies the private key; `--copy-public` copies the
+  public key instead; `--show` shows the private key and the passphrase.
+- Change parts: `cakepass edit "GitHub key" --password` (a new private key),
+  `--public-key`, `--key-passphrase` (hidden), `--url` (the host).
+- CakePass only *stores* the key. It does not talk to `ssh-agent`; to use the
+  key, write it to a file with `chmod 600` yourself (or keep using your normal
+  `~/.ssh` and store a copy here as a backup).
+
+### Two-factor codes (TOTP)
+
+Most sites offer two-factor login with an authenticator app: you scan a QR
+code, and the app shows a six-digit code that changes every 30 seconds. Under
+the QR code the site also shows the **secret** (a text like `JBSW Y3DP EHPK
+3PXP`, sometimes a link starting with `otpauth://`). Give that to CakePass and
+it computes the codes itself, offline:
+
+```text
+$ cakepass edit GitHub --totp
+Master password:
+TOTP secret or otpauth:// link (hidden input; pasting is fine):
+✔ Item 'GitHub' updated.
+
+$ cakepass get GitHub --totp
+Master password:
+Name:            GitHub
+TOTP code:       511320
+Valid for:       8 more second(s)
+✔ The TOTP code was copied to the clipboard (via wl-copy); it will be cleared in 20 seconds.
+```
+
+- `cakepass add GitHub --totp` asks for the secret while adding; `cakepass edit
+  GitHub --no-totp` removes it. In the screen, `t` shows and copies the code.
+- The screen's **2FA** tab works like an authenticator app (Proton
+  Authenticator, Google Authenticator): all your codes in one list, each with
+  the seconds it is still valid, and the next code in the details. Enter (or
+  `c`) copies the selected code. ← from All goes there in one key press.
+  On that tab **every code is on screen at once** (as in a phone app), and
+  the next code too: mind who can see your screen. Each code works for one
+  period only and is useless without the password; under a dialog (help,
+  delete, …) the codes turn into dots, and the screen locks itself as usual.
+- **Setting it up in the screen**, no commands needed:
+  1. On the site, turn on two-factor login with an authenticator app. Below
+     the QR code, click "can't scan it?" (or similar) and copy the secret.
+  2. In CakePass go to the **2FA** tab (←) and press **`a`**.
+  3. Choose the account (type a few letters to find it), or **+ New login**.
+  4. Paste the secret (Ctrl+Shift+V) in the **2FA secret** field and press
+     Ctrl+S. The code appears in the 2FA tab; type it on the site to finish.
+  The same field is in every add/edit form (`a`, `e`).
+- The secret is checked before it is saved (spaces and lower case are fine; a
+  typo is refused). An `otpauth://totp/…` link may set other digits, a period
+  or SHA-256/SHA-512; without them it is the standard 6 digits, 30 s, SHA-1.
+- Only the secret is stored (encrypted like a password); every code is
+  computed fresh when you ask for it and never saved.
+- Your computer's clock must be right (within about 30 seconds), as with any
+  authenticator app.
+- ⚠️ With the TOTP secret in the same vault as the password, someone who opens
+  your vault has both factors. Many people accept that for convenience; for
+  your most important accounts (e-mail, bank) you may prefer to keep the second
+  factor on your phone.
+- Steam Guard codes and counter-based (HOTP) secrets are not supported.
 
 ---
 
@@ -317,7 +861,8 @@ cakepass generate -p -w 8 --separator .   # 8 words with dots
 ```
 
 Passphrases come from the EFF diceware word list (7776 words, 12.9 bits per
-word). Six words give about 77 bits, which is plenty for a master password.
+word). Six words give about 77 bits; the setup wizard makes seven (about 90
+bits) for your master password. See [How strong is this, really?](#how-strong-is-this-really).
 
 ### View, edit and save in one go
 
@@ -371,7 +916,17 @@ Change them on the settings screen (`s`) or with:
 cakepass config                           # show the settings
 cakepass config set animation off         # on / off
 cakepass config set lock-timeout 10       # minutes of inactivity before auto-lock
+cakepass config set clip-time 45          # clear the clipboard after 45 s (5 to 300; default 20)
+cakepass config set hidden-tabs api,ssh-key   # tabs the screen leaves out (or: none); items stay under All
+cakepass config set keyfile /run/media/$USER/USB/cakepass.key   # where your key file is (or: none)
 ```
+
+**Clipboard time.** A copied secret is wiped from the clipboard after 20
+seconds. If that is too short to paste it (or longer than you like), set it
+with `cakepass config set clip-time`: anything from 5 to 300 seconds; 0
+("never") is refused on purpose. It counts for `get`, `generate` and the
+screen alike (the screen shows the countdown). Only the setting is read: a
+damaged settings file falls back to 20 seconds, never to "never".
 
 **Auto-lock.** A single command asks for your master password every time; when
 it ends, no key is left in memory. That is the safest kind of "auto-lock". The
@@ -399,6 +954,94 @@ cakepass ❯ exit
 
 ---
 
+## Security levels and key files
+
+### Security levels
+
+Your master password is turned into the key with **Argon2id**, a function
+that is slow and needs a lot of memory *on purpose*: whoever steals your vault
+file must pay that price for **every single password they try**. The level
+sets the price:
+
+| Level | Argon2id | Unlocks in (measured here¹) | Needs free memory² | For |
+|---|---|---|---|---|
+| `standard` | 64 MiB, 3 passes, 4 lanes | ~0.2 s | ~86 MiB | any computer, also small or old ones |
+| `high` (default) | 256 MiB, 3 passes, 4 lanes | ~0.8 s | ~342 MiB | normal laptops and desktops |
+| `maximum` | 1 GiB, 3 passes, 4 lanes | ~3.7 s | ~1.4 GB | computers with plenty of memory |
+
+¹ On a 4-core 2.1 GHz cloud machine; `cakepass security` measures it on yours.
+² CakePass never lets Argon2 take more than 75 % of the memory that is free at
+that moment. If a vault's level does not fit (for example a `maximum` vault on
+a small laptop), it says so and stops *before* allocating anything, instead of
+being killed by the system halfway. Close programs and try again, or open the
+vault on a bigger computer.
+
+```bash
+cakepass security                     # level, key file, unlock time measured now
+cakepass security --level maximum     # switch (asks for your master password)
+```
+
+Switching keeps your master password and all items; the vault and its `.bak`
+backup are re-encrypted with a fresh salt. Each step up makes every guess about
+four times more expensive for an attacker (and unlocking four times slower for
+you). Which level is "enough" depends far more on your master password: see
+[How strong is this, really?](#how-strong-is-this-really).
+
+### Key files
+
+A key file is a **second secret** next to your master password: a small file
+of random bytes, best kept on a USB stick. With a key file, your vault opens
+only with **both**. Someone who steals your vault file (a lost laptop, a
+synced backup) cannot even start guessing your password without the key file:
+they would have to guess its 256 bits as well. Even a weak or leaked master
+password is then not enough.
+
+```bash
+cakepass keyfile create /run/media/$USER/USB/cakepass.key   # 64 random bytes, never overwrites a file
+cakepass security --new-keyfile /run/media/$USER/USB/cakepass.key
+```
+
+After that, CakePass remembers **only the path** of the key file in your
+settings (`keyfile=…` in `~/.config/cakepass/config`), never its contents, and
+reads the file whenever it unlocks: plug in the stick, then unlock as usual.
+Other ways to point to it, in this order: `--keyfile PATH`, the environment
+variable `CAKEPASS_KEYFILE`, the setting.
+
+> ⚠️ **Losing the key file means losing the vault.** There is no recovery, not
+> even with the right password. Keep a **copy of the key file** in a second safe
+> place (a second USB stick, a safe), and test the copy.
+
+How it works: CakePass condenses the file into a 256-bit "pepper"
+(BLAKE2b-256 with its own label) and gives it to Argon2id as its *secret*
+input, together with your password and the salt. The vault header records
+that a key file is needed (and that flag is protected like the rest of the
+header). A wrong key file gives exactly the same message as a wrong password,
+on purpose.
+
+Good to know:
+
+- **Any file** of 1 byte to 1 MiB works, but a file made by `cakepass keyfile
+  create` is best: if you use a photo or document, it must never change by a
+  single bit (re-saving it in an editor would lock you out).
+- Keep the key file **away from the vault**: a key file in the same folder (or
+  on the same backup disk) as the vault protects nothing when both are stolen.
+  CakePass warns you when they are in the same folder.
+- The key file should be readable only by you (`chmod 600`); CakePass warns
+  otherwise. On a FAT/exFAT USB stick that cannot be set; keep the stick safe.
+- **USB stick not plugged in?** CakePass says it cannot read the key file and
+  names the path; nothing else happens.
+- **Turn it off**: `cakepass security --no-keyfile` (asks your master password;
+  the master password alone opens the vault again). **Use another one**:
+  `cakepass security --new-keyfile NEW` (the old one then opens nothing).
+- **Updating** CakePass never touches your key file or opens your vault; the
+  extra backup made before an update needs the same key file.
+- **Export files** (`cakepass export`) are protected by their own export
+  password only, not by the key file. Keep them as safe as the vault.
+- Copies of the vault you made *before* turning the key file on still open
+  without it. Replace them.
+
+---
+
 ## Switching from another password manager (CSV)
 
 `cakepass` reads CSV exports from **Bitwarden, KeePassXC, 1Password, Firefox and
@@ -420,6 +1063,11 @@ cakepass import-csv ~/Downloads/bitwarden_export.csv
 
 Items with a name that already exists get a sequence number, for example
 "GitHub (2)". Identical items are skipped, so importing twice makes no duplicates.
+
+A TOTP column (Bitwarden's `login_totp`, KeePassXC's `TOTP`, `otpauth`) is
+imported as the item's TOTP secret. A value CakePass cannot use (for example a
+Steam Guard `steam://` secret) is left out with a warning; the item itself is
+still imported.
 
 ### Encrypted export and import (between your own computers)
 
@@ -466,15 +1114,28 @@ How:
 
 Good to know:
 
-- A backup opens with the master password that applied **when you made it**.
-  After `cakepass passwd`, an old copy still works with the old password. If your
-  old password leaked, throw away old copies and make new ones. (The automatic
-  `.bak` is re-encrypted with the new password right away.)
+- A backup opens with the master password (and key file, and level) that
+  applied **when you made it**. After `cakepass passwd` or `cakepass security`,
+  an old copy still opens the old way. If your old password leaked, throw away
+  old copies and make new ones. (The automatic `.bak` is re-encrypted right away.)
+- **Using a key file?** Back up the **key file separately** from the vault: a
+  copy of the vault is useless without the key file, and a key file stored on
+  the same stick as a vault copy protects nothing. Test a backup with
+  `cakepass --keyfile /path/to/key-copy --vault /path/to/vault-copy list`.
 - After `cakepass rm`, the removed item is still in `.bak` until the next change.
+- CakePass 0.4 writes vault **format 3**, which CakePass 0.3 and older cannot
+  read. A vault becomes format 3 the first time 0.4 saves it; the `.bak` and
+  the copies made by `--update` keep the older format until then.
 
 ---
 
 ## Updating
+
+> **Arch family only.** `cakepass --update` and the daily check build with
+> `makepkg`. On other Linux systems update with the four lines in
+> [Update to a newer version](#update-to-a-newer-version). Installed
+> `cakepass-git` from the AUR? Then your AUR helper updates it:
+> `yay -Syu --devel` (or `paru -Syu --devel`).
 
 When new changes are on GitHub, update with:
 
@@ -488,7 +1149,7 @@ Checking GitHub via git (/home/john/cakepass).
 ┌───────────────────────────────────────────────────────────────┐
 │ There is a new version of CakePass.                           │
 │ New:  3 change(s)  (branch main)                              │
-│ From: https://github.com/Justcakenl/passcode-manager-cli-.git │
+│ From: https://github.com/Justcakenl/Password-Manager.git      │
 └───────────────────────────────────────────────────────────────┘
   • 4f2a9c1 New item type: bank card
   • 9be01d7 Faster logo
@@ -506,8 +1167,9 @@ Update now? [y/N] y
 - Before every update `cakepass` makes an extra copy (`vault.enc.pre-update-<time>`;
   the last three are kept). It opens like any vault: `cakepass --vault <copy> list`.
 - New versions read your old vault and convert it automatically to the newest
-  format the next time you unlock. An older version refuses a newer format with a
-  clear message, so nothing breaks.
+  format the next time they save it. An older version refuses a newer format with a
+  clear message ("file version 3 is not supported"), so nothing breaks; the copy
+  made before the update still has the old format.
 - If building, a test or the installation fails, everything is restored and
   your current version keeps working.
 - Your settings (`~/.config/cakepass/`) are not touched either.
@@ -547,7 +1209,8 @@ get a desktop notification (with `libnotify`) and a line in `cakepass` and
 
 ## Forgot your master password?
 
-**Then your data is gone. There is no recovery.**
+**Then your data is gone. There is no recovery.** The same goes for a lost
+**key file** (if you use one) without a copy.
 
 That is not a bug but exactly how it is supposed to work:
 
@@ -560,11 +1223,13 @@ That is not a bug but exactly how it is supposed to work:
 
 What you can do to prevent it:
 
-1. Pick a passphrase you can remember (`cakepass generate --passphrase --show`) and
-   use it often during the first weeks.
+1. Pick a passphrase you can remember (the setup wizard makes one, or
+   `cakepass generate --passphrase --show -w 7`) and use it often during the
+   first weeks.
 2. Write the master password on paper and keep that somewhere safe (for example
    with your passport). Against online attackers, paper is safe.
 3. Not sure you still know it? Test it with `cakepass list` before you change it.
+4. Using a key file? Keep a tested copy of it in a second place.
 
 If you really cannot remember it, the only thing left is to create a new vault
 (`cakepass setup` with another `--vault`, or first delete `~/.local/share/cakepass/`)
@@ -576,14 +1241,17 @@ and set new passwords on every website via "forgot password".
 
 In plain language:
 
-1. Your master password is turned into a 256-bit key with **Argon2id** (64 MiB
-   memory, 3 rounds, 4 lanes, a random 32-byte salt). Argon2id is slow and
-   memory-hungry on purpose, which makes guessing with expensive graphics cards
-   very costly.
+1. Your master password is turned into a 256-bit key with **Argon2id** (by
+   default 256 MiB memory, 3 rounds, 4 lanes, a random 32-byte salt; see
+   [security levels](#security-levels)). Argon2id is slow and memory-hungry on
+   purpose, which makes guessing with expensive graphics cards very costly. With
+   a **key file**, its 256-bit pepper is Argon2id's secret input as well.
 2. **Two layers of encryption.** From that key, HKDF-SHA256 makes two separate keys:
    - the **file key** encrypts the whole vault on disk;
    - the **item key** additionally encrypts **all the content of every item
-     separately**: username, e-mail address, URL, password or API key, and notes.
+     separately**: username, e-mail address, URL, password or API key, notes, the
+     card number, expiry date and CVV, the private key, public key and passphrase
+     of an SSH key, and a TOTP secret.
      Every field has its own random nonce.
 
    Even while your vault is open (for example on the screen or in the line mode), that
@@ -601,15 +1269,21 @@ In plain language:
 3. The whole vault is encrypted with **XChaCha20-Poly1305**. That encrypts and
    checks at the same time ("authenticated encryption"). If even one bit in the
    file changes, `cakepass` refuses to open it. Every save uses a new random nonce.
-4. The file starts with a header with version number and settings. The header is
-   part of the check, so it cannot be tampered with either.
+4. The file starts with a header with version number, the "needs a key file"
+   flag and the Argon2 settings. The header is part of the check, so it cannot be
+   tampered with either.
 5. Saving is **atomic**: first to a temporary file, then `fsync`, then rename. After a
    power failure you always have either the old or the new vault.
 6. Files get permissions 600, the folder 700. Only you can access them.
 7. Secrets are wiped from memory after use (`zeroize`, `secrecy` and an allocator
-   that wipes all released memory). The keys and the decrypted vault live in
-   memory locked with `mlock`, so not in swap. Core dumps are off and other
-   programs cannot look into the memory (`PR_SET_DUMPABLE=0`).
+   that wipes all released memory, including Argon2's working memory). The keys
+   and the decrypted vault live in memory locked with `mlock`, so not in swap.
+   The key file and its pepper exist in memory only while Argon2 runs. Core dumps
+   are off and other programs cannot look into the memory (`PR_SET_DUMPABLE=0`).
+   Tested (release build, vault with a key file): while CakePass is unlocked and
+   idle, in the line mode and the screen mode, also after re-keying, the memory
+   contains the master password, the key file bytes (or any 16-byte piece of
+   them) and the pepper **0 times**.
 8. All randomness comes from the operating system (`getrandom`).
 9. `cakepass` itself contains no network code. Only the command `cakepass --update`
    starts `git` to fetch your repository, and then your vault is not open.
@@ -632,6 +1306,97 @@ implements no cryptography itself. More details are in [`docs/DESIGN.md`](docs/D
 
 ---
 
+## How strong is this, really?
+
+The short, honest answer: the encryption is as strong as what banks use, and
+it is not the weak point. What decides whether a **stolen vault file** stays
+closed is your **master password**, plus the **key file** if you use one.
+
+**Compared with banks.** Banks mostly protect stored data with AES-256, and
+keep their keys in hardware security modules (HSMs): devices that never let a
+key out. CakePass encrypts with XChaCha20-Poly1305, also with 256-bit keys:
+the same strength class. Nobody can break either by trying keys, so "better
+than banks" is not something another encryption algorithm could honestly give
+you. The real difference is elsewhere: a bank's data sits on servers that
+attackers can only reach online, where guesses are limited and watched. Your
+vault is a file. Someone who copies it can try passwords **offline**, as fast
+as their hardware allows, and nobody notices. Argon2id makes every guess
+expensive; how many guesses they need depends on your password.
+
+**What guessing costs.** Rough estimates of the average time to find the
+master password (half of all possibilities), for an attacker who has the vault
+file but **not** the key file:
+
+| Master password | Standard, 1 GPU | Standard, 1,000 GPUs | High, 1,000 GPUs | Maximum, 1,000 GPUs |
+|---|---|---|---|---|
+| Made up by a person, just passes CakePass's check (zxcvbn score 3: about 10⁸ to 10¹⁰ guesses) | 1 day to 3 months | 1 minute to 2 hours | 5 minutes to 8 hours | 20 minutes to 1.5 days |
+| 4 random words (52 bits) | 45,000 years | 45 years | 175 years | 700 years |
+| 5 random words (65 bits) | 350 million years | 350,000 years | 1.4 million years | 5.6 million years |
+| 6 random words (78 bits) | 3 × 10¹² years | 3 × 10⁹ years | 10¹⁰ years | 4 × 10¹⁰ years |
+| 7 random words (90 bits; what the setup wizard makes) | 2 × 10¹⁶ years | 2 × 10¹³ years | 8 × 10¹³ years | 3 × 10¹⁴ years |
+| Any of these **plus a key file** they do not have | not feasible: they must also guess 256 random bits | | | |
+
+(The universe is about 1.4 × 10¹⁰ years old.)
+
+Assumptions, so you can redo the sums with your own fears:
+
+- **Speed per GPU**: one top consumer graphics card of today (about 1 TB/s of
+  memory bandwidth) at the theoretical limit of that bandwidth, because Argon2id
+  is limited by memory traffic: roughly 1,300 guesses per second at Standard,
+  330 at High, 80 at Maximum. Real cracking tools are usually slower; we take
+  the number that favours the attacker. Hardware gets faster every year, and
+  special chips or a nation state can have far more than 1,000 GPUs (renting
+  1,000 GPUs costs very roughly $1,000–2,000 per hour). Divide the times by the
+  factor you fear.
+- **Random words**: chosen at random by the generator from the EFF list of
+  7,776 words (12.9 bits per word), and the attacker knows the list and the
+  number of words. Words you pick yourself are much weaker.
+- **A person's own password**: zxcvbn's estimate of how many guesses a smart
+  attacker needs; a guess, not a guarantee.
+- These are **rough estimates, not promises**. They say nothing about malware
+  on your computer, which simply reads your password as you type it.
+
+What this means: with a password you made up yourself, the level matters a
+lot and may still not be enough against a determined attacker. With **6 or 7
+random words** the time is astronomical at any level. With a **key file**
+kept apart from the vault, a stolen vault file alone is useless.
+
+**Quantum computers.** A large quantum computer could in theory search keys
+faster with Grover's algorithm, which halves the effective key length: a
+256-bit key then still offers about 128 bits, far out of reach. Everything in
+CakePass is symmetric or hash-based (XChaCha20-Poly1305, HKDF-SHA256, BLAKE2b,
+Argon2id); there is no RSA, no elliptic curves, no public-key cryptography at
+all, so the quantum attacks that break those (Shor's algorithm) have nothing to
+attack. Grover could in theory also speed up password guessing, but only by
+running Argon2id with gigabytes of memory *inside* a quantum computer, which
+nobody knows how to build; even then a 7-word passphrase would take about 2⁴⁵
+Argon2id runs one after another.
+
+**What no encryption protects against** (out of scope): malware or a keylogger
+on your computer, someone with root access, an "evil maid" (someone who changes
+your computer or CakePass while you are away and catches your password later),
+being forced to give your password ("rubber-hose"), and someone watching you
+type.
+
+**What we deliberately did *not* do, and why:**
+
+- **Stack several ciphers** (AES + Twofish + Serpent, as some tools offer): the
+  cipher is not the weak link, and every extra layer is extra code that can
+  have mistakes. One well-studied 256-bit authenticated cipher is enough.
+- **Our own cryptography**, or extra "hash it a million times" steps: home-made
+  constructions are where real-world cryptography breaks. Argon2id is the tool
+  designed for making guessing slow; we only turn its dials.
+- **A key-commitment tag.** XChaCha20-Poly1305 is not "key-committing": in
+  theory someone can build a ciphertext that decrypts under two different keys.
+  That matters for systems where many keys meet one ciphertext (messages for
+  several recipients, servers that try many keys); for one local file under one
+  key it gives an attacker nothing, and the header is already authenticated.
+- **Hardware keys** (a YubiKey/FIDO2 key or the TPM): a genuinely stronger
+  second factor, but it needs extra libraries and hardware. The key file is the
+  simple, auditable version; a hardware key is an idea for later.
+
+---
+
 ## Security review and remaining risks
 
 The project went through its own code and found and fixed these problems:
@@ -642,13 +1407,19 @@ The project went through its own code and found and fixed these problems:
 | If the clipboard-clearing helper could not start, the password stayed on the clipboard indefinitely | The clipboard is then cleared immediately |
 | A malicious import or CSV file could contain control characters (ANSI escapes) that manipulate your terminal | They are rejected or replaced on import, and made visible as `\u{1b}` with `--show` |
 | A password you displayed could stay behind in Rust's output buffer | Secrets are written to the terminal without a buffer, and wiped |
+| In the line mode, an SSH private key was the one secret typed without being hidden (every other secret field already was) | `add --type ssh-key` and `edit --password` now hide it too, the same way as a password |
+| A copied secret could end up in a clipboard-history tool's own, unencrypted history (noticed via Omarchy's own history on the maintainer's machine) | CakePass marks what it copies as sensitive (`wl-copy --sensitive`); tools that respect that hint skip it (see "Remaining risks" below for the ones that don't) |
 
 Also checked and fine: no option accepts a password as an argument (there is a
 test for it). A wrong password and a tampered file give the same message on
 purpose. Comparisons of secrets are constant-time. Broken files give clean errors
 (tested with every bit flip and every truncated length). Symlinks are refused.
 Writing from two terminals at the same time is detected. `cargo audit` reports
-no known vulnerabilities.
+no known vulnerabilities (147 dependencies checked against the RustSec
+database). Beyond that automated scan, the project ran a dedicated round
+specifically trying to extract a secret from a running vault, its files, its
+processes and its clipboard (the two rows above came out of that); nothing
+else turned up.
 
 **Remaining risks** (no password manager can fully protect against these):
 
@@ -660,21 +1431,28 @@ no known vulnerabilities.
    one field you just asked for, and Argon2's working memory are not locked and
    can end up in swap. Hibernation writes all memory to disk. Use encrypted swap
    (LUKS), zram, or no swap at all.
-3. **The clipboard.** While a password is on the clipboard (max. 20 s), any
+3. **The clipboard.** While a password is on the clipboard (20 s by default,
+   at most 300 s with `clip-time`), any
    program in your session can read it. Clipboard managers (KDE Klipper,
    cliphist, CopyQ, GNOME extensions) sometimes keep a **history** that `cakepass`
-   cannot clear. Turn that off or exclude cakepass.
+   cannot clear. Under Wayland `cakepass` marks what it copies as sensitive
+   (`wl-copy --sensitive`, wl-clipboard 2.3 or newer), so histories that respect
+   that hint (`x-kde-passwordManagerHint`), such as KDE Klipper and Omarchy's
+   clipboard history, do not store it. Others may, and under X11 (`xclip`)
+   there is no such hint: turn their history off or exclude cakepass.
 4. **Onlookers and scrollback.** `--show` puts the password on your screen and
    in your terminal's scrollback. On the screen (arrow keys) a revealed password
    is visible for up to 10 seconds; it is not in the scrollback, but a terminal
    recorder (`script`, asciinema) or a terminal emulator's own memory can still
    hold what was shown.
 5. **A weak or leaked master password.** Everything stands or falls with your
-   master password. Do not use it anywhere else.
+   master password (unless you use a key file). Do not use it anywhere else.
+   See [How strong is this, really?](#how-strong-is-this-really).
 6. **Physical access to a running, unlocked computer.** Lock your screen.
    Cold-boot and DMA attacks are out of scope.
 7. **Backups with an old password** still open with that old password (see
-   [Backups](#backups)).
+   [Backups](#backups)); copies made before you turned on a key file open
+   without it.
 8. **File system.** On SSDs and copy-on-write systems (btrfs, ZFS), old
    unencrypted data (such as a CSV export) may remain. Disk encryption (LUKS) solves that.
 9. **Root and the operating system.** Root can do anything, including `ptrace`
@@ -691,6 +1469,12 @@ no known vulnerabilities.
     nothing hidden.
 12. **This code has not been externally audited.** The cryptography comes from
     audited crates, but the glue around it was written and reviewed only by the project itself.
+13. **A lost key file** locks you out for good, and a key file kept next to the
+    vault protects nothing. Keep a copy, and keep it apart from the vault.
+14. **Argon2's working memory** (up to 1 GiB) is not locked against swapping
+    (it is far above the usual `mlock` limit). It is wiped when Argon2 is done,
+    but while it runs it can be swapped; it holds values derived from your
+    password, not the password itself. Use encrypted swap or none.
 
 ---
 
@@ -698,9 +1482,18 @@ no known vulnerabilities.
 
 | Message | Fix |
 |---|---|
+| `command not found: cakepass` | The folder you installed to is not in your `PATH`. Do step 5 of the [install](#step-5-install-the-program) and open a new terminal. |
+| `error: linker \`cc\` not found` while building | Install a compiler: `sudo apt install build-essential` (Debian family), `sudo dnf install gcc` (Fedora), `sudo zypper install gcc` (openSUSE). |
+| `requires rustc 1.88` or `edition2024 is required` while building | Your Rust is too old. Install a current one with `rustup` ([step 2](#step-2-install-rust-version-188-or-newer)) and open a new terminal. |
+| The build is killed or `out of memory` | Build with fewer jobs: `cargo build --release --locked -j 1`, or close other programs. A small board may need swap space. |
+| `CakePass needs about … MiB of free memory` | The security level does not fit in free memory right now. Close programs, or use the Standard level (`cakepass security --level standard`). |
 | `no clipboard tool found` | Install `wl-clipboard` (Wayland) or `xclip` (X11), or use `--show`. Check with `cakepass info`. |
 | `Memory could not be locked (mlock)` | Your limit is too low. See it with `ulimit -l` (Arch default: 8192 KiB, plenty). You can raise it in `/etc/security/limits.conf`. |
-| `wrong master password, or the file is damaged` | Check Caps Lock and your keyboard layout. Is the file damaged? Try `--vault …/vault.enc.bak` or a backup. |
+| `wrong master password, or the file is damaged` | Check Caps Lock and your keyboard layout. Is the file damaged? Try `--vault …/vault.enc.bak` or a backup. With a key file: also check that it is the right key file (the message names the one used). |
+| `this vault needs its key file …` | Plug in the USB stick, then give the path once: `cakepass config set keyfile /path/to/cakepass.key` (or `--keyfile PATH`, `CAKEPASS_KEYFILE`). |
+| `the key file … cannot be read: it does not exist` | The USB stick is not plugged in or not mounted (`lsblk`), or it is mounted somewhere else; fix the path with `cakepass config set keyfile …`. |
+| `… was made with a security level that this computer cannot run at the moment` | Not enough free memory for the vault's Argon2 level. Close programs (a browser) and try again, or open it on a bigger computer and lower the level there with `cakepass security --level high`. |
+| `file version 3 is not supported` | An older CakePass (0.3 or earlier) met a vault saved by 0.4. Update CakePass (`cakepass --update`). |
 | `the vault was changed by another cakepass process` | You had two terminals open. Run the command again. Your other change was kept. |
 | `is a symbolic link` | Give the real path with `--vault`. |
 | After Ctrl+C you cannot see what you type | Type `reset` and press Enter. |
@@ -715,60 +1508,22 @@ no known vulnerabilities.
 
 ---
 
-## Manual install
-
-```bash
-sudo pacman -S --needed base-devel git rust
-sudo pacman -S wl-clipboard   # Wayland (GNOME, KDE Plasma 6, Sway, Hyprland)
-sudo pacman -S xclip          # X11 (i3, Xfce, older sessions)
-```
-
-Wondering whether you use Wayland? Type `echo $XDG_SESSION_TYPE`.
-
-```bash
-git clone https://github.com/Justcakenl/passcode-manager-cli-.git ~/cakepass
-```
-
-(For a private fork, clone with an SSH key or the GitHub CLI instead:
-`gh auth login && gh repo clone <you>/<fork> ~/cakepass`.)
-
-Then:
-
-```bash
-cd ~/cakepass/packaging/arch
-makepkg -si
-cakepass setup
-```
-
-> **Keep the folder `~/cakepass`.** `cakepass --update` uses it to fetch new versions.
-
-`makepkg` builds the program, runs all tests and then installs `/usr/bin/cakepass`,
-shell completions for bash, zsh and fish, and the daily update check (off by
-default). Skip the tests (faster): `makepkg -si --nocheck`.
-
-Only build, without installing:
-
-```bash
-cargo build --release --locked
-./target/release/cakepass --help
-```
-
----
-
 ## For later
 
 Deliberately not in this version (fewer features that work well beats many):
 
 - Mouse support and themes for the screen (arrow keys); an export button there.
-- **TOTP** (two-factor codes, like Google Authenticator).
+- A hardware key (YubiKey/FIDO2 `hmac-secret`) as a second factor, next to the key file.
+- Turning a key file on or off from the screen (arrow keys); for now that is
+  `cakepass security`.
 - **Browser integration** (auto-fill).
-- More item types (bank card, SSH keys, file attachments).
+- File attachments.
+- Using a stored SSH key directly (an `ssh-agent`), and Steam Guard / HOTP codes.
 - Editing notes in `$EDITOR`. Not in yet on purpose: an editor writes temporary
   files unencrypted to disk.
 - A translated interface and a non-English diceware word list.
-- Configurable clipboard time and a `--clip-time` option.
-- Telling clipboard managers that it is a password (`x-kde-passwordManagerHint`).
-- Man page (`clap_mangen`).
+- Telling clipboard managers under X11 that it is a password: `xclip` cannot
+  offer `x-kde-passwordManagerHint` next to the text (Wayland does this already).
 - Synchronization between devices (e.g. via Syncthing, with conflict detection).
 
 ---
@@ -781,11 +1536,14 @@ src/
 ├── lib.rs          core library (reusable for a TUI/GUI)
 ├── error.rs        error messages (without secrets)
 ├── secure_mem.rs   wiping allocator, mlock, core dumps off      ← critical
-├── crypto.rs       Argon2id + HKDF + XChaCha20-Poly1305         ← critical
+├── crypto.rs       Argon2id + HKDF + XChaCha20-Poly1305, levels ← critical
+├── keyfile.rs      key files: reading, creating                 ← critical
 ├── format.rs       file format with version header              ← critical
 ├── storage.rs      XDG path, atomic write, backup, lock         ← critical
 ├── vault.rs        items and operations; content encrypted      ← critical
+├── totp.rs         two-factor codes (RFC 6238) and base32       ← critical
 ├── generator.rs    passwords and passphrases                    ← critical
+├── audit.rs        password health check (prints names only)    ← critical
 ├── import.rs       CSV import
 ├── clipboard.rs    clipboard with automatic clearing            ← critical
 ├── main.rs         start: allocator + process hardening
@@ -795,9 +1553,11 @@ src/
                     update.rs: cakepass --update (via git and makepkg)
                     tui/: the screen with arrow keys (no extra libraries)  ← critical
 build.rs            records which git commit it was built from
-tests/              integration tests (cli, tui in a pseudo-terminal, update, installer)
-packaging/arch/     PKGBUILD + systemd timer for the update check
-assets/             EFF word list (CC BY 3.0 US)
+tests/              integration tests (cli, tui in a pseudo-terminal, update, installer, packaging)
+packaging/arch/     PKGBUILD (from this checkout) + systemd timer for the update check
+packaging/aur/      PKGBUILD + .SRCINFO of the AUR package cakepass-git
+packaging/cakepass.desktop   desktop entry (application launchers)
+assets/             EFF word list (CC BY 3.0 US); icons/: the app icon
 docs/DESIGN.md      design and threat analysis
 PROGRESS.md         progress and what still needs testing on Arch
 ```
@@ -818,6 +1578,8 @@ security problem? Do **not** open a public issue; follow [SECURITY.md](SECURITY.
 
 ## License
 
-CakePass is made by the **cake-cli** project and released under the MIT license,
+CakePass is released under the MIT license,
 see [`LICENSE`](LICENSE). The EFF word list is under CC BY 3.0 US,
-see [`assets/README.md`](assets/README.md).
+see [`assets/README.md`](assets/README.md). The CakePass name and logo
+are **not** covered by the MIT license — they identify this project
+specifically; see [`assets/icons/README.md`](assets/icons/README.md).

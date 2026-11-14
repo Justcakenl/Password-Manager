@@ -90,8 +90,10 @@ impl World {
         write_script(
             &bin.join("makepkg"),
             &format!(
-                "echo \"makepkg $* | $(pwd)\" >> '{log}'\n[ -f '{f}' ] && exit 1\nexit 0",
-                f = w.path("makepkg-fails").display()
+                "echo \"makepkg $* | $(pwd)\" >> '{log}'\n[ -f '{f}' ] && exit 1\n\
+                 mkdir -p '{apps}' && echo '[Desktop Entry]' > '{apps}/cakepass.desktop'\nexit 0",
+                f = w.path("makepkg-fails").display(),
+                apps = w.desktop_file().parent().unwrap().display()
             ),
         );
         write_script(
@@ -110,6 +112,11 @@ impl World {
 
     fn source_dir(&self) -> PathBuf {
         self.path("home/cakepass")
+    }
+
+    /// The desktop entry the (fake) package installs, under a fake root.
+    fn desktop_file(&self) -> PathBuf {
+        self.path("root/usr/share/applications/cakepass.desktop")
     }
 
     fn calls(&self) -> Vec<String> {
@@ -135,6 +142,7 @@ impl World {
             .env("NO_COLOR", "1")
             .env("CAKEPASS_REPO_URL", self.path("origin.git"))
             .env("CAKEPASS_INSTALL_ALLOW_ROOT", "1")
+            .env("CAKEPASS_TEST_ROOT", self.path("root"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env_remove("WAYLAND_DISPLAY")
@@ -354,6 +362,105 @@ fn setup_runs_in_a_real_terminal() {
     assert!(out.status.success(), "{text}\n{}", String::from_utf8_lossy(&out.stderr));
     assert!(w.calls().iter().any(|c| c == "cakepass setup ran"), "setup should run: {:?}", w.calls());
     assert!(text.contains("A short wizard follows"), "{text}");
+}
+
+impl World {
+    /// Run `bash install.sh ARGS` in a real terminal (`script`), typing `typed`
+    /// at it. `None` when `script` is not installed.
+    fn in_terminal(&self, args: &str, typed: &str) -> Option<(bool, String)> {
+        Command::new("script").arg("--version").output().ok()?;
+        fs::write(self.path("install.sh"), SCRIPT).unwrap();
+        fs::write(self.path("typed.txt"), typed).unwrap();
+        let line = format!("bash {} {args}", self.path("install.sh").display());
+        let out = self
+            .command(&[])
+            .args(["-c", &format!("script -qefc '{line}' /dev/null")])
+            .stdin(fs::File::open(self.path("typed.txt")).unwrap())
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        Some((out.status.success(), text))
+    }
+
+    fn removed_the_desktop_file(&self) -> bool {
+        let rm = format!("sudo rm -f {}", self.desktop_file().display());
+        self.calls().contains(&rm) && !self.desktop_file().exists()
+    }
+}
+
+#[test]
+fn the_desktop_shortcut_is_kept_by_default() {
+    // --yes keeps it without asking.
+    let w = World::new();
+    let r = w.piped(&["--yes", "--no-setup"], &[]);
+    assert!(r.ok(), "{}", r.stderr());
+    assert!(w.desktop_file().exists());
+    assert!(r.stdout().contains("CakePass is in your application menu"), "{}", r.stdout());
+    assert!(!r.stdout().contains("Add CakePass to your application menu"), "no question with --yes");
+    assert!(w.calls().iter().all(|c| !c.starts_with("sudo rm")), "{:?}", w.calls());
+    // Without a terminal to ask (e.g. a script or CI) it is kept too.
+    if Command::new("setsid").arg("--version").output().is_ok() {
+        let w = World::new();
+        let out = w
+            .command(&[])
+            .args(["-c", "setsid -w bash -s -- --no-setup"])
+            .stdin(
+                fs::File::open({
+                    fs::write(w.path("install.sh"), SCRIPT).unwrap();
+                    w.path("install.sh")
+                })
+                .unwrap(),
+            )
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{text}\n{}", String::from_utf8_lossy(&out.stderr));
+        assert!(!text.contains("[Y/n]") && w.desktop_file().exists(), "{text}");
+    }
+}
+
+#[test]
+fn no_shortcut_removes_the_desktop_entry() {
+    let w = World::new();
+    let r = w.piped(&["--yes", "--no-setup", "--no-shortcut"], &[]);
+    assert!(r.ok(), "{}", r.stderr());
+    assert!(w.removed_the_desktop_file(), "{:?}", w.calls());
+    assert!(r.stdout().contains("no application menu entry"), "{}", r.stdout());
+    assert!(r.stdout().contains("NoExtract = usr/share/applications/cakepass.desktop"), "{}", r.stdout());
+    // Removed after the package was installed, never before.
+    let calls = w.calls();
+    let built = calls.iter().position(|c| c.starts_with("makepkg")).unwrap();
+    let rm = calls.iter().position(|c| c.starts_with("sudo rm -f")).unwrap();
+    assert!(built < rm, "{calls:?}");
+}
+
+#[test]
+fn the_shortcut_question_in_a_real_terminal() {
+    // Enter: yes (the default).
+    let w = World::new();
+    let Some((ok, text)) = w.in_terminal("--no-setup", "\n") else { return };
+    assert!(ok, "{text}");
+    assert!(text.contains("Add CakePass to your application menu (a desktop icon)? [Y/n]"), "{text}");
+    assert!(w.desktop_file().exists() && text.contains("CakePass is in your application menu"), "{text}");
+    // n: removed.
+    let w = World::new();
+    let (ok, text) = w.in_terminal("--no-setup", "n\n").unwrap();
+    assert!(ok, "{text}");
+    assert!(w.removed_the_desktop_file(), "{text}\n{:?}", w.calls());
+    // --no-shortcut does not ask.
+    let w = World::new();
+    let (ok, text) = w.in_terminal("--no-setup --no-shortcut", "").unwrap();
+    assert!(ok, "{text}");
+    assert!(!text.contains("[Y/n]") && w.removed_the_desktop_file(), "{text}");
+}
+
+#[test]
+fn uninstall_removes_the_whole_package_with_its_desktop_entry() {
+    // `pacman -R` removes every file of the package, the desktop entry too;
+    // the installer does not need to know whether it was kept.
+    let w = World::new();
+    assert!(w.piped(&["--uninstall", "--yes", "--no-shortcut"], &[]).ok());
+    assert_eq!(w.calls(), ["sudo pacman -R --noconfirm cakepass", "pacman -R --noconfirm cakepass"]);
 }
 
 #[test]

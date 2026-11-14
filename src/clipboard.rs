@@ -3,14 +3,23 @@
 //! SECURITY-CRITICAL.
 //! - The secret goes to `wl-copy`/`xclip` via stdin, never as an argument
 //!   (arguments are visible to everyone in `ps`).
-//! - After copying, a detached helper process (`cakepass __clipboard-clear <tool>`)
-//!   clears the clipboard after 20 seconds. The helper only receives a
+//! - After copying, a detached helper process
+//!   (`cakepass __clipboard-clear <tool> <seconds>`) clears the clipboard
+//!   after the chosen time (20 seconds unless changed with
+//!   `cakepass config set clip-time`). The helper only receives a
 //!   BLAKE2b hash of the secret (via stdin) and only clears the clipboard if
 //!   it still holds that secret (compared in constant time). This way we never
 //!   wipe something you copied yourself afterwards.
+//! - The time is always kept inside [`CLEAR_SECS_RANGE`]: a damaged setting
+//!   or a bad helper argument can never mean "never" or "after a day".
+//! - With `wl-copy` (wl-clipboard 2.3 or newer) the content is marked
+//!   sensitive (`--sensitive`, the `x-kde-passwordManagerHint` type), so
+//!   clipboard histories that follow that convention (KDE Klipper, Omarchy's
+//!   clipboard history) do not store it.
 //!
-//! Limitation: clipboard managers (Klipper, cliphist, etc.) may keep their own
-//! history; we cannot clear that.
+//! Limitation: clipboard managers that ignore that hint (and anything under
+//! X11 with `xclip`, which cannot set it) may keep their own history; we
+//! cannot clear that.
 
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
@@ -23,8 +32,21 @@ use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 
-/// The clipboard is cleared after this many seconds.
-pub const CLEAR_AFTER_SECS: u64 = 20;
+/// The clipboard is cleared after this many seconds, unless set otherwise.
+pub const DEFAULT_CLEAR_SECS: u64 = 20;
+/// Allowed clearing times, in seconds: at least long enough to paste, at
+/// most five minutes (a secret should not sit on the clipboard for long).
+pub const CLEAR_SECS_RANGE: std::ops::RangeInclusive<u64> = 5..=300;
+
+/// Parse a clearing time in seconds (`None` outside [`CLEAR_SECS_RANGE`]).
+pub fn parse_clear_secs(s: &str) -> Option<u64> {
+    s.trim().parse::<u64>().ok().filter(|n| CLEAR_SECS_RANGE.contains(n))
+}
+
+/// Keep a clearing time inside [`CLEAR_SECS_RANGE`].
+pub fn clamp_clear_secs(secs: u64) -> u64 {
+    secs.clamp(*CLEAR_SECS_RANGE.start(), *CLEAR_SECS_RANGE.end())
+}
 /// First argument with which `cakepass` starts as the clearing helper process.
 pub const HELPER_ARG: &str = "__clipboard-clear";
 const HASH_LEN: usize = 64;
@@ -85,16 +107,54 @@ fn hash(data: &[u8]) -> [u8; HASH_LEN] {
     Blake2b512::digest(data).into()
 }
 
-/// Put `secret` on the clipboard.
-pub fn copy(tool: Tool, secret: &[u8]) -> Result<()> {
-    let mut cmd = match tool {
-        Tool::WlCopy => Command::new("wl-copy"),
+/// The command that puts a secret on the clipboard (the secret itself goes
+/// in via stdin). With `sensitive`, `wl-copy` also offers the
+/// `x-kde-passwordManagerHint` type, the convention that tells clipboard
+/// histories (KDE Klipper, Omarchy's, and others) not to store the entry.
+/// Everything CakePass copies is a secret, so this is not an option.
+/// `xclip` has no way to offer that type next to the text: it advertises a
+/// single target (`-t`), and making that the hint would leave other programs
+/// without a text type to paste.
+fn copy_command(tool: Tool, sensitive: bool) -> Command {
+    match tool {
+        Tool::WlCopy => {
+            let mut c = Command::new("wl-copy");
+            if sensitive {
+                c.arg("--sensitive");
+            }
+            c
+        }
         Tool::Xclip => {
             let mut c = Command::new("xclip");
             c.args(["-selection", "clipboard", "-in"]);
             c
         }
-    };
+    }
+}
+
+/// Whether the installed `wl-copy` knows `--sensitive` (wl-clipboard 2.3 and
+/// newer). Older versions refuse an unknown option, so passing it blindly
+/// would make copying fail there; they just copy without the hint. Asked
+/// once per process.
+fn wl_copy_is_sensitive_aware() -> bool {
+    static AWARE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AWARE.get_or_init(|| {
+        Command::new("wl-copy")
+            .arg("--help")
+            .stdin(Stdio::null())
+            .output()
+            .is_ok_and(|o| help_mentions_sensitive(&o.stdout) || help_mentions_sensitive(&o.stderr))
+    })
+}
+
+fn help_mentions_sensitive(help: &[u8]) -> bool {
+    help.windows(b"--sensitive".len()).any(|w| w == b"--sensitive")
+}
+
+/// Put `secret` on the clipboard, marked as sensitive where the tool can.
+pub fn copy(tool: Tool, secret: &[u8]) -> Result<()> {
+    let sensitive = tool == Tool::WlCopy && wl_copy_is_sensitive_aware();
+    let mut cmd = copy_command(tool, sensitive);
     let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
     {
         let mut stdin = child.stdin.take().expect("stdin is piped");
@@ -128,9 +188,9 @@ fn paste(tool: Tool) -> Result<Zeroizing<Vec<u8>>> {
     Ok(out)
 }
 
-/// Empty the clipboard.
-pub fn clear(tool: Tool) -> Result<()> {
-    let mut cmd = match tool {
+/// The command that empties the clipboard (no content, so no hint).
+fn clear_command(tool: Tool) -> Command {
+    match tool {
         Tool::WlCopy => {
             let mut c = Command::new("wl-copy");
             c.arg("--clear");
@@ -141,27 +201,36 @@ pub fn clear(tool: Tool) -> Result<()> {
             c.args(["-selection", "clipboard", "-in"]);
             c
         }
-    };
+    }
+}
+
+/// Empty the clipboard.
+pub fn clear(tool: Tool) -> Result<()> {
+    let mut cmd = clear_command(tool);
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status()?;
     Ok(())
 }
 
-/// Copy `secret` and start the helper process that clears it after 20 s.
-pub fn copy_with_auto_clear(tool: Tool, secret: &[u8]) -> Result<()> {
+/// Copy `secret` and start the helper process that clears it after
+/// `seconds` (kept inside [`CLEAR_SECS_RANGE`]).
+pub fn copy_with_auto_clear(tool: Tool, secret: &[u8], seconds: u64) -> Result<()> {
     copy(tool, secret)?;
     // If starting the clearing helper fails we clear immediately:
     // a password must never stay on the clipboard indefinitely.
-    if let Err(e) = spawn_clear_helper(tool, &hash(secret)) {
+    if let Err(e) = spawn_clear_helper(tool, &hash(secret), clamp_clear_secs(seconds)) {
         let _ = clear(tool);
         return Err(e);
     }
     Ok(())
 }
 
-fn spawn_clear_helper(tool: Tool, digest: &[u8; HASH_LEN]) -> Result<()> {
+fn spawn_clear_helper(tool: Tool, digest: &[u8; HASH_LEN], seconds: u64) -> Result<()> {
     let exe = std::env::current_exe()?;
     let mut cmd = Command::new(exe);
-    cmd.args([HELPER_ARG, tool.name()]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
+    cmd.args([HELPER_ARG, tool.name(), &seconds.to_string()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     // SAFETY: setsid() is async-signal-safe and touches no memory of the
     // parent. A session of its own makes sure Ctrl+C or closing the
     // terminal does not stop the helper process.
@@ -180,6 +249,7 @@ fn spawn_clear_helper(tool: Tool, digest: &[u8; HASH_LEN]) -> Result<()> {
 }
 
 /// Main routine of the hidden helper process `cakepass __clipboard-clear`.
+/// `seconds` is kept inside [`CLEAR_SECS_RANGE`].
 pub fn run_clear_helper(tool: Tool, seconds: u64) -> Result<()> {
     // SAFETY: ignoring a signal is always safe.
     unsafe {
@@ -187,7 +257,7 @@ pub fn run_clear_helper(tool: Tool, seconds: u64) -> Result<()> {
     }
     let mut expected = [0u8; HASH_LEN];
     std::io::stdin().read_exact(&mut expected)?;
-    std::thread::sleep(Duration::from_secs(seconds));
+    std::thread::sleep(Duration::from_secs(clamp_clear_secs(seconds)));
     let still_ours = match paste(tool) {
         Ok(current) => bool::from(hash(&current).ct_eq(&expected)),
         // Cannot check? Then we clear to be safe.
@@ -223,5 +293,52 @@ mod tests {
         assert!(!bool::from(hash(b"abc").ct_eq(&hash(b"abd"))));
         assert_eq!(Tool::from_name("xclip"), Some(Tool::Xclip));
         assert_eq!(Tool::from_name("something"), None);
+    }
+
+    fn args(cmd: &Command) -> Vec<&str> {
+        cmd.get_args().map(|a| a.to_str().unwrap()).collect()
+    }
+
+    #[test]
+    fn copied_secrets_are_marked_sensitive_for_wl_copy() {
+        let c = copy_command(Tool::WlCopy, true);
+        assert_eq!(c.get_program(), "wl-copy");
+        assert_eq!(args(&c), ["--sensitive"]);
+        // An older wl-copy (without the option) copies without the hint.
+        assert!(args(&copy_command(Tool::WlCopy, false)).is_empty());
+        // xclip cannot offer the hint next to the text.
+        assert_eq!(args(&copy_command(Tool::Xclip, true)), ["-selection", "clipboard", "-in"]);
+        // Clearing copies nothing, so it carries no hint.
+        assert_eq!(args(&clear_command(Tool::WlCopy)), ["--clear"]);
+        assert_eq!(args(&clear_command(Tool::Xclip)), ["-selection", "clipboard", "-in"]);
+        // The secret is never an argument.
+        for cmd in [copy_command(Tool::WlCopy, true), copy_command(Tool::Xclip, true)] {
+            assert!(args(&cmd).iter().all(|a| a.starts_with('-') || *a == "clipboard"));
+        }
+    }
+
+    #[test]
+    fn knowing_whether_wl_copy_has_sensitive() {
+        // From `wl-copy --help` of wl-clipboard 2.3.0; an older one lacks the first line.
+        assert!(help_mentions_sensitive(b"\t    --sensitive\t\tHint that the content is sensitive.\n"));
+        assert!(!help_mentions_sensitive(
+            b"\t-o, --paste-once\tOnly serve one paste request and then exit.\n\t-c, --clear\t\tInstead of copying, clear the clipboard.\n"
+        ));
+        assert!(!help_mentions_sensitive(b""));
+    }
+
+    #[test]
+    fn clearing_time_bounds() {
+        assert!(CLEAR_SECS_RANGE.contains(&DEFAULT_CLEAR_SECS));
+        assert_eq!(parse_clear_secs("20"), Some(20));
+        assert_eq!(parse_clear_secs(" 5 "), Some(5));
+        assert_eq!(parse_clear_secs("300"), Some(300));
+        for bad in ["0", "4", "301", "86400", "-5", "", "abc", "1e3", "20s"] {
+            assert_eq!(parse_clear_secs(bad), None, "{bad:?}");
+        }
+        // Whatever reaches the helper: never "never", never "after a day".
+        assert_eq!(clamp_clear_secs(0), 5);
+        assert_eq!(clamp_clear_secs(u64::MAX), 300);
+        assert_eq!(clamp_clear_secs(45), 45);
     }
 }

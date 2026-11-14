@@ -6,10 +6,14 @@
 //! decrypted for the visible rows only, per frame, and wiped right after.
 //! The details decrypt the selected item only. Password, API key and notes
 //! are shown as dots until revealed (and see `app.rs` for the hiding).
+//! The 2FA tab shows the current TOTP code of every visible row, like an
+//! authenticator app: computed per frame from the decrypted secret, which
+//! is wiped right after, and never kept. Under a dialog they are dots.
 
 use std::time::{Duration, Instant};
 
 use cakepass::vault::Kind;
+use zeroize::Zeroizing;
 
 use super::super::super::{commands, ui};
 use super::super::app::{App, CopyWhat, Exit, Modal, Screen, Tab};
@@ -71,12 +75,14 @@ impl App {
         if new != self.sel {
             self.sel = new;
             self.reveal_until = None;
+            self.totp_shown = None;
         }
     }
 
     fn set_tab(&mut self, tab: Tab) {
         self.tab = tab;
         self.reveal_until = None;
+        self.totp_shown = None;
         self.refilter();
     }
 
@@ -92,6 +98,15 @@ impl App {
             }
         };
         let page = self.list_rows() as isize;
+        // On the 2FA tab the code is what you came for: Enter and c copy it,
+        // and a (or n) adds a code to an item.
+        if !self.searching && self.tab == Tab::TwoFactor {
+            match key {
+                Key::Enter | Key::Char('c') => return self.copy_field(CopyWhat::Totp),
+                Key::Char('a' | 'n') => return self.ask_add_totp(),
+                _ => {}
+            }
+        }
         if self.searching {
             match key {
                 Key::Esc => {
@@ -104,8 +119,8 @@ impl App {
                 Key::Down => self.move_sel(1),
                 Key::PageUp => self.move_sel(-page),
                 Key::PageDown => self.move_sel(page),
-                Key::Tab => self.set_tab(self.tab.step(1)),
-                Key::BackTab => self.set_tab(self.tab.step(-1)),
+                Key::Tab => self.set_tab(self.next_tab(1)),
+                Key::BackTab => self.set_tab(self.next_tab(-1)),
                 Key::F(1) => self.modals.push(Modal::Help(Help::new(HelpPage::Main))),
                 k => {
                     if self.search.edit(k) {
@@ -123,12 +138,15 @@ impl App {
             Key::PageDown => self.move_sel(page),
             Key::Home => self.move_sel(isize::MIN / 2),
             Key::End => self.move_sel(isize::MAX / 2),
-            Key::Left | Key::BackTab => self.set_tab(self.tab.step(-1)),
-            Key::Right | Key::Tab => self.set_tab(self.tab.step(1)),
+            Key::Left | Key::BackTab => self.set_tab(self.next_tab(-1)),
+            Key::Right | Key::Tab => self.set_tab(self.next_tab(1)),
             Key::Enter | Key::Char('v') => self.toggle_reveal(),
             Key::Char('c') => self.copy_field(CopyWhat::Secret),
             Key::Char('u') => self.copy_field(CopyWhat::Username),
             Key::Char('m') => self.copy_field(CopyWhat::Email),
+            Key::Char('t') => self.copy_field(CopyWhat::Totp),
+            Key::Char('p') => self.copy_field(CopyWhat::PublicKey),
+            Key::Char('f') => self.toggle_favorite(),
             Key::Char('a' | 'n') => self.open_add(),
             Key::Char('e') => self.open_edit(),
             Key::Delete | Key::Char('d') => self.ask_delete(),
@@ -138,7 +156,7 @@ impl App {
             }
             Key::Char('s') => {
                 self.reveal_until = None;
-                self.screen = Screen::Settings(Settings::load());
+                self.screen = Screen::Settings(Settings::load(self.uv.kdf()));
             }
             Key::Char('l') => self.exit = Some(Exit::Lock),
             Key::Char('q') => self.exit = Some(Exit::Quit),
@@ -232,6 +250,19 @@ impl App {
         g.print(1, h - 2, w - 2, &status, Style::DIM);
         if self.searching {
             vec![("type", "to search"), ("↑↓", "choose"), ("Enter", "done"), ("Esc", "clear"), ("F1", "help")]
+        } else if self.tab == Tab::TwoFactor {
+            vec![
+                ("↑↓", "move"),
+                ("Enter", "copy code"),
+                ("a", "add code"),
+                ("q", "quit"),
+                ("e", "edit"),
+                ("/", "search"),
+                ("v", "show password"),
+                ("←→", "type"),
+                ("l", "lock"),
+                ("?", "help"),
+            ]
         } else {
             // In order of importance: what does not fit is left out.
             vec![
@@ -254,15 +285,23 @@ impl App {
 
     fn draw_tabs(&self, g: &mut Grid) {
         let w = g.width();
-        let count = |t: Tab| self.entries().iter().filter(|e| t.kind().is_none_or(|k| e.kind() == k)).count();
-        let labels: Vec<String> = Tab::ALL.iter().map(|&t| format!("{} {}", t.label(), count(t))).collect();
-        let full_w: usize = labels.iter().map(|l| str_width(l) + 3).sum();
-        let with_counts = full_w + 18 <= w as usize;
+        let count = |t: Tab| self.entries().iter().filter(|e| t.shows(e)).count();
+        // Only the tabs that are not hidden (and always "All").
+        let tabs: Vec<Tab> = Tab::ALL.into_iter().filter(|&t| self.tab_shown(t)).collect();
+        let labels: Vec<String> = tabs.iter().map(|&t| format!("{} {}", t.label(), count(t))).collect();
+        // With counts if they fit (with a narrower gap when needed), else without.
+        // 12 columns stay free for the search: "/ search" and its margins.
+        let needed = |gap: usize| labels.iter().map(|l| str_width(l) + gap).sum::<usize>() + 12;
+        let (with_counts, gap) = match (needed(3) <= w as usize, needed(2) <= w as usize) {
+            (true, _) => (true, 3),
+            (false, true) => (true, 2),
+            (false, false) => (false, 3),
+        };
         let mut x = 1;
-        for (i, &t) in Tab::ALL.iter().enumerate() {
+        for (i, &t) in tabs.iter().enumerate() {
             let label = if with_counts { labels[i].as_str() } else { t.label() };
             let style = if t == self.tab { Style::ACTIVE_TAB } else { Style::DIM };
-            x += g.print(x, 1, w.saturating_sub(x), label, style) + 3;
+            x += g.print(x, 1, w.saturating_sub(x), label, style) + gap;
         }
         // The search field on the right.
         let sw = (w.saturating_sub(x + 1)).min(32);
@@ -290,6 +329,11 @@ impl App {
                 ["Your vault is empty.", "Press a to add your first item, or g to generate a password."]
             } else if !self.search.is_empty() {
                 ["No items match.", "Esc clears the search."]
+            } else if self.tab == Tab::TwoFactor {
+                [
+                    "No two-factor codes yet.",
+                    "Press a to add one: choose the account, then paste the secret the site shows under its QR code.",
+                ]
             } else {
                 ["Nothing of this type yet.", "Press a to add one, or ← → for the other types."]
             };
@@ -309,6 +353,23 @@ impl App {
         }
         top = top.min(self.view.len().saturating_sub(rows));
         self.top.set(top);
+        if self.tab == Tab::TwoFactor {
+            self.draw_code_rows(g, r, top, rows);
+        } else {
+            self.draw_item_rows(g, r, top, rows);
+        }
+        if self.view.len() > rows {
+            let pos = format!(" {}/{} ", self.sel + 1, self.view.len());
+            let pw = pos.len() as u16;
+            let y = if lay.stacked { lay.detail.y - 1 } else { lay.frame.bottom() - 1 };
+            if r.w > pw + 2 {
+                g.print(r.x + r.w - pw - 1, y, pw, &pos, Style::BORDER);
+            }
+        }
+    }
+
+    /// The normal list rows: type, name, username (or host) and tags.
+    fn draw_item_rows(&self, g: &mut Grid, r: Rect, top: usize, rows: usize) {
         let avail = r.w.saturating_sub(9);
         let (nw, uw) = if avail >= 46 {
             (avail * 2 / 5, avail * 3 / 10)
@@ -330,12 +391,18 @@ impl App {
             }
             let kind_style = if selected { base } else { Style::kind(e.kind()) };
             g.print(r.x + 2, y, 6, kind_tag(e.kind()), kind_style);
+            if e.is_favorite() {
+                // Right before the name (the type tag is at most 5 wide).
+                g.set(r.x + 8, y, g.g.star, if selected { base } else { Style::ACCENT_BOLD });
+            }
             let mut x = r.x + 9;
             g.print(x, y, nw, e.name(), if selected { base } else { Style::BOLD });
             x += nw + 1;
             if uw > 0 && e.kind() != Kind::Note {
                 // Decrypted for this row only; wiped when `user` goes out of scope.
-                if let Ok(user) = e.username(key) {
+                // (An SSH key has no username: its host is shown instead.)
+                let user = if e.kind() == Kind::SshKey { e.url(key) } else { e.username(key) };
+                if let Ok(user) = user {
                     g.print(x, y, uw, &user, if selected { base } else { Style::PLAIN });
                 }
             }
@@ -344,12 +411,68 @@ impl App {
                 g.print(x, y, tw, &e.tags().join(", "), if selected { base } else { Style::DIM });
             }
         }
-        if self.view.len() > rows {
-            let pos = format!(" {}/{} ", self.sel + 1, self.view.len());
-            let pw = pos.len() as u16;
-            let y = if lay.stacked { lay.detail.y - 1 } else { lay.frame.bottom() - 1 };
-            if r.w > pw + 2 {
-                g.print(r.x + r.w - pw - 1, y, pw, &pos, Style::BORDER);
+    }
+
+    /// The rows of the 2FA tab: name, account and the current code with the
+    /// seconds it is still valid, like an authenticator app. The codes are
+    /// computed for this frame and wiped when each row is drawn; while a
+    /// dialog is open they are dots (secrets show only on the bare screen).
+    fn draw_code_rows(&self, g: &mut Grid, r: Rect, top: usize, rows: usize) {
+        let visible = self.modals.is_empty();
+        let now = (self.clock)();
+        // "1234 5678" and " 30s" on the right; the rest for name and account.
+        let cw: u16 = 14;
+        let avail = r.w.saturating_sub(cw + 4);
+        let (nw, uw) = if avail >= 22 { (avail * 3 / 5, avail - avail * 3 / 5 - 1) } else { (avail, 0) };
+        let key = self.key();
+        for (row, &idx) in self.view.iter().enumerate().skip(top).take(rows) {
+            let e = &self.entries()[idx];
+            let y = r.y + (row - top) as u16;
+            let selected = row == self.sel;
+            let base = if selected { Style::SELECTED } else { Style::PLAIN };
+            g.fill(Rect::new(r.x, y, r.w, 1), base);
+            if selected {
+                g.set(r.x, y, g.g.marker, base);
+            }
+            if e.is_favorite() {
+                g.set(r.x + 1, y, g.g.star, if selected { base } else { Style::ACCENT_BOLD });
+            }
+            let mut x = r.x + 2;
+            g.print(x, y, nw, e.name(), if selected { base } else { Style::BOLD });
+            x += nw + 1;
+            if uw > 0 {
+                // Decrypted for this row only; wiped when `user` goes out of scope.
+                let user = if e.kind() == Kind::SshKey { e.url(key) } else { e.username(key) };
+                if let Ok(user) = user {
+                    g.print(x, y, uw, &user, if selected { base } else { Style::DIM });
+                }
+            }
+            let cx = r.x + r.w.saturating_sub(cw + 1);
+            match e.totp(key) {
+                Ok(Some(t)) => {
+                    let code = t.code_at(now);
+                    let left = code.seconds_left();
+                    let text = if visible {
+                        grouped(code.as_str())
+                    } else {
+                        let dots: String = std::iter::repeat_n(g.g.dot, code.as_str().len()).collect();
+                        grouped(&dots)
+                    };
+                    g.print(cx, y, 9, &text, if selected { base } else { Style::ACCENT_BOLD });
+                    // The last seconds in red, as a warning to wait for the next code.
+                    let style = match (selected, left <= 5) {
+                        (true, _) => base,
+                        (false, true) => Style::ERROR,
+                        (false, false) => Style::DIM,
+                    };
+                    let secs = format!("{left:>3}s");
+                    g.print(cx + 9, y, cw - 9, &secs, style);
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    // Short enough for the code column ("(cannot decrypt)" is not).
+                    g.print(cx, y, cw, "can't decrypt", if selected { base } else { Style::ERROR });
+                }
             }
         }
     }
@@ -372,35 +495,86 @@ impl App {
         };
         row(g, &mut y, "Name", e.name(), Style::BOLD);
         row(g, &mut y, "Type", kind.label(), Style::kind(kind));
-        if kind != Kind::Note {
-            let (user_l, url_l) =
-                if kind == Kind::Api { ("Account/ID", "Service") } else { ("Username", "URL") };
-            for (label, value) in [(user_l, e.username(key)), ("E-mail", e.email(key)), (url_l, e.url(key))] {
-                match value {
-                    Ok(v) if v.is_empty() => row(g, &mut y, label, "-", Style::DIM),
-                    Ok(v) => row(g, &mut y, label, &v, Style::PLAIN),
-                    Err(_) => row(g, &mut y, label, "(cannot decrypt)", Style::ERROR),
-                }
+        let plain_fields: Vec<(&str, cakepass::Result<Zeroizing<String>>)> = match kind {
+            Kind::Login => vec![("Username", e.username(key)), ("E-mail", e.email(key)), ("URL", e.url(key))],
+            Kind::Api => {
+                vec![("Account/ID", e.username(key)), ("E-mail", e.email(key)), ("Service", e.url(key))]
+            }
+            Kind::Card => vec![("Cardholder", e.username(key)), ("Expiry", e.expiry(key))],
+            Kind::SshKey => vec![("Host", e.url(key)), ("Public key", e.public_key(key))],
+            Kind::Identity => {
+                vec![("Full name", e.username(key)), ("Issued by", e.url(key)), ("Expiry", e.expiry(key))]
+            }
+            Kind::Note => Vec::new(),
+        };
+        for (label, value) in plain_fields {
+            match value {
+                Ok(v) if v.is_empty() => row(g, &mut y, label, "-", Style::DIM),
+                Ok(v) => row(g, &mut y, label, &v, Style::PLAIN),
+                Err(_) => row(g, &mut y, label, "(cannot decrypt)", Style::ERROR),
             }
         }
         let tags = e.tags().join(", ");
         row(g, &mut y, "Tags", if tags.is_empty() { "-" } else { &tags }, Style::PLAIN);
         row(g, &mut y, "Modified", &ui::format_time(e.modified()), Style::DIM);
+        if e.has_totp() {
+            // Computed for this frame from the decrypted secret; nothing is kept.
+            // The 2FA tab always shows it, with the next code too (unless a
+            // dialog is open: secrets only show on the bare screen).
+            let code_tab = self.tab == Tab::TwoFactor && self.modals.is_empty();
+            let shown = code_tab || self.totp_shown.as_ref().is_some_and(|(n, _)| n == e.name());
+            match (shown, e.totp(key)) {
+                (true, Ok(Some(t))) => {
+                    let now = (self.clock)();
+                    let code = t.code_at(now);
+                    let text = Zeroizing::new(format!("{}  ({} s)", code.as_str(), code.seconds_left()));
+                    row(g, &mut y, "TOTP", &text, Style::ACCENT_BOLD);
+                    if code_tab {
+                        let next = t.code_at(now + code.seconds_left());
+                        row(g, &mut y, "Next code", next.as_str(), Style::PLAIN);
+                    }
+                }
+                (_, Err(_)) => row(g, &mut y, "TOTP", "(cannot decrypt)", Style::ERROR),
+                _ => row(g, &mut y, "TOTP", "set (t shows it)", Style::DIM),
+            }
+        }
 
         let revealed = self.reveal_until.is_some();
         let dots: String = std::iter::repeat_n(g.g.dot, 8).collect();
         let footer_rows = u16::from(bottom.saturating_sub(y) > 3);
-        if kind != Kind::Note {
-            let label = commands::capitalize(kind.secret_label());
-            if !e.has_password() {
-                row(g, &mut y, &label, "-", Style::DIM);
+        // One hidden line: dots, or the value while revealed.
+        let hidden_row = |g: &mut Grid,
+                          y: &mut u16,
+                          label: &str,
+                          has: bool,
+                          value: &dyn Fn() -> cakepass::Result<Zeroizing<String>>| {
+            if !has {
+                row(g, y, label, "-", Style::DIM);
             } else if revealed {
+                match value() {
+                    Ok(v) => row(g, y, label, &v, Style::ACCENT_BOLD),
+                    Err(_) => row(g, y, label, "(cannot decrypt)", Style::ERROR),
+                }
+            } else {
+                row(g, y, label, &dots, Style::DIM);
+            }
+        };
+        if kind == Kind::SshKey {
+            hidden_row(g, &mut y, "Passphrase", e.has_passphrase(), &|| e.passphrase(key));
+            let label = commands::capitalize(kind.secret_label());
+            if e.has_password() && revealed {
                 match e.password(key) {
-                    Ok(pw) => row(g, &mut y, &label, &pw, Style::ACCENT_BOLD),
+                    Ok(pk) => draw_block(g, r, &mut y, &label, &pk, bottom - footer_rows),
                     Err(_) => row(g, &mut y, &label, "(cannot decrypt)", Style::ERROR),
                 }
             } else {
-                row(g, &mut y, &label, &dots, Style::DIM);
+                hidden_row(g, &mut y, &label, e.has_password(), &|| e.password(key));
+            }
+        } else if kind != Kind::Note {
+            let label = commands::capitalize(kind.secret_label());
+            hidden_row(g, &mut y, &label, e.has_password(), &|| e.password(key));
+            if kind == Kind::Card {
+                hidden_row(g, &mut y, "CVV", e.has_cvv(), &|| e.cvv(key));
             }
         }
         let notes_label = if kind == Kind::Note { "Content" } else { "Notes" };
@@ -418,8 +592,10 @@ impl App {
             let hint = match self.reveal_until {
                 Some(t) => {
                     let left = t.saturating_duration_since(now).as_secs_f32().ceil() as u64;
-                    format!("Hides in {left} s · Enter hides")
+                    let key = if self.tab == Tab::TwoFactor { "v" } else { "Enter" };
+                    format!("Hides in {left} s · {key} hides")
                 }
+                None if self.tab == Tab::TwoFactor => "Enter copies · a adds a code".to_string(),
                 None if e.has_secret() || e.has_notes() => "Enter shows · c copies · e edits".to_string(),
                 None => "e edits · d deletes".to_string(),
             };
@@ -449,11 +625,28 @@ fn draw_block(g: &mut Grid, r: Rect, y: &mut u16, label: &str, text: &str, botto
     }
 }
 
+/// A code in two halves for reading it, "287 082" (like authenticator
+/// apps). Wiped when dropped.
+fn grouped(code: &str) -> Zeroizing<String> {
+    let mid = code.chars().count() / 2;
+    let mut out = Zeroizing::new(String::with_capacity(code.len() + 1));
+    for (i, c) in code.chars().enumerate() {
+        if i == mid && mid > 0 {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// The short type label in the list.
 fn kind_tag(kind: Kind) -> &'static str {
     match kind {
         Kind::Login => "login",
         Kind::Api => "api",
         Kind::Note => "note",
+        Kind::Card => "card",
+        Kind::SshKey => "ssh",
+        Kind::Identity => "id",
     }
 }

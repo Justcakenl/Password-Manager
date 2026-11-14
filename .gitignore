@@ -47,3 +47,9 @@ secrets*
 /packaging/arch/pkg/
 /packaging/arch/*.pkg.tar*
 /packaging/arch/*.log
+# makepkg output of the AUR PKGBUILD (including its own clone of the repo)
+/packaging/aur/src/
+/packaging/aur/pkg/
+/packaging/aur/cakepass-git/
+/packaging/aur/*.pkg.tar*
+/packaging/aur/*.log

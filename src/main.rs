@@ -16,14 +16,16 @@ fn main() -> ExitCode {
     let hardening = cakepass::secure_mem::harden_process();
     cli::commands::set_hardening(hardening);
 
-    // Hidden helper process that clears the clipboard after 20 s (see clipboard.rs).
-    // Deliberately kept outside clap, so it does not show up in help or completions.
+    // Hidden helper process that clears the clipboard after the chosen time
+    // (see clipboard.rs). Deliberately kept outside clap, so it does not show
+    // up in help or completions. A missing or bad time means the default.
     let mut argv = std::env::args_os();
     if argv.nth(1).as_deref() == Some(std::ffi::OsStr::new(cakepass::clipboard::HELPER_ARG)) {
-        let tool = argv.next().and_then(|t| cakepass::clipboard::Tool::from_name(&t.to_string_lossy()));
-        return match tool
-            .map(|t| cakepass::clipboard::run_clear_helper(t, cakepass::clipboard::CLEAR_AFTER_SECS))
-        {
+        use cakepass::clipboard::{DEFAULT_CLEAR_SECS, Tool, parse_clear_secs, run_clear_helper};
+        let tool = argv.next().and_then(|t| Tool::from_name(&t.to_string_lossy()));
+        let secs =
+            argv.next().and_then(|s| parse_clear_secs(&s.to_string_lossy())).unwrap_or(DEFAULT_CLEAR_SECS);
+        return match tool.map(|t| run_clear_helper(t, secs)) {
             Some(Ok(())) => ExitCode::SUCCESS,
             _ => ExitCode::FAILURE,
         };
