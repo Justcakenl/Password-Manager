@@ -1,6 +1,6 @@
 # Progress: `cakepass` (CakePass)
 
-Last updated: step 16a (escape codes from an imported export); content schema still 5.
+Last updated: step 16a, plus the version on the opening screen; content schema still 5.
 Repository: `Justcakenl/Password-Manager`, branch `main` (private until it is made public).
 
 ## Maintainer checklist: manual testing on a real Arch machine
@@ -495,6 +495,12 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   `\u{c}x\r` (fails without the fix). The item name in the message is cut
   to 40 characters (reviewer-sonnet). README: an export from an older
   CakePass with a value today's setters refuse is refused as a whole.
+
+- [x] **The version on the opening screen** (`da8f98c` cherry-picked onto
+  this `main`; approved by reviewer-sonnet and security-opus). The version
+  (`logo::VERSION`, "v0.4.0") shows small (dim) and centered under the
+  tagline (login, setup, `cakepass logo`), and in the title bar as
+  "v0.4.0 · locks in 4:59" when the subtitle keeps its full width.
 
 ## Still to do
 

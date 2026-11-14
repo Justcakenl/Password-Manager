@@ -27,6 +27,13 @@ pub fn title_bar(g: &mut Grid, app: &App, subtitle: &str, now: Instant) {
     if w > n + rw + 2 {
         g.print(n + 1, 0, w - n - rw - 2, subtitle, Style::BOLD);
         g.print(w - rw, 0, rw, &right, Style::DIM);
+        // The version, small, before the lock time: only when the subtitle
+        // keeps its full width (it is the more useful of the two).
+        let version = format!("{} · ", crate::cli::logo::VERSION);
+        let vw = str_width(&version) as u16;
+        if w >= n + 1 + str_width(subtitle) as u16 + 2 + vw + rw {
+            g.print(w - rw - vw, 0, vw, &version, Style::DIM);
+        }
     }
 }
 
