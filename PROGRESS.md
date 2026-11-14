@@ -451,6 +451,17 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
 
 ## Still to do
 
+- [ ] **Step 16 (next, before any new feature): two open findings from
+  security-opus's audit**, each on its own branch from `main` after
+  `feature/2fa-tab` is merged:
+  1. `cakepass list` can print terminal escape codes that came in with
+     an import (item names/fields from a CSV or export): control
+     characters must be neutralised wherever such text is printed.
+  2. The `vault.enc.pre-update-<time>` copies made by `cakepass --update`
+     still open with the OLD master password after it is changed: decide
+     with security review whether a password change re-keys, deletes or
+     at least clearly warns about them (as it already does for `.bak`).
+  Work out the exact scope from the audit text before implementing.
 - [x] **Pushed `main` to GitHub** (now at `f91117e`). HTTPS with a GitHub
   account password no longer works (GitHub rejects it: use a token or
   SSH); an SSH key for this account already existed on this machine and
