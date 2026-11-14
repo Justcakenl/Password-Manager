@@ -172,8 +172,8 @@ impl Totp {
             return Err(Error::InvalidInput(format!(
                 "the TOTP secret is too short ({n} bytes, about {} characters; real ones have at least {} \
                  characters): check that you pasted the right text",
-                n * 8 / 5,
-                MIN_NEW_SECRET_BYTES * 8 / 5
+                (n * 8).div_ceil(5),
+                (MIN_NEW_SECRET_BYTES * 8).div_ceil(5)
             )));
         }
         Ok(totp)
@@ -413,7 +413,8 @@ mod tests {
         // Text typed in the wrong field: valid base32, 4 bytes.
         assert!(Totp::parse("line one").is_ok(), "parse stays lenient for stored secrets");
         let Err(Error::InvalidInput(m)) = Totp::parse_new("line one") else { panic!("accepted") };
-        assert!(m.contains("too short (4 bytes, about 6 characters") && m.contains("16 characters"), "{m}");
+        // 4 bytes = 32 bits; a base32 character carries 5, so this rounds up to 7.
+        assert!(m.contains("too short (4 bytes, about 7 characters") && m.contains("16 characters"), "{m}");
         assert!(!m.to_lowercase().contains("line"), "the input is never in the message: {m}");
         // In an otpauth:// link as well.
         assert!(Totp::parse_new("otpauth://totp/x?secret=MZXW6YQ").is_err());

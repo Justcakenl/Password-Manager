@@ -440,7 +440,9 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   of 10 bytes for new secrets (see "Decisions made"), tests in
   `totp.rs`, the form test and `tests/cli.rs`; the README says the 2FA tab
   shows every code and the next one at once; a code that cannot be
-  decrypted says "can't decrypt" (fits the code column).
+  decrypted says "can't decrypt" (fits the code column). security-opus's
+  last nit is fixed too: the too-short message rounds the base32 count up
+  ((n * 8).div_ceil(5)), so 4 bytes reads "about 7 characters", not 6.
   Not in this step: scanning a QR code (no camera or image code in
   CakePass; if ever, via an outside tool such as `zbarimg` and `parse_new`,
   never an image library inside the process), a warning for short secrets
