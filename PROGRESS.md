@@ -583,6 +583,15 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   `passwd_rekeys_the_pre_update_copies_and_offers_to_delete_older_ones`
   (piped: listed, not deleted; in a pseudo-terminal: yes deletes it); the
   screen's `change_the_master_password` checks the copy and the dialog.
+  After review (reviewer-sonnet, security-opus): `backup_before_update`
+  takes the write lock (a copy is never made half-way through a save or
+  while a re-key converts the copies); `seal_like` writes a version 1 copy
+  in the current layout (version 1 used the master key itself for the
+  file), version 2 stays 2 unless a key file needs 3; in `report_copies`
+  Ctrl+C or a read error at "Overwrite and delete them now?" counts as no
+  and the remaining messages still follow. Tests:
+  `a_version_1_copy_is_re_keyed_into_the_current_layout`,
+  `a_version_2_copy_given_a_key_file_moves_to_the_current_layout`.
 
 - [x] **Pushed `main` to GitHub** (now at `f91117e`). HTTPS with a GitHub
   account password no longer works (GitHub rejects it: use a token or

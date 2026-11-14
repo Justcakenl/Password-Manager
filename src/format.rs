@@ -356,10 +356,11 @@ pub fn written_with(data: &[u8], vk: &VaultKey) -> Result<bool> {
 
 /// Encrypt in the layout of `version` (so an older CakePass can still read
 /// a copy it made), unless that layout cannot say what `vk` needs: a key
-/// file needs version 3 or newer. Then, or for an unknown version, the
-/// current layout is used.
+/// file needs version 3 or newer. Then, for an unknown version, and for
+/// version 1 (it used the master key itself for the file, so it is never
+/// written again), the current layout is used.
 pub fn seal_like(vk: &VaultKey, version: u16, plaintext: &[u8]) -> Result<Vec<u8>> {
-    let usable = (1..=CURRENT_VERSION).contains(&version) && !(version < 3 && vk.key_file);
+    let usable = (2..=CURRENT_VERSION).contains(&version) && !(version < 3 && vk.key_file);
     seal_version(vk, if usable { version } else { CURRENT_VERSION }, plaintext)
 }
 
