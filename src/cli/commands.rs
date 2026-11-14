@@ -572,7 +572,7 @@ fn ask_private_key() -> Result<Zeroizing<String>> {
 fn ask_totp() -> Result<Zeroizing<String>> {
     let s =
         ask_hidden("TOTP secret or otpauth:// link (hidden input; pasting is fine): ", Some("TOTP secret"))?;
-    Totp::parse(&s)?;
+    Totp::parse_new(&s)?;
     Ok(s)
 }
 

@@ -1518,6 +1518,10 @@ fn totp_codes_for_two_factor_authentication() {
     k.run(&["edit", "github", "--totp"], &format!("{PW}\nnot base32!\n"))
         .failure()
         .stderr(contains("not valid base32"));
+    // Valid base32 but far too short for a real secret (text pasted by mistake).
+    k.run(&["edit", "github", "--totp"], &format!("{PW}\nline one\n"))
+        .failure()
+        .stderr(contains("too short").and(contains("line one").not()));
     k.run(&["edit", "github", "--totp"], &format!("{PW}\n\n"))
         .failure()
         .stderr(contains("must not be empty"));

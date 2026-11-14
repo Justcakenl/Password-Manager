@@ -470,7 +470,8 @@ impl App {
                 }
                 Ok(None) => {}
                 Err(_) => {
-                    g.print(cx, y, cw, "(cannot decrypt)", if selected { base } else { Style::ERROR });
+                    // Short enough for the code column ("(cannot decrypt)" is not).
+                    g.print(cx, y, cw, "can't decrypt", if selected { base } else { Style::ERROR });
                 }
             }
         }

@@ -436,8 +436,15 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   text), three form walks updated for the extra field
   (`add_a_login_with_the_form`, `add_an_api_key_by_pasting_and_a_note`,
   `tests/tui.rs` `add_an_item_with_the_arrow_keys_then_read_it_with_the_cli`).
+  Then (after both approved `cadca72`): `Totp::parse_new` with a minimum
+  of 10 bytes for new secrets (see "Decisions made"), tests in
+  `totp.rs`, the form test and `tests/cli.rs`; the README says the 2FA tab
+  shows every code and the next one at once; a code that cannot be
+  decrypted says "can't decrypt" (fits the code column).
   Not in this step: scanning a QR code (no camera or image code in
-  CakePass), and a login with only a 2FA code and no password (a login
+  CakePass; if ever, via an outside tool such as `zbarimg` and `parse_new`,
+  never an image library inside the process), a warning for short secrets
+  on CSV import, and a login with only a 2FA code and no password (a login
   still needs a password, as before).
 
 ## Still to do
@@ -702,16 +709,20 @@ See `docs/DESIGN.md` for the explanation. In short:
   editing work the same way for it as for every other field, and the
   "add a code" picker only has to choose the item. The picker lists names
   only, never a decrypted field.
-- Found while testing: `Totp::parse` accepts very short base32 text (e.g.
-  "line one" = 4 bytes), so text typed into the wrong field can pass as a
-  secret. Not changed here (a minimum length could break short secrets
-  already stored or imported); raised with security review.
+- `Totp::parse` accepts very short base32 text ("line one" = 4 bytes), so
+  text typed into the wrong field could pass as a secret. Agreed with the
+  security and code review: a strict `Totp::parse_new` for secrets entered
+  now (the screen's form, `add/edit --totp`) refuses fewer than 10 bytes
+  (80 bits, 16 characters; RFC 4226 asks 128, but the site chooses and 80
+  is the least seen in practice), with a message that gives only lengths.
+  Reading, computing codes, merging and CSV import keep the lenient
+  `parse`, so secrets already stored or imported go on working.
 
 ## Checks (latest step)
 
 | Check | Result |
 |---|---|
-| `cargo test` (step 15) | 326 passed (121 library, 94 CLI/screen unit, 63 CLI integration, 14 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
+| `cargo test` (step 15) | 327 passed (122 library, 94 CLI/screen unit, 63 CLI integration, 14 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
 | Setting up 2FA in a real terminal (step 15, tmux, throwaway vault) | 2FA tab → `a` → typed "disc" → Enter → Discord's edit form on the 2FA secret → typed a test secret → Ctrl+S: "Item 'Discord' updated. Its 2FA code is in the 2FA tab." and its code in the list; at 80×24 and 60×16 |
 | 2FA tab in a real terminal (step 15, debug build in tmux, throwaway vault from a CSV with RFC test seeds) | at 100×28, 80×24 and 60×16: 6- and 8-digit codes with seconds left, next code in the details, Enter copies ("The TOTP code copied (wl-copy)"); all eight tabs with counts at 80 columns |
 | Known-answer tests (step 12) | TOTP: RFC 6238 Appendix B (SHA-1, SHA-256, SHA-512, all six times) and RFC 4226 Appendix D; base32: RFC 4648 section 10; cross-checked with an independent Python implementation (`hmac`/`hashlib`/`base64`) |

@@ -1007,6 +1007,13 @@ fn add_a_2fa_code_from_the_2fa_tab() {
     assert_eq!(f.focus, Field::Totp);
     let s = t.screen();
     assert!(s.contains("Not a valid 2FA secret") && !s.contains("zq-not"), "{s}");
+    // Valid base32 but too short for a real secret: refused too.
+    t.key(Key::Ctrl('u'));
+    t.paste("line one");
+    t.key(Key::Ctrl('s'));
+    assert!(matches!(t.app.screen, Screen::Form(_)), "not saved");
+    let s = t.screen();
+    assert!(s.contains("too short") && !s.contains("line one"), "{s}");
     // The secret as sites show it: in groups, lower case.
     t.key(Key::Ctrl('u'));
     t.paste("gezd gnbv gy3t qojq gezd gnbv gy3t qojq");

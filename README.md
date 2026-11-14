@@ -822,6 +822,10 @@ Valid for:       8 more second(s)
   Authenticator, Google Authenticator): all your codes in one list, each with
   the seconds it is still valid, and the next code in the details. Enter (or
   `c`) copies the selected code. ← from All goes there in one key press.
+  On that tab **every code is on screen at once** (as in a phone app), and
+  the next code too: mind who can see your screen. Each code works for one
+  period only and is useless without the password; under a dialog (help,
+  delete, …) the codes turn into dots, and the screen locks itself as usual.
 - **Setting it up in the screen**, no commands needed:
   1. On the site, turn on two-factor login with an authenticator app. Below
      the QR code, click "can't scan it?" (or similar) and copy the secret.

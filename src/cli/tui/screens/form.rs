@@ -557,7 +557,7 @@ impl App {
         // The 2FA secret is checked here too (the library checks it again), so
         // the form can say what is wrong and put the cursor on it.
         let totp_set = (f.adding() || f.is_changed(Field::Totp)) && !f.totp.as_str().trim().is_empty();
-        if totp_set && let Err(e) = Totp::parse(f.totp.as_str()) {
+        if totp_set && let Err(e) = Totp::parse_new(f.totp.as_str()) {
             f.focus = Field::Totp;
             return Err(Some(format!(
                 "Not a valid 2FA secret: {}. Paste the text under the QR code (\"can't scan it?\") or the otpauth:// link.",
