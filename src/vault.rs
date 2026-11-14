@@ -512,6 +512,67 @@ impl Entry {
         Ok(())
     }
 
+    /// Check an item from another vault (an import) with the same rules as
+    /// the setters: names, tags and one-line fields without control
+    /// characters, notes with only newlines and tabs, nothing too long, a
+    /// usable TOTP secret. The error names the item and the field, never the
+    /// value. (Our own vault is not checked like this when it is opened, so
+    /// a vault that already holds such a value still opens; the output side
+    /// makes those values harmless.)
+    pub fn check_incoming(&self, key: &ItemKey) -> Result<()> {
+        // The name, cut short: it comes from the file and may be long.
+        let mut shown: String =
+            self.name.chars().take(40).map(|c| if c.is_control() { '?' } else { c }).collect();
+        if self.name.chars().count() > 40 {
+            shown.push('…');
+        }
+        let bad = |what: &str| {
+            Error::InvalidInput(format!(
+                "the file to import is not valid: item '{shown}' has an invalid {what}; nothing was imported"
+            ))
+        };
+        if validate_name(&self.name).ok() != Some(self.name.as_str()) {
+            return Err(bad("name"));
+        }
+        if !self.tags.iter().all(|t| validate_line("", t).is_ok_and(|v| !v.is_empty() && v == t)) {
+            return Err(bad("tag"));
+        }
+        let lines = [
+            ("username", self.username(key)?),
+            ("e-mail address", self.email(key)?),
+            ("URL", self.url(key)?),
+            ("expiry date", self.expiry(key)?),
+            ("security code", self.cvv(key)?),
+            ("public key", self.public_key(key)?),
+        ];
+        // Exactly as a setter would have stored it: `validate_line` trims
+        // first, and whitespace control characters (\r, \x0b, \x0c, U+0085)
+        // at either end would otherwise never be looked at. The setters and
+        // the migrations store trimmed values, so a real export always passes.
+        for (what, v) in &lines {
+            if !validate_line(what, v).is_ok_and(|t| t == v.as_str()) {
+                return Err(bad(what));
+            }
+        }
+        let notes = self.notes(key)?;
+        if notes.len() > MAX_FIELD_LEN || notes.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
+            return Err(bad("notes field"));
+        }
+        if self.password(key)?.len() > MAX_FIELD_LEN {
+            return Err(bad("password or key"));
+        }
+        if self.passphrase(key)?.len() > MAX_FIELD_LEN {
+            return Err(bad("passphrase"));
+        }
+        let totp = self.totp_secret(key)?;
+        let totp_ok = validate_line("", &totp)
+            .is_ok_and(|v| v == totp.as_str() && (v.is_empty() || Totp::parse(v).is_ok()));
+        if !totp_ok {
+            return Err(bad("TOTP secret"));
+        }
+        Ok(())
+    }
+
     /// The decrypted content of every encrypted field, in a fixed order (to
     /// compare two items when merging). Wiped when dropped.
     fn contents(&self, key: &ItemKey) -> Result<[Zeroizing<String>; 10]> {
@@ -944,7 +1005,31 @@ impl Vault {
     /// Add items from another vault (encrypted with `other_key`).
     /// An identical item is skipped; on a name clash the new item gets a
     /// sequence number. Returns (added, skipped).
+    ///
+    /// SECURITY: an import file is not ours. Its fields never went through
+    /// our setters, so a crafted file could carry terminal escape codes (or
+    /// anything else the setters refuse) into the vault. Every item is
+    /// checked with the setters' rules first ([`Entry::check_incoming`]); one
+    /// bad item refuses the whole import, and the vault is left as it was
+    /// (also when something fails half-way).
     pub fn merge(&mut self, other: &Vault, other_key: &ItemKey, my_key: &ItemKey) -> Result<(usize, usize)> {
+        for e in other.entries() {
+            e.check_incoming(other_key)?;
+        }
+        let before = self.entries.clone();
+        let result = self.merge_checked(other, other_key, my_key);
+        if result.is_err() {
+            self.entries = before;
+        }
+        result
+    }
+
+    fn merge_checked(
+        &mut self,
+        other: &Vault,
+        other_key: &ItemKey,
+        my_key: &ItemKey,
+    ) -> Result<(usize, usize)> {
         let mut added = 0;
         let mut skipped = 0;
         for e in other.entries() {
@@ -1619,11 +1704,82 @@ mod tests {
         for f in &fields {
             let mut other = item.clone();
             let field = f.strip_suffix("_sealed").unwrap();
-            other["entries"][0][f] = k1.seal(field, "different").unwrap().into();
+            // (A TOTP secret must still be one: imports are checked.)
+            let v = if field == "totp_secret" { "JBSWY3DPEHPK3PXP" } else { "different" };
+            other["entries"][0][f] = k1.seal(field, v).unwrap().into();
             let (other, _) = load(&other).unwrap();
             let (mut mine, _) = load(&item).unwrap();
             assert_eq!(mine.merge(&other, &k1, &k1).unwrap(), (1, 0), "{f} is not compared when merging");
         }
+    }
+
+    #[test]
+    fn an_import_with_escape_codes_or_other_bad_values_is_refused_whole() {
+        let k = test_item_key(1);
+        let item = full_item_json(&k);
+        let load = |v: &serde_json::Value| Vault::from_json(v.to_string().as_bytes(), &k).unwrap().0;
+        let osc = "\u{1b}]0;X\u{7}";
+        // Fields that may hold any character: a password, key or passphrase.
+        let free = ["password_sealed", "passphrase_sealed"];
+        for f in sealed_fields(&item) {
+            let field = f.strip_suffix("_sealed").unwrap();
+            let mut bad = item.clone();
+            bad["entries"][0]["name"] = "Evil".into();
+            bad["entries"][0][&f] = k.seal(field, &format!("x{osc}")).unwrap().into();
+            let mut mine = load(&item);
+            let before = mine.to_json().unwrap().as_slice().to_vec();
+            let result = mine.merge(&load(&bad), &k, &k);
+            if free.contains(&f.as_str()) {
+                assert_eq!(result.unwrap(), (1, 0), "{f} may hold any character");
+                continue;
+            }
+            let Err(Error::InvalidInput(m)) = result else { panic!("{f} with an escape code was imported") };
+            assert!(m.contains("item 'Evil'") && m.contains("nothing was imported"), "{m}");
+            assert!(!m.contains('\u{1b}') && !m.contains("0;X"), "the value is not in the message: {m}");
+            assert_eq!(mine.to_json().unwrap().as_slice(), &before[..], "{f}: the vault is unchanged");
+        }
+        // Whitespace control characters at either end, which trimming would
+        // hide from the check (one-line fields and the TOTP secret).
+        let line_fields = ["username", "email", "url", "expiry", "cvv", "public_key", "totp_secret"];
+        for field in line_fields {
+            let v = if field == "totp_secret" { TOTP_SEED } else { "x" };
+            for edge in [format!("{v}\r"), format!("\u{85}{v}"), format!("\u{b}{v}"), format!("\u{c}{v}\r")] {
+                let mut bad = item.clone();
+                bad["entries"][0]["name"] = "Evil".into();
+                bad["entries"][0][format!("{field}_sealed")] = k.seal(field, &edge).unwrap().into();
+                let result = load(&item).merge(&load(&bad), &k, &k);
+                assert!(matches!(result, Err(Error::InvalidInput(_))), "{field}: {edge:?} was imported");
+            }
+        }
+        // A long name is cut short in the message.
+        let mut bad = item.clone();
+        bad["entries"][0]["name"] = "N".repeat(150).into();
+        bad["entries"][0]["url_sealed"] = k.seal("url", osc).unwrap().into();
+        let Err(Error::InvalidInput(m)) = load(&item).merge(&load(&bad), &k, &k) else { panic!("imported") };
+        assert!(m.contains(&format!("'{}…'", "N".repeat(40))) && !m.contains(&"N".repeat(41)), "{m}");
+        // Too long, and a TOTP secret that is not one.
+        let long = "x".repeat(MAX_FIELD_LEN + 1);
+        for (f, v) in [
+            ("password_sealed", long.as_str()),
+            ("notes_sealed", &long),
+            ("totp_secret_sealed", "not base32!"),
+        ] {
+            let mut bad = item.clone();
+            bad["entries"][0]["name"] = "Evil".into();
+            bad["entries"][0][f] = k.seal(f.strip_suffix("_sealed").unwrap(), v).unwrap().into();
+            assert!(matches!(load(&item).merge(&load(&bad), &k, &k), Err(Error::InvalidInput(_))), "{f}");
+        }
+        // All or nothing: a good item before a bad one is not added either.
+        let mut two = item.clone();
+        let mut evil = item["entries"][0].clone();
+        evil["name"] = "Zz evil".into();
+        evil["url_sealed"] = k.seal("url", "\u{1b}]52;c;SGk=\u{7}").unwrap().into();
+        let mut good = item["entries"][0].clone();
+        good["name"] = "Aa good".into();
+        two["entries"] = serde_json::json!([good, evil]);
+        let mut mine = Vault::new();
+        assert!(mine.merge(&load(&two), &k, &k).is_err());
+        assert!(mine.is_empty(), "the good item was not added on its own");
     }
 
     fn identity(k: &ItemKey) -> Entry {

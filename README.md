@@ -1079,6 +1079,16 @@ cakepass import /path/to/cakepass-export.cakepass               # on the other c
 The export file is encrypted with a password of its own (the same strong
 encryption as the vault).
 
+An import file is checked before anything is added: every item must follow
+the same rules as items you type yourself (no control characters such as
+terminal escape codes in names and one-line fields, nothing too long, a
+usable TOTP secret). One bad item refuses the whole import, with the item and
+field named, and your vault stays exactly as it was. An export made by an older
+CakePass can be refused this way if it holds a value today's CakePass would not
+accept; open that file with the old version and fix the item named first. Text that is shown on the
+command line is made harmless as well (`list`, `search`, `get`, `edit`: an
+escape code appears as `\u{1b}`), also for values already in a vault.
+
 ---
 
 ## Backups

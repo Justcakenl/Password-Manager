@@ -1224,6 +1224,11 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
         )
     };
     check_edit_options(kind, &a)?;
+    // The current values are shown in the questions: made safe first (a
+    // vault may hold escape codes from before imports were checked).
+    let shown = |v: &str| Zeroizing::new(ui::safe(v, false));
+    let (cur_user, cur_email, cur_url, cur_expiry, cur_public) =
+        (shown(&cur_user), shown(&cur_email), shown(&cur_url), shown(&cur_expiry), shown(&cur_public));
     let interactive = a.rename.is_none()
         && a.username.is_none()
         && a.email.is_none()
@@ -1472,9 +1477,12 @@ fn print_table(entries: &[&Entry], key: &ItemKey) -> Result<()> {
         user: Zeroizing<String>,
         url: Zeroizing<String>,
     }
+    // Made safe before measuring and cutting: a vault may hold control
+    // characters (escape codes) from before imports were checked.
+    let safe = |v: Zeroizing<String>| Zeroizing::new(ui::safe(&v, false));
     let rows: Vec<Row> = entries
         .iter()
-        .map(|e| Ok(Row { user: e.username(key)?, url: e.url(key)? }))
+        .map(|e| Ok(Row { user: safe(e.username(key)?), url: safe(e.url(key)?) }))
         .collect::<Result<_>>()?;
     let w_name = entries.iter().map(|e| e.name().chars().count()).max().unwrap_or(0).clamp(4, 32);
     let w_user = rows.iter().map(|r| r.user.chars().count()).max().unwrap_or(0).clamp(11, 28);

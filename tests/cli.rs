@@ -233,6 +233,69 @@ fn change_master_password() {
         .failure();
 }
 
+/// An export file like an attacker would make it: a real export whose
+/// username and URL hold terminal escape codes (a window-title change and
+/// an OSC 52 "write the clipboard"). Only possible by sealing the fields
+/// directly, since every setter refuses them.
+fn evil_export(from: &Vaulty, path: &Path) {
+    from.add("Evil", "placeholder", ITEM_PW);
+    let clean = from.dir().join("clean.cakepass");
+    from.run(&["export", clean.to_str().unwrap()], &format!("{PW}\n{PW2}\n{PW2}\n")).success();
+    let creds = cakepass::format::Credentials::password(PW2.as_bytes());
+    let (vault, vk) = cakepass::storage::read_vault_file(&clean, creds).unwrap();
+    let mut json: serde_json::Value = serde_json::from_slice(vault.to_json().unwrap().as_slice()).unwrap();
+    let k = vk.item_key();
+    let item = &mut json["entries"][0];
+    item["username_sealed"] = k.seal("username", "\u{1b}]0;X\u{7}").unwrap().into();
+    item["url_sealed"] = k.seal("url", "\u{1b}]52;c;SGk=\u{7}").unwrap().into();
+    let bytes = cakepass::format::seal(&vk, json.to_string().as_bytes()).unwrap();
+    cakepass::storage::write_new_file(path, &bytes).unwrap();
+}
+
+#[test]
+fn an_export_with_escape_codes_is_refused_and_never_printed() {
+    let a = Vaulty::new().init();
+    let evil = a.dir().join("evil.cakepass");
+    evil_export(&a, &evil);
+    let evil_s = evil.to_str().unwrap();
+    // Importing it fails as a whole, says which item and field, prints no
+    // escape code, and leaves the vault file exactly as it was.
+    let b = Vaulty::new().init();
+    b.add("Mine", "me", ITEM_PW);
+    let before = std::fs::read(&b.path).unwrap();
+    let out = b.run(&["import", evil_s], &format!("{PW}\n{PW2}\n")).failure();
+    let o = out.get_output();
+    assert!(!o.stdout.contains(&0x1b) && !o.stderr.contains(&0x1b), "an escape code was printed");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("item 'Evil' has an invalid username") && err.contains("nothing was imported"),
+        "{err}"
+    );
+    assert_eq!(std::fs::read(&b.path).unwrap(), before, "the vault file is unchanged");
+    // A vault that already holds such values (the export opened as a vault):
+    // list, search and get show them made harmless, never as escape codes.
+    for args in [&["list"][..], &["search", "evil"], &["get", "evil", "--no-copy"]] {
+        let mut cmd = a.cmd();
+        cmd.arg("--vault").arg(&evil).args(args).write_stdin(format!("{PW2}\n"));
+        let out = cmd.assert().success();
+        let o = out.get_output();
+        assert!(!o.stdout.contains(&0x1b) && !o.stderr.contains(&0x1b), "{args:?} printed an escape code");
+        let text = String::from_utf8_lossy(&o.stdout);
+        assert!(text.contains("\\u{1b}"), "{args:?} shows the escape as text: {text}");
+    }
+    // edit shows the current values in its questions: also made harmless.
+    let mut cmd = a.cmd();
+    cmd.arg("--vault")
+        .arg(&evil)
+        .args(["edit", "evil"])
+        .write_stdin(format!("{PW2}\n\n\n\n\n\nn\nk\nn\nn\n"));
+    let out = cmd.assert();
+    let o = out.get_output();
+    assert!(!o.stdout.contains(&0x1b) && !o.stderr.contains(&0x1b), "edit printed an escape code");
+    let shown = String::from_utf8_lossy(&o.stderr).into_owned() + &String::from_utf8_lossy(&o.stdout);
+    assert!(shown.contains("Username [\\u{1b}]0;X\\u{7}]"), "{shown}");
+}
+
 #[test]
 fn export_and_import() {
     let a = Vaulty::new().init();
