@@ -388,13 +388,35 @@ impl UnlockedVault {
 
     /// Export the vault as a new encrypted file with its own password.
     pub fn export_to(&self, path: &Path, password: &[u8], kdf: KdfParams) -> Result<()> {
-        let key = VaultKey::create(Credentials::password(password), kdf)?;
-        let mut copy = self.vault.clone();
-        copy.rekey(self.key.item_key(), key.item_key())?;
-        let plaintext = copy.to_json()?;
-        let bytes = format::seal(&key, plaintext.as_slice())?;
-        write_new_file(path, &bytes)
+        write_with_password(self.vault.clone(), self.key.item_key(), path, password, kdf)
     }
+
+    /// Share some items: a new encrypted file with only these items and a
+    /// password of its own, in the export format, so the other person adds
+    /// them with `cakepass import` (which checks every item first). The
+    /// master password and key file never go into it. Returns how many items.
+    pub fn share_to(&self, path: &Path, names: &[&str], password: &[u8], kdf: KdfParams) -> Result<usize> {
+        let part = self.vault.subset(names)?;
+        let n = part.len();
+        write_with_password(part, self.key.item_key(), path, password, kdf)?;
+        Ok(n)
+    }
+}
+
+/// Re-encrypt `vault` (now under `from`) with a new key from `password`
+/// alone and write it to a NEW file (0600; never overwrites).
+fn write_with_password(
+    mut vault: Vault,
+    from: &ItemKey,
+    path: &Path,
+    password: &[u8],
+    kdf: KdfParams,
+) -> Result<()> {
+    let key = VaultKey::create(Credentials::password(password), kdf)?;
+    vault.rekey(from, key.item_key())?;
+    let plaintext = vault.to_json()?;
+    let bytes = format::seal(&key, plaintext.as_slice())?;
+    write_new_file(path, &bytes)
 }
 
 /// How many "pre-update" copies we keep.

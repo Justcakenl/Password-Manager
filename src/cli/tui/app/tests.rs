@@ -532,6 +532,51 @@ fn change_the_master_password() {
 }
 
 #[test]
+fn share_an_item_and_add_it_in_another_cakepass() {
+    let mut t = T::sample();
+    select(&mut t, "GitHub");
+    t.key(Key::Char('x'));
+    let s = t.screen();
+    assert!(s.contains("Share 'GitHub'") && s.contains("~/cakepass-share-GitHub.cakepass"), "{s}");
+    let file = t.dir.path().join("for-jane.cakepass");
+    t.key(Key::Ctrl('u'));
+    t.typ(file.to_str().unwrap());
+    t.key(Key::Enter);
+    // Done: the generated password is shown once, with what to do next.
+    let Some(Modal::Message(m)) = t.app.modals.last() else { panic!("no message: {}", t.screen()) };
+    let line = m.lines.iter().find(|l| l.starts_with("Share password:")).unwrap().clone();
+    let password = line.trim_start_matches("Share password:").trim().to_string();
+    assert_eq!(password.split('-').count(), 6);
+    assert!(m.lines.iter().any(|l| l.contains("ANOTHER way")));
+    assert!(file.exists());
+    t.key(Key::Enter);
+    // The same name again: refused, nothing overwritten.
+    t.key(Key::Char('x'));
+    t.key(Key::Ctrl('u'));
+    t.typ(file.to_str().unwrap());
+    t.key(Key::Enter);
+    assert!(t.screen().contains("already exists"), "{}", t.screen());
+    t.key(Key::Esc);
+
+    // Someone else adds it with i.
+    let mut b = T::new();
+    b.key(Key::Char('i'));
+    b.typ(file.to_str().unwrap());
+    b.key(Key::Enter);
+    assert!(b.screen().contains("the share or export password"), "{}", b.screen());
+    b.typ("wrong-password");
+    b.key(Key::Enter);
+    assert!(b.screen().contains("Wrong password for this file"), "{}", b.screen());
+    b.typ(&password);
+    b.key(Key::Enter);
+    assert!(b.toast().starts_with("1 item(s) added"), "{}", b.toast());
+    assert_eq!(b.app.view.len(), 1);
+    let uv = b.reopen(PW);
+    assert_eq!(get(&uv, "github").password(uv.item_key()).unwrap().as_str(), "gh-Secret-1");
+    assert!(uv.vault.get("OpenAI").is_none(), "only the shared item");
+}
+
+#[test]
 fn locks_after_the_idle_time() {
     let mut t = T::sample();
     t.later(200);

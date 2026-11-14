@@ -122,6 +122,12 @@ pub enum PromptPurpose {
     Reload,
     /// The current master password, before switching to this security level.
     ConfirmLevel(SecurityLevel),
+    /// Where to write the share file for this item.
+    ShareTo(String),
+    /// Which export or share file to add.
+    ImportFrom,
+    /// The password of this export or share file.
+    ImportPassword(std::path::PathBuf),
 }
 
 pub struct Prompt {
@@ -358,6 +364,8 @@ impl HelpPage {
                     ("", "the 2FA tab lists every item with a code; there Enter or c copies it, a adds one"),
                     ("p", "copy the public key of an SSH key"),
                     ("f", "pin or unpin as a favorite (★; favorites come first)"),
+                    ("x", "share the item: an encrypted file plus a generated password for someone else"),
+                    ("i", "add the items of a file someone shared with you (or an export)"),
                     ("a  n", "add an item"),
                     ("e", "edit the selected item"),
                     ("d  Del", "delete it (asks first)"),

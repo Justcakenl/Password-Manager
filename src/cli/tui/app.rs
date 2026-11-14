@@ -20,7 +20,7 @@
 //!   typo can never re-key the vault under a password nobody knows.
 
 use std::cell::Cell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use zeroize::Zeroizing;
@@ -195,6 +195,16 @@ pub enum Task {
     Measure(SecurityLevel),
     /// Re-check the master password, then re-key at this level.
     ChangeLevel(Zeroizing<String>, SecurityLevel),
+    /// Write a share file with this item (Argon2 for its new key).
+    Share {
+        name: String,
+        path: PathBuf,
+    },
+    /// Open an export or share file with its password and add its items.
+    Import {
+        path: PathBuf,
+        password: Zeroizing<String>,
+    },
 }
 
 /// Copies a secret to the clipboard (with automatic clearing); returns the
@@ -932,7 +942,122 @@ impl App {
                 self.modals.push(Modal::Prompt(p));
                 self.task = Some(Task::ChangeLevel(text, level));
             }
+            PromptPurpose::ShareTo(name) => {
+                let path = expand_home(text.trim());
+                let problem = if text.trim().is_empty() {
+                    Some("Type where the file should go.".to_string())
+                } else if std::fs::symlink_metadata(&path).is_ok() {
+                    Some("That file already exists; choose another name.".to_string())
+                } else {
+                    None
+                };
+                p.purpose = PromptPurpose::ShareTo(name.clone());
+                if problem.is_some() {
+                    p.error = problem;
+                    self.modals.push(Modal::Prompt(p));
+                    return;
+                }
+                p.busy = Some("Encrypting the share file…");
+                self.modals.push(Modal::Prompt(p));
+                self.task = Some(Task::Share { name, path });
+            }
+            PromptPurpose::ImportFrom => {
+                let path = expand_home(text.trim());
+                p.purpose = PromptPurpose::ImportFrom;
+                match storage::read_header(&path) {
+                    Ok(h) if h.key_file => {
+                        p.error = Some(
+                            "This file needs a key file; add it with `cakepass import` on the command line.".into(),
+                        );
+                        self.modals.push(Modal::Prompt(p));
+                    }
+                    Ok(_) => self.modals.push(Modal::Prompt(Prompt::new(
+                        "Add items from a file",
+                        vec![format!(
+                            "Type the password of {} (the share or export password, not your master password).",
+                            path.display()
+                        )],
+                        "Password",
+                        true,
+                        PromptPurpose::ImportPassword(path),
+                    ))),
+                    Err(e) => {
+                        p.error = Some(error_text(&e));
+                        self.modals.push(Modal::Prompt(p));
+                    }
+                }
+            }
+            PromptPurpose::ImportPassword(path) => {
+                p.purpose = PromptPurpose::ImportPassword(path.clone());
+                p.busy = Some("Opening the file…");
+                self.modals.push(Modal::Prompt(p));
+                self.task = Some(Task::Import { path, password: text });
+            }
         }
+    }
+
+    /// `x`: share the selected item. Asks where the file goes; the password
+    /// is generated and shown once afterwards.
+    pub fn ask_share(&mut self) {
+        let Some(e) = self.selected() else { return };
+        let name = e.name().to_string();
+        let file: String =
+            name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
+        let default = format!("~/cakepass-share-{file}.cakepass");
+        let mut p = Prompt::new(
+            &format!("Share '{name}'"),
+            vec![
+                "CakePass makes an encrypted file with only this item and a password of its own. \
+                 You send the file (Signal, e-mail, USB stick); the other person adds it to their CakePass with i."
+                    .into(),
+            ],
+            "File",
+            false,
+            PromptPurpose::ShareTo(name),
+        );
+        p.input.set(&default);
+        self.reveal_until = None;
+        self.modals.push(Modal::Prompt(p));
+    }
+
+    /// `i`: add the items of a share or export file.
+    pub fn ask_import(&mut self) {
+        self.reveal_until = None;
+        self.modals.push(Modal::Prompt(Prompt::new(
+            "Add items from a file",
+            vec![
+                "A file someone shared with you, or an export of your own (made with x or cakepass export)."
+                    .into(),
+            ],
+            "File",
+            false,
+            PromptPurpose::ImportFrom,
+        )));
+    }
+
+    fn share(&mut self, name: &str, path: &Path) -> Result<Message> {
+        let password = cakepass::generator::generate_passphrase(&Default::default())?;
+        self.uv.share_to(path, &[name], password.as_bytes(), self.uv.export_params())?;
+        let mut lines = vec![
+            format!("Saved (encrypted) in {}", path.display()),
+            format!("Share password:  {}", password.as_str()),
+        ];
+        if let Some(e) = self.uv.vault.get(name) {
+            if e.has_totp() {
+                lines
+                    .push("It includes the 2FA secret: the other person can make your 2FA codes too.".into());
+            }
+            if e.kind() == Kind::SshKey && e.has_password() {
+                lines.push("It includes the private SSH key.".into());
+            }
+        }
+        lines.extend([
+            "1. Send the file to the other person (Signal, e-mail, USB stick, …).".to_string(),
+            "2. Tell them this password ANOTHER way (in person, by phone), never with the file.".into(),
+            "3. They add it in their CakePass with i (or: cakepass import FILE).".into(),
+            "The password is not shown again. Delete the file once they have it.".into(),
+        ]);
+        Ok(Message::new("Shared", lines, false))
     }
 
     fn generator_accepted(&mut self) {
@@ -977,6 +1102,54 @@ impl App {
         top.busy = None;
         match task {
             Task::Measure(_) => unreachable!("handled above"),
+            Task::Share { name, path } => match self.share(&name, &path) {
+                Ok(message) => self.modals.push(Modal::Message(message)),
+                Err(e) => {
+                    top.error = Some(error_text(&e));
+                    self.modals.push(Modal::Prompt(top));
+                }
+            },
+            Task::Import { path, password } => {
+                let read = storage::read_vault_file(&path, Credentials::password(password.as_bytes()));
+                drop(password);
+                match read {
+                    Ok((other, other_key)) => {
+                        let mut counts = (0, 0);
+                        let merged = self.commit(|v, key| {
+                            counts = v.merge(&other, other_key.item_key(), key)?;
+                            Ok(())
+                        });
+                        match merged {
+                            Ok(()) => {
+                                self.refilter();
+                                self.ok(format!(
+                                    "{} item(s) added, {} already present. Same names got a number, e.g. \"GitHub (2)\".",
+                                    counts.0, counts.1
+                                ));
+                            }
+                            Err(e) => {
+                                if let Some(t) = self.save_error(e) {
+                                    self.modals.push(Modal::Message(Message::new(
+                                        "Nothing added",
+                                        vec![t],
+                                        true,
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                    Err(Error::Decrypt) => {
+                        top.input.clear();
+                        top.error = Some("Wrong password for this file. Try again.".into());
+                        self.modals.push(Modal::Prompt(top));
+                    }
+                    Err(e) => self.modals.push(Modal::Message(Message::new(
+                        "Nothing added",
+                        vec![error_text(&e)],
+                        true,
+                    ))),
+                }
+            }
             Task::Reconfirm(pw) => match self.check_password(&pw) {
                 Ok(true) => {
                     self.wrong_reconfirms = 0;
@@ -1198,6 +1371,14 @@ fn copies_lines(r: &cakepass::storage::CopiesReport, lines: &mut Vec<String>) ->
         lines.extend(r.stale.iter().map(|p| format!("  {}", p.display())));
     }
     !r.failed.is_empty() || !r.stale.is_empty()
+}
+
+/// A path as typed: `~/…` is in the home folder.
+fn expand_home(text: &str) -> PathBuf {
+    match (text.strip_prefix("~/"), std::env::var_os("HOME")) {
+        (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
+        _ => PathBuf::from(text),
+    }
 }
 
 /// The position of `level` in `SecurityLevel::ALL` (and `App::level_times`).

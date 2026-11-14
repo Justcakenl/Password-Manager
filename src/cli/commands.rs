@@ -183,6 +183,12 @@ pub fn execute(uv: &mut UnlockedVault, cmd: Cmd, in_shell: bool) -> Result<()> {
             }
             export(uv, &file)
         }
+        Cmd::Share { names, to } => {
+            if in_shell {
+                reconfirm(uv)?;
+            }
+            share(uv, &names, &to)
+        }
         Cmd::Import { file } => import_vault(uv, &file),
         Cmd::ImportCsv { file } => import_csv(uv, &file),
         Cmd::Generate { opts, show, save } => {
@@ -1789,6 +1795,48 @@ fn export(uv: &UnlockedVault, file: &Path) -> Result<()> {
              Keep it as safe as the vault, and delete it when you no longer need it.",
         );
     }
+    Ok(())
+}
+
+/// `cakepass share NAME... --to FILE`: only these items, in a new file with
+/// a generated password (6 diceware words, about 77 bits: a weak password
+/// could make the file crackable, so you cannot choose one). The password
+/// is shown once; it must reach the other person another way than the file.
+fn share(uv: &UnlockedVault, names: &[String], file: &Path) -> Result<()> {
+    if fs::symlink_metadata(file).is_ok() {
+        return Err(Error::AlreadyExists(file.to_path_buf()));
+    }
+    let key = uv.item_key();
+    let mut chosen: Vec<&Entry> = Vec::new();
+    for n in names {
+        let e = find_entry(&uv.vault, key, n)?;
+        if !chosen.iter().any(|c| c.name() == e.name()) {
+            chosen.push(e);
+        }
+    }
+    let password = generator::generate_passphrase(&PassphraseOptions::default())?;
+    let list: Vec<&str> = chosen.iter().map(|e| e.name()).collect();
+    let n = uv.share_to(file, &list, password.as_bytes(), uv.export_params())?;
+    ui::success(&format!("{} shared (encrypted) in {}", plural(n, "item", "items"), file.display()));
+    for e in &chosen {
+        if e.has_totp() {
+            ui::warn(&format!(
+                "'{}' includes its 2FA secret: the other person can make your 2FA codes too.",
+                e.name()
+            ));
+        }
+        if e.kind() == Kind::SshKey && e.has_password() {
+            ui::warn(&format!("'{}' includes the private SSH key.", e.name()));
+        }
+    }
+    ui::print_secret_line(&format!("{} ", ui::bold("Share password:")), &password)?;
+    ui::info("1. Send the file to the other person (Signal, e-mail, a USB stick, …).");
+    ui::info("2. Tell them the share password ANOTHER way (in person, by phone), never with the file.");
+    ui::info(&format!(
+        "3. They add the items to their own CakePass with: cakepass import {}",
+        file.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default()
+    ));
+    ui::info("Delete the file once they have it; it opens with the share password alone.");
     Ok(())
 }
 

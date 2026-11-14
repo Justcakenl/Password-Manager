@@ -959,6 +959,22 @@ impl Vault {
         self.get(name).is_some()
     }
 
+    /// A new vault with copies of only these items (names case-insensitive;
+    /// each item once), still encrypted with the same item key. For sharing
+    /// a few items. An unknown name is an error, so nothing is left out
+    /// silently.
+    pub fn subset(&self, names: &[&str]) -> Result<Vault> {
+        let mut part = Vault::new();
+        for name in names {
+            let e = self.get(name).ok_or_else(|| Error::EntryNotFound(name.trim().to_string()))?;
+            if !part.contains(&e.name) {
+                part.entries.push(e.clone());
+            }
+        }
+        part.sort();
+        Ok(part)
+    }
+
     pub fn add(&mut self, entry: Entry) -> Result<()> {
         if self.contains(&entry.name) {
             return Err(Error::EntryExists(entry.name.clone()));

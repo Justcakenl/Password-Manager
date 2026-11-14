@@ -1,6 +1,6 @@
 # Progress: `cakepass` (CakePass)
 
-Last updated: step 16b (pre-update copies follow a re-key); content schema still 5.
+Last updated: step 17 (sharing items with another CakePass); content schema still 5.
 Repository: `Justcakenl/Password-Manager`, branch `main` (private until it is made public).
 
 ## Maintainer checklist: manual testing on a real Arch machine
@@ -496,6 +496,34 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   to 40 characters (reviewer-sonnet). README: an export from an older
   CakePass with a value today's setters refuse is refused as a whole.
 
+- [x] **Step 17: sharing items with another CakePass** (branch
+  `feature/share-items`, from `fix/16b-rekey-pre-update-copies`). Asked
+  for by the user, with the file sent by hand ("Signal, mail, USB");
+  CakePass stays offline.
+  - `cakepass share NAME... --to FILE` and `x` in the screen: a NEW file
+    (never overwrites, 0600) with only those items, in the export format
+    (`UnlockedVault::share_to` → `Vault::subset`, sharing
+    `write_with_password` with `export_to`; Argon2 at `export_params`, so
+    never lighter than Standard). The password is a generated 6-word
+    diceware passphrase (about 77 bits), shown once; you cannot choose one.
+    Warnings when an item carries a 2FA secret or a private SSH key.
+  - Receiving: the existing `cakepass import` (with step 16a's checks), and
+    `i` in the screen (file, then its password; Argon2 runs as a task with
+    "Opening the file…"; a wrong password keeps the dialog; a file that
+    needs a key file is sent to the command line).
+  - `x` and `i` are now shortcuts in the list, so they no longer start a
+    search (capitals still do), like `f` before.
+  Tests: tests/cli.rs `share_some_items_with_another_cakepass` (unknown
+  name refused before writing, duplicates once, 2FA warning, 6 words, no
+  plaintext in the file, 0600, no overwrite, master password does not open
+  it, share password does, only the chosen items arrive, again = 0 added);
+  app/tests.rs `share_an_item_and_add_it_in_another_cakepass` (screen: x,
+  path, the password dialog, existing file refused; i in another vault,
+  wrong then right password, the item arrives, nothing else).
+  Open questions for security review: password vs. public keys (age/X25519,
+  a new dependency) — password for now; 2FA secret included by default with
+  a warning (not opt-in).
+
 ## Still to do
 
 - [x] **Step 16b: pre-update copies follow a re-key** (branch
@@ -812,6 +840,7 @@ See `docs/DESIGN.md` for the explanation. In short:
 
 | Check | Result |
 |---|---|
+| `cargo test` (step 17) | 335 passed (126 library, 95 CLI/screen unit, 65 CLI integration, 15 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
 | `cargo test` (step 16b) | 333 passed (126 library, 94 CLI/screen unit, 64 CLI integration, 15 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
 | `cargo test` (step 16a) | 329 passed (123 library, 94 CLI/screen unit, 64 CLI integration, 14 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
 | `cargo test` (step 15) | 327 passed (122 library, 94 CLI/screen unit, 63 CLI integration, 14 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |

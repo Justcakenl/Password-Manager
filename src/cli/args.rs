@@ -228,9 +228,20 @@ pub enum Cmd {
         file: PathBuf,
     },
 
-    /// Add items from an encrypted export file
+    /// Share items with someone else: a new encrypted file with only these
+    /// items and a generated password; they add it with `cakepass import`
+    Share {
+        /// The items to share (one or more names)
+        #[arg(required = true, num_args = 1..)]
+        names: Vec<String>,
+        /// The file to make (must not exist yet), e.g. share.cakepass
+        #[arg(long, short = 'o', value_name = "FILE")]
+        to: PathBuf,
+    },
+
+    /// Add items from an encrypted export or share file
     Import {
-        /// Export file made with `cakepass export`
+        /// File made with `cakepass export` or `cakepass share`
         file: PathBuf,
     },
 

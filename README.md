@@ -487,6 +487,8 @@ and **`?`** shows them all.
 | `t` | show the current two-factor (TOTP) code with its seconds left, and copy it (cleared like a password) |
 | 2FA tab | every item with a TOTP secret and its **current code**, live, with the seconds left (red in the last 5), like an authenticator app; the details also show the next code. There **Enter** or `c` copies the code, and **`a` adds one**: choose the account (or a new login) and paste the secret. ← from All goes straight to it |
 | `f` | pin or unpin the item as a **favorite**: a ★ before its name, and favorites come first in the list |
+| `x` | **share** the item with someone else: an encrypted file plus a generated password (see [Sharing items with someone else](#sharing-items-with-someone-else)) |
+| `i` | add the items of a file someone **shared** with you (or an export of your own) |
 | `p` | copy the public key of an SSH key |
 | `a` or `n` | add an item |
 | `e` | edit the selected item |
@@ -1068,6 +1070,37 @@ A TOTP column (Bitwarden's `login_totp`, KeePassXC's `TOTP`, `otpauth`) is
 imported as the item's TOTP secret. A value CakePass cannot use (for example a
 Steam Guard `steam://` secret) is left out with a warning; the item itself is
 still imported.
+
+### Sharing items with someone else
+
+Give someone a password (or a card, an API key, a note) without typing it
+into a chat: CakePass puts **only the items you choose** in an encrypted file
+with a password of its own. CakePass itself sends nothing (it never goes
+online); you send the file.
+
+```bash
+cakepass share GitHub Netflix --to for-jane.cakepass
+```
+
+In the screen: select the item and press **`x`**. Then:
+
+1. CakePass shows a **share password** (6 random words) **once**. It makes it
+   itself, so the file cannot have a weak password.
+2. Send the file: Signal, e-mail, a USB stick, AirDrop, …
+3. Tell the share password **another way** (in person, by phone), never in
+   the same message as the file.
+4. The other person adds the items to their own CakePass: in the screen with
+   **`i`**, or `cakepass import for-jane.cakepass`, and types the share
+   password. The items are then in their vault and they can view them as
+   their own. (An item they already have is skipped; a name they already use
+   gets a number, "GitHub (2)".)
+5. Delete the file once they have it.
+
+Good to know: your master password and key file never go into the file. An
+item with a 2FA secret or a private SSH key is shared **with** it (CakePass
+warns): the other person can then make your 2FA codes too. Sharing is a copy:
+if you change the password later, share it again. The file is checked
+completely before anything is added, like every import.
 
 ### Encrypted export and import (between your own computers)
 
