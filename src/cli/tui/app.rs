@@ -199,6 +199,7 @@ pub enum Task {
     Share {
         name: String,
         path: PathBuf,
+        with_totp: bool,
     },
     /// Open an export or share file with its password and add its items.
     Import {
@@ -821,6 +822,12 @@ impl App {
                 true,
                 PromptPurpose::Reload,
             ))),
+            (ConfirmAction::ShareTotp(name), yes) => self.ask_share_file(name, yes),
+            (ConfirmAction::DeleteFile(path), true) => match cakepass::import::overwrite_and_remove(&path) {
+                Ok(()) => self.ok(format!("{} overwritten and deleted.", path.display())),
+                Err(e) => self.fail(format!("Could not delete {}: {}", path.display(), error_text(&e))),
+            },
+            (ConfirmAction::DeleteFile(_), false) => self.info("The file was kept."),
             (ConfirmAction::Reload, false) => {
                 self.info("Not saved. Lock (l) and open CakePass again to see the other changes.")
             }
@@ -942,7 +949,7 @@ impl App {
                 self.modals.push(Modal::Prompt(p));
                 self.task = Some(Task::ChangeLevel(text, level));
             }
-            PromptPurpose::ShareTo(name) => {
+            PromptPurpose::ShareTo(name, with_totp) => {
                 let path = expand_home(text.trim());
                 let problem = if text.trim().is_empty() {
                     Some("Type where the file should go.".to_string())
@@ -951,7 +958,7 @@ impl App {
                 } else {
                     None
                 };
-                p.purpose = PromptPurpose::ShareTo(name.clone());
+                p.purpose = PromptPurpose::ShareTo(name.clone(), with_totp);
                 if problem.is_some() {
                     p.error = problem;
                     self.modals.push(Modal::Prompt(p));
@@ -959,7 +966,7 @@ impl App {
                 }
                 p.busy = Some("Encrypting the share file…");
                 self.modals.push(Modal::Prompt(p));
-                self.task = Some(Task::Share { name, path });
+                self.task = Some(Task::Share { name, path, with_totp });
             }
             PromptPurpose::ImportFrom => {
                 let path = expand_home(text.trim());
@@ -996,14 +1003,36 @@ impl App {
         }
     }
 
-    /// `x`: share the selected item. Asks where the file goes; the password
-    /// is generated and shown once afterwards.
+    /// `x`: share the selected item. An item with a 2FA secret first asks
+    /// whether that goes along (default no); then where the file goes. The
+    /// password is generated and shown once afterwards.
     pub fn ask_share(&mut self) {
         let Some(e) = self.selected() else { return };
-        let name = e.name().to_string();
-        let file: String =
-            name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
-        let default = format!("~/cakepass-share-{file}.cakepass");
+        let (name, has_totp) = (e.name().to_string(), e.has_totp());
+        self.reveal_until = None;
+        if has_totp {
+            self.modals.push(Modal::Confirm(Confirm::new(
+                &format!("Share '{name}'"),
+                vec![
+                    "This item has a 2FA secret. Share that too? Then the other person can make your \
+                     2FA codes for good (only turning 2FA off and on again at the site undoes that)."
+                        .into(),
+                ],
+                "Share it too",
+                "Leave it out",
+                false,
+                ConfirmAction::ShareTotp(name),
+            )));
+        } else {
+            self.ask_share_file(name, false);
+        }
+    }
+
+    /// The share dialog's file question. The suggested name has the date, not
+    /// the item's name (chat apps show file names in their previews).
+    fn ask_share_file(&mut self, name: String, with_totp: bool) {
+        let today = super::super::ui::format_time(cakepass::vault::now());
+        let default = format!("~/cakepass-share-{}.cakepass", today.get(..10).unwrap_or("file"));
         let mut p = Prompt::new(
             &format!("Share '{name}'"),
             vec![
@@ -1013,10 +1042,9 @@ impl App {
             ],
             "File",
             false,
-            PromptPurpose::ShareTo(name),
+            PromptPurpose::ShareTo(name, with_totp),
         );
         p.input.set(&default);
-        self.reveal_until = None;
         self.modals.push(Modal::Prompt(p));
     }
 
@@ -1035,17 +1063,21 @@ impl App {
         )));
     }
 
-    fn share(&mut self, name: &str, path: &Path) -> Result<Message> {
+    fn share(&mut self, name: &str, path: &Path, with_totp: bool) -> Result<Message> {
         let password = cakepass::generator::generate_passphrase(&Default::default())?;
-        self.uv.share_to(path, &[name], password.as_bytes(), self.uv.export_params())?;
+        self.uv.share_to(path, &[name], password.as_bytes(), with_totp)?;
+        // The message wipes its lines when it closes (see `Message`).
         let mut lines = vec![
             format!("Saved (encrypted) in {}", path.display()),
             format!("Share password:  {}", password.as_str()),
         ];
+        drop(password);
         if let Some(e) = self.uv.vault.get(name) {
-            if e.has_totp() {
-                lines
-                    .push("It includes the 2FA secret: the other person can make your 2FA codes too.".into());
+            match (e.has_totp(), with_totp) {
+                (true, true) => lines
+                    .push("It includes the 2FA secret: the other person can make your 2FA codes too.".into()),
+                (true, false) => lines.push("Its 2FA secret was left out.".into()),
+                _ => {}
             }
             if e.kind() == Kind::SshKey && e.has_password() {
                 lines.push("It includes the private SSH key.".into());
@@ -1102,7 +1134,7 @@ impl App {
         top.busy = None;
         match task {
             Task::Measure(_) => unreachable!("handled above"),
-            Task::Share { name, path } => match self.share(&name, &path) {
+            Task::Share { name, path, with_totp } => match self.share(&name, &path, with_totp) {
                 Ok(message) => self.modals.push(Modal::Message(message)),
                 Err(e) => {
                     top.error = Some(error_text(&e));
@@ -1126,6 +1158,19 @@ impl App {
                                     "{} item(s) added, {} already present. Same names got a number, e.g. \"GitHub (2)\".",
                                     counts.0, counts.1
                                 ));
+                                // It opens with its password alone: offer to get rid of it.
+                                self.modals.push(Modal::Confirm(Confirm::new(
+                                    "Delete the file?",
+                                    vec![format!(
+                                        "The items are in your vault now. Overwrite and delete {}? Anyone with \
+                                         its password could still open it.",
+                                        path.display()
+                                    )],
+                                    "Delete it",
+                                    "Keep it",
+                                    false,
+                                    ConfirmAction::DeleteFile(path),
+                                )));
                             }
                             Err(e) => {
                                 if let Some(t) = self.save_error(e) {

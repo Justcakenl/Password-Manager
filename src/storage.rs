@@ -394,11 +394,15 @@ impl UnlockedVault {
     /// Share some items: a new encrypted file with only these items and a
     /// password of its own, in the export format, so the other person adds
     /// them with `cakepass import` (which checks every item first). The
-    /// master password and key file never go into it. Returns how many items.
-    pub fn share_to(&self, path: &Path, names: &[&str], password: &[u8], kdf: KdfParams) -> Result<usize> {
-        let part = self.vault.subset(names)?;
+    /// master password and key file never go into it; 2FA secrets only with
+    /// `with_totp` (see [`Vault::share_subset`]). Argon2 runs at the Standard
+    /// level whatever this vault uses: the password is a generated passphrase,
+    /// and a smaller computer must be able to open the file. Returns how
+    /// many items.
+    pub fn share_to(&self, path: &Path, names: &[&str], password: &[u8], with_totp: bool) -> Result<usize> {
+        let part = self.vault.share_subset(names, self.key.item_key(), with_totp)?;
         let n = part.len();
-        write_with_password(part, self.key.item_key(), path, password, kdf)?;
+        write_with_password(part, self.key.item_key(), path, password, KdfParams::STANDARD)?;
         Ok(n)
     }
 }

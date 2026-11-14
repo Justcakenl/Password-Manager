@@ -535,9 +535,14 @@ fn change_the_master_password() {
 fn share_an_item_and_add_it_in_another_cakepass() {
     let mut t = T::sample();
     select(&mut t, "GitHub");
+    t.key(Key::Char('f')); // pinned here; that does not travel
     t.key(Key::Char('x'));
     let s = t.screen();
-    assert!(s.contains("Share 'GitHub'") && s.contains("~/cakepass-share-GitHub.cakepass"), "{s}");
+    // The suggested file name has the date, not the item's name.
+    assert!(
+        s.contains("Share 'GitHub'") && s.contains("~/cakepass-share-20") && !s.contains("share-GitHub"),
+        "{s}"
+    );
     let file = t.dir.path().join("for-jane.cakepass");
     t.key(Key::Ctrl('u'));
     t.typ(file.to_str().unwrap());
@@ -550,6 +555,7 @@ fn share_an_item_and_add_it_in_another_cakepass() {
     assert!(m.lines.iter().any(|l| l.contains("ANOTHER way")));
     assert!(file.exists());
     t.key(Key::Enter);
+    assert!(t.app.modals.is_empty());
     // The same name again: refused, nothing overwritten.
     t.key(Key::Char('x'));
     t.key(Key::Ctrl('u'));
@@ -563,17 +569,57 @@ fn share_an_item_and_add_it_in_another_cakepass() {
     b.key(Key::Char('i'));
     b.typ(file.to_str().unwrap());
     b.key(Key::Enter);
-    assert!(b.screen().contains("the share or export password"), "{}", b.screen());
+    let Some(Modal::Prompt(p)) = b.app.modals.last() else { panic!("no prompt: {}", b.screen()) };
+    assert!(p.masked && p.lines.iter().any(|l| l.contains("not your master password")), "{}", b.screen());
     b.typ("wrong-password");
     b.key(Key::Enter);
     assert!(b.screen().contains("Wrong password for this file"), "{}", b.screen());
     b.typ(&password);
     b.key(Key::Enter);
     assert!(b.toast().starts_with("1 item(s) added"), "{}", b.toast());
-    assert_eq!(b.app.view.len(), 1);
+    // Then: delete the file? The default keeps it.
+    assert!(b.screen().contains("Delete the file?"), "{}", b.screen());
+    b.key(Key::Enter);
+    assert!(file.exists() && b.toast() == "The file was kept.");
     let uv = b.reopen(PW);
-    assert_eq!(get(&uv, "github").password(uv.item_key()).unwrap().as_str(), "gh-Secret-1");
+    let e = get(&uv, "github");
+    assert_eq!(e.password(uv.item_key()).unwrap().as_str(), "gh-Secret-1");
+    assert!(!e.is_favorite(), "the pin is mine, not theirs");
     assert!(uv.vault.get("OpenAI").is_none(), "only the shared item");
+    // Again, and this time delete it.
+    let mut c = T::new();
+    c.key(Key::Char('i'));
+    c.typ(file.to_str().unwrap());
+    c.key(Key::Enter);
+    c.typ(&password);
+    c.key(Key::Enter);
+    c.key(Key::Char('y'));
+    assert!(!file.exists(), "overwritten and deleted");
+}
+
+#[test]
+fn sharing_leaves_the_2fa_secret_out_unless_you_say_so() {
+    for (answer, with) in [(Key::Enter, false), (Key::Char('y'), true)] {
+        let mut t = new_types(); // GitHub has a 2FA secret
+        select(&mut t, "GitHub");
+        t.key(Key::Char('x'));
+        let s = t.screen();
+        assert!(s.contains("Share it too") && s.contains("Leave it out"), "asked first: {s}");
+        t.key(answer);
+        let file = t.dir.path().join("share.cakepass");
+        t.key(Key::Ctrl('u'));
+        t.typ(file.to_str().unwrap());
+        t.key(Key::Enter);
+        let Some(Modal::Message(m)) = t.app.modals.last() else { panic!("no message: {}", t.screen()) };
+        let password = m.lines[1].trim_start_matches("Share password:").trim().to_string();
+        let noted = if with { "It includes the 2FA secret" } else { "Its 2FA secret was left out" };
+        assert!(m.lines.iter().any(|l| l.contains(noted)), "{:?}", m.lines);
+        let (v, k) =
+            cakepass::storage::read_vault_file(&file, Credentials::password(password.as_bytes())).unwrap();
+        assert_eq!(v.get("GitHub").unwrap().has_totp(), with);
+        assert_eq!(v.get("GitHub").unwrap().password(k.item_key()).unwrap().as_str(), "gh-Secret-1");
+        assert_eq!(cakepass::storage::read_header(&file).unwrap().kdf, KdfParams::STANDARD);
+    }
 }
 
 #[test]

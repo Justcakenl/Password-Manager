@@ -959,17 +959,30 @@ impl Vault {
         self.get(name).is_some()
     }
 
-    /// A new vault with copies of only these items (names case-insensitive;
-    /// each item once), still encrypted with the same item key. For sharing
-    /// a few items. An unknown name is an error, so nothing is left out
-    /// silently.
-    pub fn subset(&self, names: &[&str]) -> Result<Vault> {
+    /// What goes into a share file: copies of only these items (names
+    /// case-insensitive; each item once), still encrypted with `key`. An
+    /// unknown name is an error, so nothing is left out silently.
+    ///
+    /// SECURITY: the 2FA secret stays home unless `with_totp` (whoever has it
+    /// can make your codes for good; only resetting 2FA at the site takes it
+    /// back). Personal marks do not travel either: the favorite pin is off and
+    /// the dates are the moment of sharing.
+    pub fn share_subset(&self, names: &[&str], key: &ItemKey, with_totp: bool) -> Result<Vault> {
         let mut part = Vault::new();
+        let now = now();
         for name in names {
             let e = self.get(name).ok_or_else(|| Error::EntryNotFound(name.trim().to_string()))?;
-            if !part.contains(&e.name) {
-                part.entries.push(e.clone());
+            if part.contains(&e.name) {
+                continue;
             }
+            let mut copy = e.clone();
+            if !with_totp {
+                copy.totp_secret_sealed = key.seal(FIELD_TOTP, "")?;
+            }
+            copy.favorite = false;
+            copy.created = now;
+            copy.modified = now;
+            part.entries.push(copy);
         }
         part.sort();
         Ok(part)
@@ -1823,6 +1836,35 @@ mod tests {
         let mut mine = Vault::new();
         assert!(mine.merge(&load(&two), &k, &k).is_err());
         assert!(mine.is_empty(), "the good item was not added on its own");
+    }
+
+    #[test]
+    fn a_share_holds_only_the_chosen_items_without_personal_marks() {
+        let k = test_item_key(1);
+        let mut v = Vault::new();
+        for n in ["GitHub", "Bank", "Private"] {
+            v.add(entry(n, "pw")).unwrap();
+        }
+        v.update("GitHub", |e| {
+            e.set_totp_secret(&k, TOTP_SEED)?;
+            e.set_favorite(true);
+            Ok(())
+        })
+        .unwrap();
+        assert!(matches!(v.share_subset(&["github", "nope"], &k, false), Err(Error::EntryNotFound(_))));
+        let part = v.share_subset(&["GITHUB", "bank", "github"], &k, false).unwrap();
+        let names: Vec<&str> = part.entries().iter().map(|e| e.name()).collect();
+        assert_eq!(names, ["Bank", "GitHub"], "each once, nothing else");
+        let gh = part.get("GitHub").unwrap();
+        assert!(!gh.has_totp() && !gh.is_favorite());
+        assert!(gh.created() >= v.get("GitHub").unwrap().created() && gh.modified() == gh.created());
+        assert_eq!(gh.password(&k).unwrap().as_str(), "pw");
+        assert!(
+            v.get("GitHub").unwrap().has_totp() && v.get("GitHub").unwrap().is_favorite(),
+            "mine unchanged"
+        );
+        let with = v.share_subset(&["github"], &k, true).unwrap();
+        assert!(with.get("GitHub").unwrap().has_totp());
     }
 
     fn identity(k: &ItemKey) -> Entry {

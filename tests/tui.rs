@@ -616,6 +616,51 @@ fn passwd_rekeys_the_pre_update_copies_and_offers_to_delete_older_ones() {
 }
 
 #[test]
+fn share_items_in_a_terminal_and_add_them_elsewhere() {
+    let v = Vault::new();
+    let add = |name: &str, pw: &str| {
+        v.cmd()
+            .args(["add", name, "-u", "john", "-e", "", "--url", "", "-t", ""])
+            .write_stdin(format!("{PW}\n{pw}\n"))
+            .assert()
+            .success();
+    };
+    add("GitHub", "gh-shared-1");
+    add("Bank", "bank-shared-2");
+    add("Private", "not-shared-3");
+    let seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+    v.cmd().args(["edit", "github", "--totp"]).write_stdin(format!("{PW}\n{seed}\n")).assert().success();
+    let file = v.dir.path().join("for-jane.cakepass");
+    let f = file.to_str().unwrap();
+    let mut t = v.pty(&["share", "github", "bank", "--to", f], &[], 100, 30);
+    t.wait_for("Master password");
+    t.send(&format!("{PW}\r"));
+    t.wait_for("Press Enter when you have the share password");
+    let screen = t.screen();
+    assert!(screen.contains("2 items shared (encrypted)"), "{screen}");
+    assert!(screen.contains("'GitHub': its 2FA secret was left out"), "{screen}");
+    let line = screen.lines().find(|l| l.starts_with("Share password:")).expect(&screen);
+    let password = line.trim_start_matches("Share password:").trim().to_string();
+    assert_eq!(password.split('-').count(), 6, "{password}");
+    t.send("\r");
+    assert_eq!(t.wait_exit(), 0);
+    // Taken off the screen and out of the scrollback after Enter.
+    let out = t.output();
+    let after = &out[out.rfind("\x1b[3J").expect("scrollback cleared")..];
+    assert!(!after.contains(&password), "the password is gone from the screen");
+    // Someone else adds them: only the two items, without the 2FA secret.
+    let w = Vault::new();
+    w.cmd().args(["import", f]).write_stdin(format!("{PW}\n{password}\n")).assert().success();
+    let show = |name: &str| {
+        let o = w.cmd().args(["get", name, "--show"]).write_stdin(format!("{PW}\n")).output().unwrap();
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    assert!(show("github").contains("gh-shared-1") && show("bank").contains("bank-shared-2"));
+    assert!(show("private").is_empty(), "only the chosen items");
+    w.cmd().args(["get", "github", "--totp"]).write_stdin(format!("{PW}\n")).assert().failure();
+}
+
+#[test]
 fn a_private_key_typed_in_the_line_mode_is_hidden() {
     let v = Vault::new();
     let key = [

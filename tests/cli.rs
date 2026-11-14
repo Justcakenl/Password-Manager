@@ -297,47 +297,17 @@ fn an_export_with_escape_codes_is_refused_and_never_printed() {
 }
 
 #[test]
-fn share_some_items_with_another_cakepass() {
+fn share_refuses_to_print_its_password_into_a_pipe() {
+    // The share password is all that protects the file: it is shown only in
+    // a terminal (see tests/tui.rs for the real thing), never into a log.
     let a = Vaulty::new().init();
     a.add("GitHub", "john", ITEM_PW);
-    a.add("Bank", "john", "bank-secret-91");
-    a.add("Private", "me", "not-for-sharing-55");
-    a.run(&["edit", "github", "--totp"], &format!("{PW}\n{TOTP_SEED}\n")).success();
     let file = a.dir().join("for-jane.cakepass");
-    let f = file.to_str().unwrap();
-    // Unknown names are refused before anything is written.
-    a.run(&["share", "github", "nope", "--to", f], &format!("{PW}\n")).failure();
-    assert!(!file.exists());
-    let out = a.run(&["share", "GITHUB", "bank", "github", "--to", f], &format!("{PW}\n")).success();
+    let out = a.run(&["share", "github", "--to", file.to_str().unwrap()], &format!("{PW}\n")).failure();
     let o = out.get_output();
-    let (stdout, stderr) = (String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
-    assert!(stderr.contains("2 items shared (encrypted)"), "{stderr}");
-    assert!(
-        stderr.contains("'GitHub' includes its 2FA secret") && stderr.contains("ANOTHER way"),
-        "{stderr}"
-    );
-    // The share password: shown once, 6 generated words.
-    let line = stdout.lines().find(|l| l.starts_with("Share password:")).expect(&stdout);
-    let share_pw = line.trim_start_matches("Share password:").trim().to_string();
-    assert_eq!(share_pw.split('-').count(), 6, "{share_pw}");
-    // The file is encrypted, 0600, and never overwritten.
-    let raw = std::fs::read(&file).unwrap();
-    assert!(!raw.windows(ITEM_PW.len()).any(|w| w == ITEM_PW.as_bytes()));
-    use std::os::unix::fs::PermissionsExt;
-    assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
-    a.run(&["share", "bank", "--to", f], &format!("{PW}\n")).failure().stderr(contains("will not overwrite"));
-    // The master password does not open it; the share password does.
-    let b = Vaulty::new().init();
-    b.run(&["import", f], &format!("{PW}\n{PW}\n")).failure();
-    b.run(&["import", f], &format!("{PW}\n{share_pw}\n")).success().stderr(contains("2 item(s) added"));
-    b.run(&["get", "github", "--show"], &format!("{PW}\n")).success().stdout(contains(ITEM_PW));
-    b.run(&["get", "bank", "--show"], &format!("{PW}\n")).success().stdout(contains("bank-secret-91"));
-    b.run(&["get", "github", "--totp", "--no-copy"], &format!("{PW}\n"))
-        .success()
-        .stdout(contains("TOTP code"));
-    b.run(&["get", "private"], &format!("{PW}\n")).failure();
-    // Importing the same share again adds nothing.
-    b.run(&["import", f], &format!("{PW}\n{share_pw}\n")).success().stderr(contains("0 item(s) added"));
+    assert!(o.stdout.is_empty(), "nothing on stdout: {}", String::from_utf8_lossy(&o.stdout));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("only in a terminal"));
+    assert!(!file.exists(), "no file without a password anyone saw");
 }
 
 #[test]

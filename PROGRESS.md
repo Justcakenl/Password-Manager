@@ -520,9 +520,26 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   app/tests.rs `share_an_item_and_add_it_in_another_cakepass` (screen: x,
   path, the password dialog, existing file refused; i in another vault,
   wrong then right password, the item arrives, nothing else).
-  Open questions for security review: password vs. public keys (age/X25519,
-  a new dependency) — password for now; 2FA secret included by default with
-  a warning (not opt-in).
+  Review (security-opus, reviewer-sonnet) asked for changes, now done:
+  - 2FA secrets stay home by default (`Vault::share_subset` seals an empty
+    one); `--with-totp`, or in the screen a question before writing with
+    "Leave it out" as the default.
+  - `cakepass share` refuses without a terminal on stdout/stdin (nothing on
+    stdout, no file); in a terminal: Enter, then screen and scrollback are
+    cleared. The screen's `Message` wipes its lines on drop.
+  - Favorite off, created/modified = now; suggested file name with the date;
+    Argon2 always `KdfParams::STANDARD`; after an import (CLI and `i`) an
+    offer to overwrite and delete the file (default keep); paths through
+    `ui::safe`; README notes that `x`/`i` no longer start a search.
+  Tests: vault.rs `a_share_holds_only_the_chosen_items_without_personal_marks`,
+  tests/cli.rs `share_refuses_to_print_its_password_into_a_pipe`,
+  tests/tui.rs `share_items_in_a_terminal_and_add_them_elsewhere` (pty:
+  2FA left out, password gone after the scrollback clear, import elsewhere),
+  app/tests.rs `share_an_item_and_add_it_in_another_cakepass` (no item name
+  in the file name, favorite not shared, delete offer: keep / delete) and
+  `sharing_leaves_the_2fa_secret_out_unless_you_say_so` (both answers,
+  Standard KDF). The flaky wrapped-text assertion now checks the prompt's
+  own lines.
 
 ## Still to do
 

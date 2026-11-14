@@ -237,6 +237,10 @@ pub enum Cmd {
         /// The file to make (must not exist yet), e.g. share.cakepass
         #[arg(long, short = 'o', value_name = "FILE")]
         to: PathBuf,
+        /// Also share the items' 2FA (TOTP) secrets: the other person can
+        /// then make your 2FA codes for good. Left out without this flag
+        #[arg(long)]
+        with_totp: bool,
     },
 
     /// Add items from an encrypted export or share file

@@ -23,6 +23,10 @@ pub enum ConfirmAction {
     Discard,
     /// Read the vault again after another window changed it.
     Reload,
+    /// Share this item: also its 2FA secret? (default no)
+    ShareTotp(String),
+    /// After an import: overwrite and delete the file? (default no)
+    DeleteFile(std::path::PathBuf),
 }
 
 pub struct Confirm {
@@ -122,8 +126,9 @@ pub enum PromptPurpose {
     Reload,
     /// The current master password, before switching to this security level.
     ConfirmLevel(SecurityLevel),
-    /// Where to write the share file for this item.
-    ShareTo(String),
+    /// Where to write the share file for this item (and whether its 2FA
+    /// secret goes along).
+    ShareTo(String, bool),
     /// Which export or share file to add.
     ImportFrom,
     /// The password of this export or share file.
@@ -319,6 +324,15 @@ pub struct Message {
     pub title: String,
     pub lines: Vec<String>,
     pub warning: bool,
+}
+
+/// A message may show a secret once (the share password): its text is
+/// wiped when the dialog closes.
+impl Drop for Message {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.lines.iter_mut().for_each(Zeroize::zeroize);
+    }
 }
 
 impl Message {
