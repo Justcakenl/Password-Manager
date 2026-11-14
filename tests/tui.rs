@@ -551,12 +551,15 @@ fn hidden_tabs_from_the_settings_file() {
     assert!(!bar.contains("API") && !bar.contains("Cards") && !bar.contains("SSH"), "{bar}");
     // The hidden type's item is still in the list under All.
     assert!(t.screen().contains("Cloud"), "{}", t.screen());
-    // → skips the hidden tabs: Logins, Notes, and round to All again (without
-    // skipping, the third → would be on the empty Cards tab).
+    // → skips the hidden tabs: Logins, Notes, 2FA (not a type, so never
+    // hidden) and round to All again (without skipping, the third → would
+    // be on the empty Cards tab).
     t.send("\x1b[C");
     t.wait_for("Nothing of this type yet");
     assert!(!t.screen().contains("Cloud"), "{}", t.screen());
     t.send("\x1b[C\x1b[C");
+    t.wait_for("No two-factor codes yet");
+    t.send("\x1b[C");
     t.wait_for("Cloud");
     t.send("q");
     assert_eq!(t.wait_exit(), 0);

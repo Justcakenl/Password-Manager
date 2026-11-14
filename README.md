@@ -479,12 +479,13 @@ and **`?`** shows them all.
 | Key | What it does |
 |---|---|
 | ↑ ↓, PgUp PgDn, Home End | choose an item |
-| ← → (or Tab) | switch between All · Logins · API keys · Cards · IDs (identities) · SSH (keys) · Notes; tabs you do not use can be hidden (see Settings below) |
+| ← → (or Tab) | switch between All · Logins · API keys · Cards · IDs (identities) · SSH (keys) · Notes · 2FA; tabs you do not use can be hidden (see Settings below) |
 | `/` | search in name, type, tags, username, e-mail and URL (never in passwords or notes). Any key that is not a shortcut (a capital letter, a digit) starts the search too. Esc clears it |
 | Enter or `v` | show / hide the password, API key, card number and CVV, private key and passphrase, and notes. They hide themselves after **10 seconds**, and when you choose another item or open another screen |
 | `c` | copy the password, API key, card number, private key, document number or note to the clipboard; it is **cleared after 20 seconds** (or your `clip-time`) |
 | `u` / `m` | copy the username (cardholder) / the e-mail address |
 | `t` | show the current two-factor (TOTP) code with its seconds left, and copy it (cleared like a password) |
+| 2FA tab | every item with a TOTP secret and its **current code**, live, with the seconds left (red in the last 5), like an authenticator app; the details also show the next code. There **Enter** or `c` copies the code. ← from All goes straight to it |
 | `f` | pin or unpin the item as a **favorite**: a ★ before its name, and favorites come first in the list |
 | `p` | copy the public key of an SSH key |
 | `a` or `n` | add an item |
@@ -815,6 +816,10 @@ Valid for:       8 more second(s)
 
 - `cakepass add GitHub --totp` asks for the secret while adding; `cakepass edit
   GitHub --no-totp` removes it. In the screen, `t` shows and copies the code.
+- The screen's **2FA** tab works like an authenticator app (Proton
+  Authenticator, Google Authenticator): all your codes in one list, each with
+  the seconds it is still valid, and the next code in the details. Enter (or
+  `c`) copies the selected code. ← from All goes there in one key press.
 - The secret is checked before it is saved (spaces and lower case are fine; a
   typo is refused). An `otpauth://totp/…` link may set other digits, a period
   or SHA-256/SHA-512; without them it is the standard 6 digits, 30 s, SHA-1.

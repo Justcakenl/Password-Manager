@@ -238,7 +238,7 @@ impl HelpPage {
                 "Keys: the list",
                 &[
                     ("↑ ↓  PgUp PgDn  Home End", "choose an item"),
-                    ("← →  Tab", "All · Logins · API keys · Cards · IDs · SSH · Notes (hide some: s)"),
+                    ("← →  Tab", "All · Logins · API keys · Cards · IDs · SSH · Notes · 2FA (hide some: s)"),
                     ("/", "search (name, type, tags, username, e-mail, URL)"),
                     ("", "any key that is not a shortcut (a capital, a digit) starts the search too"),
                     ("Esc", "clear the search"),
@@ -250,6 +250,7 @@ impl HelpPage {
                     ),
                     ("u  m", "copy the username / the e-mail address"),
                     ("t", "show and copy the current two-factor (TOTP) code"),
+                    ("", "the 2FA tab lists every item with a code; there Enter or c copies it"),
                     ("p", "copy the public key of an SSH key"),
                     ("f", "pin or unpin as a favorite (★; favorites come first)"),
                     ("a  n", "add an item"),

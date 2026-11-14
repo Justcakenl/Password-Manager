@@ -1,6 +1,6 @@
 # Progress: `cakepass` (CakePass)
 
-Last updated: step 14 (editable screen tabs) and the desktop entry and app icon; content schema still 5.
+Last updated: step 15 (the 2FA tab in the screen); content schema still 5.
 Repository: `Justcakenl/Password-Manager`, branch `main` (private until it is made public).
 
 ## Maintainer checklist: manual testing on a real Arch machine
@@ -396,6 +396,32 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   `file://` copy of this repository; the GitHub URL itself only works once
   `main` is pushed.
 
+- [x] **Step 15: a 2FA tab in the screen** (branch `feature/2fa-tab`, from
+  `main`), asked for as "like Proton Authenticator". A new `Tab::TwoFactor`
+  ("2FA", last in the tab bar, so ← from All reaches it) lists every item
+  with a TOTP secret, of any type. Each row: name, account (username, or
+  the host of an SSH key), the current code in two halves (`287 082`) and
+  the seconds left, red in the last 5. The details show the code and the
+  **next code**. Enter and `c` copy the code there (`t` everywhere, as
+  before); `v` still shows the password. Search, favorites and paging work
+  as in the other tabs. Empty: "No two-factor codes yet" with the
+  `cakepass edit NAME --totp` hint. Codes are computed per frame from the
+  decrypted secret (`Totp`/`TotpCode` are `ZeroizeOnDrop`; the grouped text
+  is `Zeroizing`), never kept; under any dialog they are dots and the
+  details fall back to "set (t shows it)". The tab bar now keeps 12 columns
+  for the search instead of 18, so all eight tabs keep their counts in 80
+  columns. Files: `src/cli/tui/app.rs` (`Tab::TwoFactor`, `Tab::shows`),
+  `src/cli/tui/screens/main.rs` (`draw_code_rows`, keys, hints, details),
+  `src/cli/tui/screens/dialog.rs` (help). Tests: two new
+  (`the_2fa_tab_lists_every_code_like_an_authenticator_app`,
+  `the_2fa_tab_without_codes_says_how_to_add_one`), and the tab-order
+  tests updated for the eighth tab (`tests/tui.rs`
+  `hidden_tabs_from_the_settings_file`;
+  `with_every_type_tab_hidden_only_all_and_2fa_are_left`). Waits for
+  review (reviewer-sonnet) and security audit (security-opus).
+  Not in this step: adding a TOTP secret from the screen (the form has no
+  TOTP field; it is `cakepass add/edit --totp`), and scanning a QR code.
+
 ## Still to do
 
 - [x] **Pushed `main` to GitHub** (now at `f91117e`). HTTPS with a GitHub
@@ -643,12 +669,24 @@ See `docs/DESIGN.md` for the explanation. In short:
 - The Tabs row sits right after Auto-lock (with the other preferences,
   before the master password and security level), so those two rows moved
   down by one.
+- Step 15: the 2FA tab is a view, not a type, so it is not in
+  `hidden-tabs` and is always shown (like All); an empty one explains how
+  to add a code. It is last in the bar so ← from All reaches it in one
+  key and the order of the type tabs does not change.
+- On the 2FA tab the codes of all visible rows are shown at once, as in
+  every authenticator app: that is the point of the tab. A code is valid
+  for at most one period and is useless without the password, unlike the
+  password itself, which stays dots until revealed. Under a dialog the
+  codes are dots, like every other revealed secret.
+- Enter and `c` copy the code on the 2FA tab (the thing you came for);
+  `v` still shows the password there.
 
 ## Checks (latest step)
 
 | Check | Result |
 |---|---|
-| `cargo test` | 322 passed (121 library, 90 CLI/screen unit, 63 CLI integration, 14 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
+| `cargo test` (step 15) | 324 passed (121 library, 92 CLI/screen unit, 63 CLI integration, 14 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
+| 2FA tab in a real terminal (step 15, debug build in tmux, throwaway vault from a CSV with RFC test seeds) | at 100×28, 80×24 and 60×16: 6- and 8-digit codes with seconds left, next code in the details, Enter copies ("The TOTP code copied (wl-copy)"); all eight tabs with counts at 80 columns |
 | Known-answer tests (step 12) | TOTP: RFC 6238 Appendix B (SHA-1, SHA-256, SHA-512, all six times) and RFC 4226 Appendix D; base32: RFC 4648 section 10; cross-checked with an independent Python implementation (`hmac`/`hashlib`/`base64`) |
 | Known-answer tests (step 11) | Argon2id with a secret: vectors from the reference C implementation (libargon2 via argon2-cffi; the harness reproduces RFC 9106 first); key-file pepper: vectors from Python's `hashlib.blake2b(digest_size=32)` |
 | Unlock times (release, 4-core 2.1 GHz Xeon VM, step 11) | Standard ≈ 0.18–0.21 s, High ≈ 0.8–0.9 s, Maximum ≈ 3.6–3.8 s (first run once 5.9 s); wiping Argon2's freed memory is ~5–10 % of that |
@@ -676,6 +714,14 @@ See `docs/DESIGN.md` for the explanation. In short:
 ## Testing on Arch
 
 Could NOT be tested in the cloud environment. Do this yourself and tick:
+
+### The 2FA tab – new in step 15
+
+- [ ] `cakepass`, then ←: the 2FA tab lists your items with a TOTP secret,
+      each code the same as in your phone's authenticator app, counting down
+- [ ] Enter on a row: "The TOTP code copied"; paste it on the site's login
+      page and it is accepted; the clipboard is empty after the clip time
+- [ ] `?` (help) on the 2FA tab: the codes behind it turn into dots
 
 ### Screen tabs, desktop entry and icon – new in step 14
 

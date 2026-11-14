@@ -350,13 +350,15 @@ fn search_and_tabs_filter_the_list() {
     t.typ("sk-test");
     assert!(t.app.view.is_empty() && t.screen().contains("No items match."));
     t.key(Key::Esc);
-    // Tabs: All · Logins · API keys · Cards · IDs · SSH · Notes.
+    // Tabs: All · Logins · API keys · Cards · IDs · SSH · Notes · 2FA.
     t.key(Key::Right);
     assert_eq!(t.app.tab, Tab::Logins);
     assert_eq!(t.app.view.len(), 1);
     t.keys(&[Key::Right, Key::Right, Key::Right, Key::Right, Key::Right]);
     assert_eq!(t.app.tab, Tab::Notes);
     assert_eq!(t.app.selected().unwrap().name(), "Recovery codes");
+    t.key(Key::Right);
+    assert_eq!((t.app.tab, t.app.view.len()), (Tab::TwoFactor, 0), "no item has a TOTP secret");
     t.key(Key::Right);
     assert_eq!(t.app.tab, Tab::All);
     // Pasting outside the search does nothing at all.
@@ -910,6 +912,78 @@ fn the_totp_code_is_computed_shown_and_copied() {
 }
 
 #[test]
+fn the_2fa_tab_lists_every_code_like_an_authenticator_app() {
+    let mut t = new_types();
+    {
+        // A TOTP secret on a card too: the tab is not about one type.
+        let (vault, key) = t.app.uv.parts_mut();
+        vault.update("Visa", |e| e.set_totp_secret(key, TOTP_SEED)).unwrap();
+    }
+    t.app.refilter();
+    t.app.clock = || 59;
+    assert!(tab_bar(&t).contains("2FA 2"), "with its count, in 80 columns: {}", tab_bar(&t));
+    // ← from All goes straight to it.
+    t.key(Key::Left);
+    assert_eq!(t.app.tab, Tab::TwoFactor);
+    let names: Vec<&str> = t.app.view.iter().map(|&i| t.app.entries()[i].name()).collect();
+    assert_eq!(names, ["GitHub", "Visa"], "only the items with a TOTP secret");
+    // Every row shows its code (in two halves) and the seconds left; the
+    // details show the next code as well. Nothing else secret is shown.
+    let s = t.screen();
+    assert_eq!(s.matches("287 082    1s").count(), 2, "{s}");
+    assert!(s.contains("287082  (1 s)") && s.contains("Next code") && s.contains("359152"), "{s}");
+    assert!(!s.contains("gh-Secret-1") && !s.contains("4111") && !s.contains("Server key"), "{s}");
+    // Computed again for every frame.
+    t.app.clock = || 60;
+    let s = t.screen();
+    assert!(s.contains("359 152   30s") && !s.contains("287"), "{s}");
+    assert!(s.contains("969429"), "the next code after 359152: {s}");
+    // Enter and c copy the code of the selected row (not the password).
+    t.key(Key::Enter);
+    t.key(Key::Down);
+    t.key(Key::Char('c'));
+    assert_eq!(t.clip.borrow().as_slice(), ["359152", "359152"]);
+    assert_eq!(t.toast(), "The TOTP code copied (test-clipboard)");
+    assert_eq!(t.app.tab, Tab::TwoFactor, "copying stays on the tab");
+    // Under a dialog the codes are dots.
+    t.key(Key::Char('?'));
+    let s = t.screen();
+    assert!(!s.contains("359") && !s.contains("969429"), "{s}");
+    t.key(Key::Esc);
+    assert!(t.screen().contains("359 152"));
+    // The search works inside the tab.
+    t.typ("Vis");
+    assert_eq!(t.app.view.len(), 1);
+    assert_eq!(t.app.selected().unwrap().name(), "Visa");
+    t.key(Key::Esc);
+    // In the other tabs Enter still shows the password, c copies it.
+    t.key(Key::Right);
+    assert_eq!(t.app.tab, Tab::All);
+    select(&mut t, "GitHub");
+    t.key(Key::Char('c'));
+    assert_eq!(t.clip.borrow().last().unwrap(), "gh-Secret-1");
+    let s = t.screen();
+    assert!(s.contains("set (t shows it)") && !s.contains("Next code"), "{s}");
+}
+
+#[test]
+fn the_2fa_tab_without_codes_says_how_to_add_one() {
+    let mut t = T::sample();
+    t.key(Key::Left);
+    assert_eq!((t.app.tab, t.app.view.len()), (Tab::TwoFactor, 0));
+    let s = t.screen();
+    assert!(s.contains("No two-factor codes yet.") && s.contains("--totp"), "{s}");
+    // Enter on an empty tab does nothing (and does not fail).
+    t.key(Key::Enter);
+    assert!(t.clip.borrow().is_empty() && t.app.toast.is_none());
+    // Narrow and small windows still draw it.
+    for (w, h) in [(60, 16), (70, 30), (100, 30)] {
+        t.app.resize((w, h));
+        assert!(t.screen_at(w, h).contains("2FA"), "{}", t.screen_at(w, h));
+    }
+}
+
+#[test]
 fn add_a_card_and_an_ssh_key_with_the_form() {
     let mut t = T::new();
     t.key(Key::Char('a'));
@@ -1177,9 +1251,9 @@ fn hiding_a_tab_in_the_settings_keeps_its_items_under_all() {
     assert_eq!(t.app.tab, Tab::Cards, "past the hidden API tab");
     t.keys(&[Key::Left, Key::Left]);
     assert_eq!(t.app.tab, Tab::All);
-    t.key(Key::Left);
+    t.keys(&[Key::Left, Key::Left]);
     assert_eq!(t.app.tab, Tab::Notes);
-    t.key(Key::Tab);
+    t.keys(&[Key::Tab, Key::Tab]);
     assert_eq!(t.app.tab, Tab::All);
     // The search still finds it.
     t.typ("open");
@@ -1197,12 +1271,15 @@ fn hiding_a_tab_in_the_settings_keeps_its_items_under_all() {
 }
 
 #[test]
-fn with_every_type_tab_hidden_only_all_is_left() {
+fn with_every_type_tab_hidden_only_all_and_2fa_are_left() {
     let mut t = T::sample();
     t.app.cfg.hidden_tabs = Kind::ALL.to_vec();
     let bar = tab_bar(&t);
     assert!(bar.contains("All 3") && !bar.contains("Logins") && !bar.contains("Notes"), "{bar}");
+    assert!(bar.contains("2FA 0"), "2FA is not a type, so it cannot be hidden: {bar}");
     for k in [Key::Right, Key::Left, Key::Tab, Key::BackTab] {
+        t.key(k);
+        assert_eq!(t.app.tab, Tab::TwoFactor);
         t.key(k);
         assert_eq!(t.app.tab, Tab::All);
     }

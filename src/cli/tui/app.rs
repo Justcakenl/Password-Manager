@@ -76,15 +76,28 @@ pub enum Tab {
     Identities,
     SshKeys,
     Notes,
+    /// Every item with a TOTP secret, whatever its type, with its current
+    /// code in the list (like an authenticator app). Not a type, so it is
+    /// not in the `hidden-tabs` setting either: it is always shown.
+    TwoFactor,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 7] =
-        [Tab::All, Tab::Logins, Tab::Api, Tab::Cards, Tab::Identities, Tab::SshKeys, Tab::Notes];
+    /// Last, so ← from "All" goes straight to the codes.
+    pub const ALL: [Tab; 8] = [
+        Tab::All,
+        Tab::Logins,
+        Tab::Api,
+        Tab::Cards,
+        Tab::Identities,
+        Tab::SshKeys,
+        Tab::Notes,
+        Tab::TwoFactor,
+    ];
 
     pub fn kind(self) -> Option<Kind> {
         match self {
-            Tab::All => None,
+            Tab::All | Tab::TwoFactor => None,
             Tab::Logins => Some(Kind::Login),
             Tab::Api => Some(Kind::Api),
             Tab::Cards => Some(Kind::Card),
@@ -104,6 +117,15 @@ impl Tab {
             // Short, so all seven tabs keep their counts in 80 columns.
             Tab::SshKeys => "SSH",
             Tab::Notes => "Notes",
+            Tab::TwoFactor => "2FA",
+        }
+    }
+
+    /// Whether this tab lists `e`.
+    pub fn shows(self, e: &Entry) -> bool {
+        match self {
+            Tab::TwoFactor => e.has_totp(),
+            t => t.kind().is_none_or(|k| e.kind() == k),
         }
     }
 
@@ -389,6 +411,7 @@ impl App {
 
     /// Whether the tab bar shows this tab (`config set hidden-tabs`, or the
     /// Tabs row in the settings). Only the tab: its items stay under "All".
+    /// "All" and "2FA" are not a type, so they are always shown.
     pub fn tab_shown(&self, tab: Tab) -> bool {
         tab.kind().is_none_or(|k| self.cfg.shows_tab(k))
     }
@@ -406,7 +429,7 @@ impl App {
     /// selected item selected when it is still there.
     pub fn refilter(&mut self) {
         let keep = self.selected().map(|e| e.name().to_string());
-        let kind = self.tab.kind();
+        let tab = self.tab;
         let query = self.search.as_str().trim();
         let entries = self.uv.vault.entries();
         self.view = if query.is_empty() {
@@ -424,7 +447,7 @@ impl App {
             }
             out
         };
-        self.view.retain(|&i| kind.is_none_or(|k| entries[i].kind() == k));
+        self.view.retain(|&i| tab.shows(&entries[i]));
         // Favorites first; otherwise the vault's order (by name). Stable.
         self.view.sort_by_key(|&i| !entries[i].is_favorite());
         match keep.and_then(|n| self.view.iter().position(|&i| entries[i].name() == n)) {
