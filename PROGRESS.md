@@ -1,6 +1,6 @@
 # Progress: `cakepass` (CakePass)
 
-Last updated: step 18 (a word of your own in the generator); content schema still 5.
+Last updated: step 18b (the own word is never the master password); content schema still 5.
 Repository: `Justcakenl/Password-Manager`, branch `main` (private until it is made public).
 
 ## Maintainer checklist: manual testing on a real Arch machine
@@ -609,6 +609,24 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   remembered); tests/cli.rs `generate_with_a_word_of_your_own` (length,
   bits of the random part, passphrase, escape code refused). Seen in tmux
   at 80×24.
+
+- [x] **Step 18b: the own word is never the master password** (branch
+  `fix/own-word-not-master`, from ADMIN `main` `76f627a`; raised by
+  deepseek, reviewer-sonnet and security-opus after step 18). A word of
+  your own goes into a password that is sent to a website, so a master
+  password typed there out of habit would leak.
+  - `ask_own_word(g, uv)` no longer runs before the unlock: `add`/`edit`
+    ask it in `execute` (after the master password), `generate` in
+    `generate()` after the `--save` unlock. With the vault open the word
+    (asked or `--own-word=WORD`) is checked with `verify_password`; the
+    key file is loaded again for that (`key_file_for`, as `reconfirm`),
+    since `unlock` drops it. A match is refused before anything is saved.
+  - A plain `generate` has no vault open: the question now says "NOT your
+    master password".
+  Tests (tests/cli.rs): `an_own_word_that_is_the_master_password_is_refused`
+  (`add --own-word`, `--own-word=PW`, `generate --save`, nothing saved;
+  master password asked before the word; a normal word works) and the same
+  with a key file (checked to fail when the key file is not reloaded).
 
 ## Still to do
 
