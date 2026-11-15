@@ -455,6 +455,7 @@ fn generator_with_a_word_of_your_own() {
     t.key(Key::Char('w'));
     assert!(t.screen().contains("A word of your own"), "{}", t.screen());
     t.typ("Justin");
+    assert!(!t.screen().contains("Justin"), "dots while typing: {}", t.screen());
     t.key(Key::Enter);
     let s = t.screen();
     assert!(s.contains("Own word") && s.contains("w changes") && !s.contains("Justin"), "dots: {s}");
@@ -476,6 +477,12 @@ fn generator_with_a_word_of_your_own() {
     t.key(Key::Char('w'));
     let Some(Modal::Prompt(p)) = t.app.modals.last() else { panic!() };
     assert_eq!(p.input.as_str(), "Justin");
+    assert!(p.masked && !t.screen().contains("Justin"), "filled in, as dots: {}", t.screen());
+    // With the password shown (v), the word is shown in the dialog too.
+    t.key(Key::Esc);
+    t.key(Key::Char('v'));
+    t.key(Key::Char('w'));
+    assert!(t.screen().contains("Justin"), "{}", t.screen());
 }
 
 #[test]

@@ -591,7 +591,9 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
     `--own-word=WORD` gives it directly; `check_own_word` also refuses
     invisible characters (zero-width, direction marks, BOM, soft hyphen,
     variation selectors, tag characters) and spaces other than the plain
-    one.
+    one. The screen's "A word of your own" dialog is masked (dots, also
+    the filled-in current word) unless the generator shows the password
+    (`v`).
   - Screen: an "Own word" row (password and passphrase) and `w`: a dialog
     (filled in with the current word; empty removes it). Shown as dots
     unless `v`; kept in `GenPrefs.own_word` (`Zeroizing`, left out of

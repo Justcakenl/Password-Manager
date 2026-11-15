@@ -800,7 +800,8 @@ impl App {
                                     .into(),
                             ],
                             "Word",
-                            false,
+                            // Like the generator: dots unless it shows the password (v).
+                            !g.shown,
                             PromptPurpose::OwnWord,
                         );
                         p.input.set(&g.prefs.own_word);
