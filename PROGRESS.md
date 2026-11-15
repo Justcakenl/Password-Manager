@@ -582,10 +582,16 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
     guessable, so it adds no strength and the password is never weaker
     than without it. `check_own_word`: 1 to 32 characters, no control
     characters, no spaces at the ends.
-  - CLI: `--own-word WORD` on every command with generator options
-    (`generate`, `add`, `edit`, ...), via `Recipe::generate(own)`; a note
-    says the strength counts only the random part. README: the word lands
-    in the shell history like any argument.
+  - CLI: `--own-word` on every command with generator options
+    (`generate`, `add`, `edit`), via `Recipe::generate(own)`; a note says
+    the strength counts only the random part. After review
+    (security-opus, reviewer-sonnet): `require_equals`, so `--own-word`
+    alone asks for the word hidden once before anything else
+    (`commands::ask_own_word`, out of the shell history) and
+    `--own-word=WORD` gives it directly; `check_own_word` also refuses
+    invisible characters (zero-width, direction marks, BOM, soft hyphen,
+    variation selectors, tag characters) and spaces other than the plain
+    one.
   - Screen: an "Own word" row (password and passphrase) and `w`: a dialog
     (filled in with the current word; empty removes it). Shown as dots
     unless `v`; kept in `GenPrefs.own_word` (`Zeroizing`, left out of

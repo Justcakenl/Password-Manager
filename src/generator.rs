@@ -104,16 +104,30 @@ impl PasswordOptions {
 /// The longest word of your own that can go into a generated password.
 pub const MAX_OWN_WORD: usize = 32;
 
+/// Characters you cannot see: they would make a password you cannot type
+/// again (zero-width and direction marks, invisible separators, the byte
+/// order mark, the soft hyphen, variation selectors).
+fn is_invisible(c: char) -> bool {
+    matches!(c,
+        '\u{00AD}' | '\u{034F}' | '\u{061C}' | '\u{115F}' | '\u{1160}' | '\u{17B4}' | '\u{17B5}'
+        | '\u{180B}'..='\u{180F}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{206F}' | '\u{3164}' | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}' | '\u{FFA0}'
+        | '\u{FFF0}'..='\u{FFF8}' | '\u{E0000}'..='\u{E0FFF}')
+}
+
 /// Check a word of your own (see [`generate_password_with`]): 1 to
-/// [`MAX_OWN_WORD`] characters, no spaces at the ends, no control characters.
+/// [`MAX_OWN_WORD`] characters, no spaces at the ends, no control
+/// characters, no invisible characters, and no other spaces than the plain one.
 pub fn check_own_word(word: &str) -> Result<()> {
     let n = word.chars().count();
     if n == 0 || n > MAX_OWN_WORD {
         return Err(Error::InvalidInput(format!("your own word must be 1 to {MAX_OWN_WORD} characters")));
     }
-    if word.trim() != word || word.chars().any(char::is_control) {
+    if word.trim() != word
+        || word.chars().any(|c| c.is_control() || is_invisible(c) || (c.is_whitespace() && c != ' '))
+    {
         return Err(Error::InvalidInput(
-            "your own word may not start or end with a space, or hold control characters".into(),
+            "your own word may not start or end with a space, or hold control or invisible characters".into(),
         ));
     }
     Ok(())
@@ -266,7 +280,20 @@ mod tests {
     #[test]
     fn your_own_word_is_checked() {
         let opts = PasswordOptions::default();
-        for bad in ["", " x", "x ", "a\u{1b}b", "tab\there", &"x".repeat(MAX_OWN_WORD + 1)] {
+        for bad in [
+            "",
+            " x",
+            "x ",
+            "a\u{1b}b",
+            "tab\there",
+            &"x".repeat(MAX_OWN_WORD + 1),
+            "zero\u{200B}width",
+            "bidi\u{202E}nitsuJ",
+            "\u{FEFF}bom",
+            "soft\u{AD}hyphen",
+            "no\u{A0}break",
+            "tag\u{E0041}",
+        ] {
             assert!(generate_password_with(&opts, Some(bad)).is_err(), "{bad:?}");
             assert!(generate_passphrase_with(&PassphraseOptions::default(), Some(bad)).is_err(), "{bad:?}");
         }
