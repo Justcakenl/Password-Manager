@@ -790,6 +790,23 @@ impl App {
                         true,
                         PromptPurpose::OwnPassword,
                     ))),
+                    screens::generator::Action::OwnWord => {
+                        let mut p = Prompt::new(
+                            "A word of your own",
+                            vec![
+                                "It goes into the password at a random place, e.g. a name. The random part \
+                                 keeps its full length, so it is never weaker; the word itself adds no strength. \
+                                 Leave it empty to remove it."
+                                    .into(),
+                            ],
+                            "Word",
+                            // Like the generator: dots unless it shows the password (v).
+                            !g.shown,
+                            PromptPurpose::OwnWord,
+                        );
+                        p.input.set(&g.prefs.own_word);
+                        self.modals.push(Modal::Prompt(p));
+                    }
                     screens::generator::Action::Accept => self.generator_accepted(),
                 }
             }
@@ -874,6 +891,11 @@ impl App {
                     true,
                     PromptPurpose::OwnPasswordRepeat(text),
                 )));
+            }
+            PromptPurpose::OwnWord => {
+                if let Some(Modal::Generator(g)) = self.modals.last_mut() {
+                    g.set_own_word(text.trim());
+                }
             }
             PromptPurpose::OwnPasswordRepeat(first) => {
                 let same = same_secret(&first, &text);

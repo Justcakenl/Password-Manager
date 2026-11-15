@@ -370,6 +370,40 @@ fn generator() {
 }
 
 #[test]
+fn generate_with_a_word_of_your_own() {
+    let k = Vaulty::new();
+    let run = |args: &[&str], stdin: &str| {
+        let o = k.run(args, stdin).success().get_output().clone();
+        (String::from_utf8(o.stdout).unwrap().trim().to_string(), String::from_utf8(o.stderr).unwrap())
+    };
+    let (pw, err) = run(&["generate", "--show", "-l", "20", "--own-word=Justin"], "");
+    assert!(pw.contains("Justin"), "{pw}");
+    assert_eq!(pw.chars().count(), 26, "20 random characters plus the word: {pw}");
+    let at = pw.find("Justin").unwrap();
+    assert!((5..=15).contains(&at), "in the middle: {pw}");
+    assert!(err.contains("strength counts only the random part"), "{err}");
+    assert!(err.contains("26 characters, about 1"), "the bits are those of the 20: {err}");
+    // --own-word alone asks for it (hidden in a terminal; here from stdin),
+    // so it stays out of the shell history.
+    let (pw, err) = run(&["generate", "--show", "--own-word"], "Bakfiets\n");
+    assert!(pw.contains("Bakfiets") && err.contains("Your own word (hidden"), "{pw} / {err}");
+    // A value needs the = (else it would be read as another argument).
+    k.run(&["generate", "--show", "--own-word", "Justin"], "").failure();
+    let (phrase, _) =
+        run(&["generate", "--show", "-p", "-w", "4", "--separator", ".", "--own-word=Bakfiets"], "");
+    let words: Vec<&str> = phrase.split('.').collect();
+    assert_eq!(words.len(), 5, "{phrase}");
+    let at = words.iter().position(|w| *w == "Bakfiets").expect(&phrase);
+    assert!((1..=3).contains(&at), "never first or last: {phrase}");
+    for bad in
+        ["--own-word=", "--own-word= lead", "--own-word=a\u{1b}]0;x\u{7}", "--own-word=zero\u{200B}width"]
+    {
+        k.run(&["generate", "--show", bad], "").failure().stderr(contains("own word"));
+    }
+    k.run(&["generate", "--show", "--own-word"], "\n").failure().stderr(contains("no word given"));
+}
+
+#[test]
 fn info_works_without_password() {
     let k = Vaulty::new();
     k.run(&["info"], "").success().stdout(contains("does not exist yet"));

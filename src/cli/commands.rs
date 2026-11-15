@@ -113,6 +113,8 @@ pub fn run(cli: args::Cli) -> Result<()> {
         }
         return interactive(&paths, &cfg, cli.no_tui);
     };
+    let mut command = command;
+    ask_own_word(&mut command)?;
     match command {
         Cmd::Setup { kdf } => setup::run(&paths, &kdf),
         Cmd::Init { kdf } => init(&paths, &kdf),
@@ -162,7 +164,8 @@ fn offer_screen_mode() -> bool {
 }
 
 /// Run a command on an unlocked vault (also from `cakepass shell`).
-pub fn execute(uv: &mut UnlockedVault, cmd: Cmd, in_shell: bool) -> Result<()> {
+pub fn execute(uv: &mut UnlockedVault, mut cmd: Cmd, in_shell: bool) -> Result<()> {
+    ask_own_word(&mut cmd)?;
     match cmd {
         Cmd::Add(a) => add(uv, a),
         Cmd::Get(g) => get(uv, &g),
@@ -420,18 +423,46 @@ impl Recipe {
         }
     }
 
-    /// The secret and its strength in bits.
-    pub(super) fn generate(&self) -> Result<(Zeroizing<String>, f64)> {
+    /// The secret and its strength in bits, with `own` (a word of your own)
+    /// at a random place. The bits count only the generated part.
+    pub(super) fn generate(&self, own: Option<&str>) -> Result<(Zeroizing<String>, f64)> {
         match self {
-            Recipe::Password(o) => Ok((generator::generate_password(o)?, o.entropy_bits())),
-            Recipe::Passphrase(o) => Ok((generator::generate_passphrase(o)?, o.entropy_bits())),
+            Recipe::Password(o) => Ok((generator::generate_password_with(o, own)?, o.entropy_bits())),
+            Recipe::Passphrase(o) => Ok((generator::generate_passphrase_with(o, own)?, o.entropy_bits())),
         }
     }
 }
 
+/// `--own-word` without a value: ask for the word (hidden, so it is not in
+/// the shell history or on screen) once, before anything else is asked.
+fn ask_own_word(cmd: &mut Cmd) -> Result<()> {
+    let g = match cmd {
+        Cmd::Generate { opts, .. } => opts,
+        Cmd::Add(a) => &mut a.gen_opts,
+        Cmd::Edit(e) => &mut e.gen_opts,
+        _ => return Ok(()),
+    };
+    if g.own_word.as_deref() == Some("") {
+        let word = prompt::secret("Your own word (hidden; it goes in the middle of the password): ")?;
+        let word = word.expose_secret().trim();
+        if word.is_empty() {
+            return Err(Error::InvalidInput("no word given for --own-word".into()));
+        }
+        generator::check_own_word(word)?;
+        g.own_word = Some(word.to_string());
+    }
+    Ok(())
+}
+
 /// Generate a password or passphrase according to the options.
 fn generate_secret(g: &GenArgs) -> Result<(Zeroizing<String>, f64)> {
-    Recipe::from_args(g).generate()
+    let made = Recipe::from_args(g).generate(g.own_word.as_deref())?;
+    if g.own_word.is_some() {
+        ui::info(
+            "Your own word is in the middle at a random place; the strength counts only the random part.",
+        );
+    }
+    Ok(made)
 }
 
 /// "The password" / "The API key" / "The note" / "The card number" / "The

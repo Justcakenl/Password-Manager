@@ -1,6 +1,6 @@
 # Progress: `cakepass` (CakePass)
 
-Last updated: step 17 (sharing items with another CakePass), plus the version on the opening screen; content schema still 5.
+Last updated: step 18 (a word of your own in the generator); content schema still 5.
 Repository: `Justcakenl/Password-Manager`, branch `main` (private until it is made public).
 
 ## Maintainer checklist: manual testing on a real Arch machine
@@ -567,6 +567,48 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   `-`, but four list words have a dash themselves (`drop-down`, `felt-tip`,
   `t-shirt`, `yo-yo`), so about 0.3% of runs counted 7. They now accept 6
   to 12 parts.
+
+- [x] **Step 18: a word of your own in the generator** (branch
+  `feature/own-word-in-generator`, from ADMIN `main` `ffc16d1`; asked for
+  by the user: "type your own word and it generates the other characters
+  around it").
+  - Library (`generator.rs`): `generate_password_with` /
+    `generate_passphrase_with(opts, Some(word))` put the word at a random
+    place in the middle: at least a quarter of the random characters (at
+    least 1) on each side, as the user asked ("jvsdnb#U*#!*(word)28884218hje");
+    in a passphrase as one extra word between the others, never first or
+    last. The random part keeps its full length
+    and `entropy_bits` still counts only that part: the word may be
+    guessable, so it adds no strength and the password is never weaker
+    than without it. `check_own_word`: 1 to 32 characters, no control
+    characters, no spaces at the ends.
+  - CLI: `--own-word` on every command with generator options
+    (`generate`, `add`, `edit`), via `Recipe::generate(own)`; a note says
+    the strength counts only the random part. After review
+    (security-opus, reviewer-sonnet): `require_equals`, so `--own-word`
+    alone asks for the word hidden once before anything else
+    (`commands::ask_own_word`, out of the shell history) and
+    `--own-word=WORD` gives it directly; `check_own_word` also refuses
+    invisible characters (zero-width, direction marks, BOM, soft hyphen,
+    variation selectors, tag characters) and spaces other than the plain
+    one. The screen's "A word of your own" dialog is masked (dots, also
+    the filled-in current word) unless the generator shows the password
+    (`v`).
+  - Screen: an "Own word" row (password and passphrase) and `w`: a dialog
+    (filled in with the current word; empty removes it). Shown as dots
+    unless `v`; kept in `GenPrefs.own_word` (`Zeroizing`, left out of
+    `Debug`) while CakePass is open, never saved. A word that is not
+    allowed changes nothing and shows the reason.
+  Tests: generator.rs `your_own_word_goes_in_at_a_random_place_and_the_rest_stays_random`
+  (every middle place reached and nothing outside it, also at the minimum
+  length; random part full length; passphrase one extra word, never
+  first or last) and `your_own_word_is_checked`; screens/generator.rs
+  `a_word_of_your_own` (row and `w`, bits unchanged, kept on `r`, bad word
+  refused, passphrase, empty removes, not in Debug); app/tests.rs
+  `generator_with_a_word_of_your_own` (dots, v shows, saved as a login,
+  remembered); tests/cli.rs `generate_with_a_word_of_your_own` (length,
+  bits of the random part, passphrase, escape code refused). Seen in tmux
+  at 80×24.
 
 ## Still to do
 

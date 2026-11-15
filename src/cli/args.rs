@@ -455,6 +455,13 @@ pub struct GenArgs {
     /// Separator between the words
     #[arg(long, default_value = "-", value_name = "CHAR")]
     pub separator: String,
+    /// A word of your own, put in the middle with random characters on both
+    /// sides (e.g. jvsdnb#U*#Justin28884218hje). --own-word alone asks for it
+    /// (hidden, so it stays out of your shell history); --own-word=WORD gives
+    /// it directly. The random part keeps its full length; the word adds no
+    /// strength, as it may be guessable
+    #[arg(long, value_name = "WORD", num_args = 0..=1, require_equals = true, default_missing_value = "")]
+    pub own_word: Option<String>,
 }
 
 #[derive(Args, Debug)]
