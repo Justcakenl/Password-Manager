@@ -370,6 +370,28 @@ fn generator() {
 }
 
 #[test]
+fn generate_with_a_word_of_your_own() {
+    let k = Vaulty::new();
+    let run = |args: &[&str]| {
+        let o = k.run(args, "").success().get_output().clone();
+        (String::from_utf8(o.stdout).unwrap().trim().to_string(), String::from_utf8(o.stderr).unwrap())
+    };
+    let (pw, err) = run(&["generate", "--show", "-l", "20", "--own-word", "Justin"]);
+    assert!(pw.contains("Justin"), "{pw}");
+    assert_eq!(pw.chars().count(), 26, "20 random characters plus the word: {pw}");
+    assert!(err.contains("strength counts only the random part"), "{err}");
+    assert!(err.contains("26 characters, about 1"), "the bits are those of the 20: {err}");
+    let (phrase, _) =
+        run(&["generate", "--show", "-p", "-w", "4", "--separator", ".", "--own-word", "Bakfiets"]);
+    let words: Vec<&str> = phrase.split('.').collect();
+    assert_eq!(words.len(), 5, "{phrase}");
+    assert!(words.contains(&"Bakfiets"), "{phrase}");
+    for bad in ["", " lead", "a\u{1b}]0;x\u{7}"] {
+        k.run(&["generate", "--show", "--own-word", bad], "").failure().stderr(contains("own word"));
+    }
+}
+
+#[test]
 fn info_works_without_password() {
     let k = Vaulty::new();
     k.run(&["info"], "").success().stdout(contains("does not exist yet"));

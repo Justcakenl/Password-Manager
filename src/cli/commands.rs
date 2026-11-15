@@ -420,18 +420,23 @@ impl Recipe {
         }
     }
 
-    /// The secret and its strength in bits.
-    pub(super) fn generate(&self) -> Result<(Zeroizing<String>, f64)> {
+    /// The secret and its strength in bits, with `own` (a word of your own)
+    /// at a random place. The bits count only the generated part.
+    pub(super) fn generate(&self, own: Option<&str>) -> Result<(Zeroizing<String>, f64)> {
         match self {
-            Recipe::Password(o) => Ok((generator::generate_password(o)?, o.entropy_bits())),
-            Recipe::Passphrase(o) => Ok((generator::generate_passphrase(o)?, o.entropy_bits())),
+            Recipe::Password(o) => Ok((generator::generate_password_with(o, own)?, o.entropy_bits())),
+            Recipe::Passphrase(o) => Ok((generator::generate_passphrase_with(o, own)?, o.entropy_bits())),
         }
     }
 }
 
 /// Generate a password or passphrase according to the options.
 fn generate_secret(g: &GenArgs) -> Result<(Zeroizing<String>, f64)> {
-    Recipe::from_args(g).generate()
+    let made = Recipe::from_args(g).generate(g.own_word.as_deref())?;
+    if g.own_word.is_some() {
+        ui::info("Your own word is in it at a random place; the strength counts only the random part.");
+    }
+    Ok(made)
 }
 
 /// "The password" / "The API key" / "The note" / "The card number" / "The

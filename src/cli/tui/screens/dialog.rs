@@ -118,6 +118,8 @@ pub enum PromptPurpose {
     SaveGenerated,
     OwnPassword,
     OwnPasswordRepeat(Zeroizing<String>),
+    /// A word of your own for the generator (empty removes it).
+    OwnWord,
     /// The current master password, before changing it.
     Reconfirm,
     NewMaster,
@@ -413,6 +415,10 @@ impl HelpPage {
                     ("r", "a new password"),
                     ("v", "show / hide it"),
                     ("e", "type your own instead (asked twice)"),
+                    (
+                        "w",
+                        "a word of your own, put in at a random place (it adds no strength; empty removes it)",
+                    ),
                     ("c", "copy it (the clipboard is cleared after the clip-time, 20 s by default)"),
                     ("Enter", "use it (from the list: save it as a new login)"),
                     ("Esc", "cancel"),

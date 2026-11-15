@@ -529,7 +529,8 @@ is always just text, it never triggers a shortcut.
 strength in bits, and the options: ↑ ↓ choose an option, ← → change it (length,
 upper/lowercase, digits, symbols, no look-alikes, or a passphrase with the number
 of words and the separator). `r` makes a new one, `v` shows it, `e` lets you type
-your own (twice), `c` copies it, Enter uses it, Esc cancels. Opened from the list,
+your own (twice), `w` adds a **word of your own** (see below), `c` copies it,
+Enter uses it, Esc cancels. Opened from the list,
 Enter asks for a name and saves it as a new login (like `cakepass generate --save`).
 
 **Settings** (`s`): the startup animation (on/off), the auto-lock time (← → one
@@ -860,7 +861,18 @@ cakepass generate --no-symbols            # without symbols
 cakepass generate --no-lookalikes         # without 0 O 1 l I |
 cakepass generate --passphrase            # 6 words, e.g. grape-lantern-oyster-…
 cakepass generate -p -w 8 --separator .   # 8 words with dots
+cakepass generate --own-word Justin       # e.g. k3#Justinq9!xR… (your word in it)
 ```
+
+**A word of your own.** With `--own-word WORD` (or `w` in the generator of the
+screen) your word goes into the password at a random place, with the random
+characters around it; in a passphrase it is one extra word between the others.
+The random part keeps its full length, so the password is never weaker than
+without the word, and the strength shown counts only that part: a word of
+your own (a name, the site) may be guessable, so it adds no strength. Up to 32
+characters, no control characters and no spaces at the ends. In the screen it
+is remembered (never saved) while CakePass is open; empty removes it. Note that
+`--own-word` on the command line lands in your shell history, like any argument.
 
 Passphrases come from the EFF diceware word list (7776 words, 12.9 bits per
 word). Six words give about 77 bits; the setup wizard makes seven (about 90

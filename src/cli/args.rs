@@ -455,6 +455,11 @@ pub struct GenArgs {
     /// Separator between the words
     #[arg(long, default_value = "-", value_name = "CHAR")]
     pub separator: String,
+    /// A word of your own, put in at a random place (e.g. --own-word Justin
+    /// gives something like k3#Justinq9!xR...). The random part keeps its full
+    /// length; the word adds no strength, as it may be guessable
+    #[arg(long, value_name = "WORD")]
+    pub own_word: Option<String>,
 }
 
 #[derive(Args, Debug)]

@@ -449,6 +449,36 @@ fn generator_saves_a_new_login() {
 }
 
 #[test]
+fn generator_with_a_word_of_your_own() {
+    let mut t = T::new();
+    t.key(Key::Char('g'));
+    t.key(Key::Char('w'));
+    assert!(t.screen().contains("A word of your own"), "{}", t.screen());
+    t.typ("Justin");
+    t.key(Key::Enter);
+    let s = t.screen();
+    assert!(s.contains("Own word") && s.contains("w changes") && !s.contains("Justin"), "dots: {s}");
+    t.key(Key::Char('v'));
+    assert!(t.screen().contains("Justin"), "v shows it");
+    let value = {
+        let Some(Modal::Generator(g)) = t.app.modals.last() else { panic!() };
+        g.value.to_string()
+    };
+    assert!(value.contains("Justin"));
+    t.key(Key::Enter);
+    t.typ("Router");
+    t.key(Key::Enter);
+    let uv = t.reopen(PW);
+    assert_eq!(get(&uv, "router").password(uv.item_key()).unwrap().as_str(), value);
+    // Remembered while CakePass is open; the dialog starts with it filled in.
+    assert_eq!(t.app.gen_prefs.own_word.as_str(), "Justin");
+    t.key(Key::Char('g'));
+    t.key(Key::Char('w'));
+    let Some(Modal::Prompt(p)) = t.app.modals.last() else { panic!() };
+    assert_eq!(p.input.as_str(), "Justin");
+}
+
+#[test]
 fn generator_inside_the_form_and_own_password() {
     let mut t = T::new();
     t.key(Key::Char('a'));
