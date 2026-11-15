@@ -574,8 +574,10 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   around it").
   - Library (`generator.rs`): `generate_password_with` /
     `generate_passphrase_with(opts, Some(word))` put the word at a random
-    place (any of the length+1 positions; in a passphrase as one extra
-    word between the separators). The random part keeps its full length
+    place in the middle: at least a quarter of the random characters (at
+    least 1) on each side, as the user asked ("jvsdnb#U*#!*(word)28884218hje");
+    in a passphrase as one extra word between the others, never first or
+    last. The random part keeps its full length
     and `entropy_bits` still counts only that part: the word may be
     guessable, so it adds no strength and the password is never weaker
     than without it. `check_own_word`: 1 to 32 characters, no control
@@ -590,8 +592,9 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
     `Debug`) while CakePass is open, never saved. A word that is not
     allowed changes nothing and shows the reason.
   Tests: generator.rs `your_own_word_goes_in_at_a_random_place_and_the_rest_stays_random`
-  (every place reached, random part full length, passphrase one extra
-  word) and `your_own_word_is_checked`; screens/generator.rs
+  (every middle place reached and nothing outside it, also at the minimum
+  length; random part full length; passphrase one extra word, never
+  first or last) and `your_own_word_is_checked`; screens/generator.rs
   `a_word_of_your_own` (row and `w`, bits unchanged, kept on `r`, bad word
   refused, passphrase, empty removes, not in Debug); app/tests.rs
   `generator_with_a_word_of_your_own` (dots, v shows, saved as a login,

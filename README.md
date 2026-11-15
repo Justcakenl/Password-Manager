@@ -865,8 +865,10 @@ cakepass generate --own-word Justin       # e.g. k3#Justinq9!xR… (your word in
 ```
 
 **A word of your own.** With `--own-word WORD` (or `w` in the generator of the
-screen) your word goes into the password at a random place, with the random
-characters around it; in a passphrase it is one extra word between the others.
+screen) your word goes into the password at a random place in the middle,
+with random characters on both sides (at least a quarter of them before it and
+a quarter after, e.g. `jvsdnb#U*#Justin28884218hje`); in a passphrase it is one
+extra word between the others, never the first or the last.
 The random part keeps its full length, so the password is never weaker than
 without the word, and the strength shown counts only that part: a word of
 your own (a name, the site) may be guessable, so it adds no strength. Up to 32

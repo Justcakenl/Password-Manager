@@ -120,15 +120,17 @@ pub fn check_own_word(word: &str) -> Result<()> {
 }
 
 /// A random password, with `own` (a word of your own) put in at a random
-/// place. The random part keeps the full length, so the password is never
-/// weaker than without the word. SECURITY: the word adds no strength (it may
-/// be guessable: a name, a site), so [`PasswordOptions::entropy_bits`]
-/// counts only the random part.
+/// place in the middle: at least a quarter of the random characters before
+/// it and a quarter after (`jvsdnb#U*#Justin28884218hje`). The random part
+/// keeps the full length, so the password is never weaker than without the
+/// word. SECURITY: the word adds no strength (it may be guessable: a name, a
+/// site), so [`PasswordOptions::entropy_bits`] counts only the random part.
 pub fn generate_password_with(opts: &PasswordOptions, own: Option<&str>) -> Result<Zeroizing<String>> {
     let random = generate_password(opts)?;
     let Some(word) = own else { return Ok(random) };
     check_own_word(word)?;
-    let at = rng().random_range(0..=opts.length);
+    let edge = (opts.length / 4).max(1);
+    let at = rng().random_range(edge..=opts.length - edge);
     let mut out = Zeroizing::new(String::with_capacity(random.len() + word.len()));
     out.extend(random.chars().take(at));
     out.push_str(word);
@@ -136,13 +138,14 @@ pub fn generate_password_with(opts: &PasswordOptions, own: Option<&str>) -> Resu
     Ok(out)
 }
 
-/// A passphrase with `own` as one extra word at a random place (between the
-/// separators). As with [`generate_password_with`], the generated words
-/// keep their number and only they count for the strength.
+/// A passphrase with `own` as one extra word at a random place between the
+/// generated words (never first or last). As with
+/// [`generate_password_with`], the generated words keep their number and
+/// only they count for the strength.
 pub fn generate_passphrase_with(opts: &PassphraseOptions, own: Option<&str>) -> Result<Zeroizing<String>> {
     let Some(word) = own else { return generate_passphrase(opts) };
     check_own_word(word)?;
-    let at = rng().random_range(0..=opts.words);
+    let at = rng().random_range(1..opts.words.max(2));
     passphrase(opts, Some((at, word)))
 }
 
@@ -233,8 +236,17 @@ mod tests {
             let rest: String = pw.replacen("Justin", "", 1);
             assert_eq!(rest.chars().count(), 16, "the random part keeps its full length");
         }
-        assert!(places.contains(&0) && places.contains(&16), "start and end are possible");
-        assert!(places.len() > 10, "{places:?}");
+        // In the middle: at least 4 (a quarter of 16) random characters on each side.
+        assert_eq!(places.iter().min(), Some(&4), "{places:?}");
+        assert_eq!(places.iter().max(), Some(&12), "{places:?}");
+        assert_eq!(places.len(), 9, "every place in the middle is reached: {places:?}");
+        // The shortest password still has random characters on both sides.
+        let short = PasswordOptions { length: MIN_LENGTH, ..Default::default() };
+        for _ in 0..100 {
+            let pw = generate_password_with(&short, Some("é")).unwrap();
+            let at = pw.find('é').unwrap(); // the random part is ASCII
+            assert!(at >= 2 && pw.len() - at - 'é'.len_utf8() >= 2, "{}", pw.as_str());
+        }
         // Without a word: as before.
         assert_eq!(generate_password_with(&opts, None).unwrap().chars().count(), 16);
         // In a passphrase: one extra word between the separators.
@@ -246,7 +258,9 @@ mod tests {
             assert_eq!(parts.len(), 6, "{}", phrase.as_str());
             at.insert(parts.iter().position(|w| *w == "Café").unwrap());
         }
-        assert_eq!(at.len(), 6, "every place, first to last: {at:?}");
+        let mut seen: Vec<usize> = at.into_iter().collect();
+        seen.sort_unstable();
+        assert_eq!(seen, [1, 2, 3, 4], "between the generated words, never first or last");
     }
 
     #[test]
