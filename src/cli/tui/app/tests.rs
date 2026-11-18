@@ -1074,18 +1074,30 @@ fn the_totp_code_is_computed_shown_and_copied() {
     t.app.clock = || 60;
     let s = t.screen();
     assert!(!s.contains("287082") && s.contains("(30 s)"), "{s}");
-    // Hidden after a while, and when another item is chosen.
-    t.later(REVEAL_SECS);
-    assert!(!t.screen().contains("(30 s)"));
+    // Live: it stays and keeps changing, period after period, with the next code too.
+    t.later(REVEAL_SECS * 10);
+    t.app.clock = || 90;
+    let s = t.screen();
+    assert!(s.contains("(30 s)") && s.contains("Next code"), "still live after a while: {s}");
+    assert_eq!(t.clip.borrow().len(), 1, "only t copies; showing it live copies nothing");
+    // Gone under a dialog, when another item is chosen, and on locking.
+    t.key(Key::Char('?'));
+    assert!(!t.screen().contains("(30 s)"), "not under a dialog");
+    t.key(Key::Esc);
+    assert!(!t.screen().contains("(30 s)"), "a dialog ends it");
     t.key(Key::Char('t'));
     assert!(t.screen().contains("(30 s)"));
     t.key(Key::Down);
     assert!(!t.screen().contains("(30 s)"), "hidden when the selection changes");
+    t.key(Key::Up);
+    t.key(Key::Char('t'));
+    t.app.lock_idle();
+    assert!(t.app.totp_shown.is_none(), "locking ends it");
     // An item without a TOTP secret says how to add one.
     select(&mut t, "Visa");
     t.key(Key::Char('t'));
     assert!(t.toast().contains("has no TOTP secret") && t.toast().contains("--totp"), "{}", t.toast());
-    assert_eq!(t.clip.borrow().len(), 2);
+    assert_eq!(t.clip.borrow().len(), 3, "one copy per t on GitHub, none for Visa");
 }
 
 #[test]

@@ -376,7 +376,10 @@ impl HelpPage {
                          (cleared after the clip-time: 20 s unless set otherwise)",
                     ),
                     ("u  m", "copy the username / the e-mail address"),
-                    ("t", "show and copy the current two-factor (TOTP) code"),
+                    (
+                        "t",
+                        "copy the two-factor (TOTP) code and show it live (a new one every 30 s) until you move on",
+                    ),
                     ("", "the 2FA tab lists every item with a code; there Enter or c copies it, a adds one"),
                     ("p", "copy the public key of an SSH key"),
                     ("f", "pin or unpin as a favorite (★; favorites come first)"),
