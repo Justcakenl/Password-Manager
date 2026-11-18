@@ -364,9 +364,15 @@ fn notify_icon() -> &'static str {
 /// Whether `data_dir` (e.g. /usr/share) has the CakePass logo in the hicolor theme.
 fn has_logo(data_dir: &Path) -> bool {
     let apps = data_dir.join("icons/hicolor");
-    ["scalable/apps/cakepass.svg", "256x256/apps/cakepass.png", "32x32/apps/cakepass.png"]
-        .iter()
-        .any(|f| apps.join(f).is_file())
+    // The sizes the packages install (packaging/*/PKGBUILD).
+    [
+        "scalable/apps/cakepass.svg",
+        "512x512/apps/cakepass.png",
+        "256x256/apps/cakepass.png",
+        "32x32/apps/cakepass.png",
+    ]
+    .iter()
+    .any(|f| apps.join(f).is_file())
 }
 
 /// Send one desktop notification per new version (if notify-send exists).
@@ -567,6 +573,7 @@ fn auto(mode: AutoMode) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     #[test]
     fn the_notification_uses_the_logo_only_when_it_is_installed() {
@@ -577,8 +584,6 @@ mod tests {
         fs::write(apps.join("cakepass.svg"), "<svg/>").unwrap();
         assert!(has_logo(dir.path()));
     }
-
-    use super::*;
 
     #[test]
     fn status_file_is_read_strictly() {
