@@ -610,6 +610,16 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   bits of the random part, passphrase, escape code refused). Seen in tmux
   at 80×24.
 
+- [x] **The update notification shows the CakePass logo** (branch
+  `feature/notify-cakepass-icon`, from ADMIN `main` `76f627a`; asked for by
+  the user with a screenshot of the blue "i"). `update::notify` passes
+  `-i cakepass` to notify-send when the logo is installed in the hicolor
+  theme (`$XDG_DATA_HOME`/`~/.local/share`, then `$XDG_DATA_DIRS` or
+  `/usr/local/share:/usr/share`: scalable svg, 512, 256 or 32 px png, as
+  the packages install them), else `dialog-information` as before (a `cargo
+  install` has no logo). Test: `the_notification_uses_the_logo_only_when_it_is_installed`.
+  Seen on this desktop (mako): the pink CakePass logo instead of the "i".
+
 ## Still to do
 
 - [x] **Step 16b: pre-update copies follow a re-key** (branch
