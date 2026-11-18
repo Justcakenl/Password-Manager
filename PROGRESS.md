@@ -623,10 +623,20 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
     since `unlock` drops it. A match is refused before anything is saved.
   - A plain `generate` has no vault open: the question now says "NOT your
     master password".
+  - The screen (found by deepseek): the generator's `w` dialog says "NOT
+    your master password", and a word is checked against it as a task
+    (`Task::OwnWord`, "Checking the word…", `check_password` with the key
+    file reloaded); a match is refused in the dialog (input cleared) and
+    not used. An empty word still removes it, without a check.
+  - Remaining risk (accepted by security-opus): a word that is only a PART
+    of the master password (`Justin` for `Justin2024!`) cannot be caught
+    without knowing the password.
   Tests (tests/cli.rs): `an_own_word_that_is_the_master_password_is_refused`
   (`add --own-word`, `--own-word=PW`, `generate --save`, nothing saved;
   master password asked before the word; a normal word works) and the same
-  with a key file (checked to fail when the key file is not reloaded).
+  with a key file (checked to fail when the key file is not reloaded);
+  app/tests.rs `the_master_password_is_refused_as_your_own_word` (message
+  in the dialog, not used, "save as login" saves a password without it).
 
 ## Still to do
 

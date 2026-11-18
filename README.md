@@ -878,7 +878,7 @@ while CakePass is open; empty removes it. `--own-word=WORD` lands in your shell
 history like any argument; `--own-word` alone does not. With `add`, `edit` and
 `generate --save` the word is asked after your master password, and CakePass
 refuses it if it *is* your master password (that would send your master
-password to the website).
+password to the website); `w` in the screen checks it the same way.
 
 Passphrases come from the EFF diceware word list (7776 words, 12.9 bits per
 word). Six words give about 77 bits; the setup wizard makes seven (about 90
