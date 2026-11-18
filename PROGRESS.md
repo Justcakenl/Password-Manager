@@ -673,6 +673,12 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   `the_totp_code_is_computed_shown_and_copied` (still live long after
   `REVEAL_SECS`, next code shown, only `t` copies, gone under a dialog, on
   another item and on locking).
+  Known limitation (as asked by the user; raised by reviewer-sonnet): unlike
+  `v` for a password (hidden again after `REVEAL_SECS`), a code shown with
+  `t` stays on screen while its item stays selected, as on the 2FA tab.
+  Someone looking at the screen sees a code that is valid for at most one
+  period plus the next one; it still disappears under every dialog, on
+  another item or tab, and on the (idle) lock.
 
 ## Still to do
 
