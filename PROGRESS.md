@@ -1,6 +1,6 @@
 # Progress: `cakepass` (CakePass)
 
-Last updated: step 18 (a word of your own in the generator); content schema still 5.
+Last updated: step 18b (the own word is never the master password); content schema still 5.
 Repository: `Justcakenl/Password-Manager`, branch `main` (private until it is made public).
 
 ## Maintainer checklist: manual testing on a real Arch machine
@@ -609,6 +609,36 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   remembered); tests/cli.rs `generate_with_a_word_of_your_own` (length,
   bits of the random part, passphrase, escape code refused). Seen in tmux
   at 80×24.
+
+- [x] **Step 18b: the own word is never the master password** (branch
+  `fix/own-word-not-master`, from ADMIN `main` `76f627a`; raised by
+  deepseek, reviewer-sonnet and security-opus after step 18). A word of
+  your own goes into a password that is sent to a website, so a master
+  password typed there out of habit would leak.
+  - `ask_own_word(g, uv)` no longer runs before the unlock: `add`/`edit`
+    ask it in `execute` (after the master password), `generate` in
+    `generate()` after the `--save` unlock. With the vault open the word
+    (asked or `--own-word=WORD`) is checked with `verify_password`; the
+    key file is loaded again for that (`key_file_for`, as `reconfirm`),
+    since `unlock` drops it. A match is refused before anything is saved.
+  - A plain `generate` has no vault open: the question now says "NOT your
+    master password".
+  - The screen (found by deepseek): the generator's `w` dialog says "NOT
+    your master password", and a word is checked against it as a task
+    (`Task::OwnWord`, "Checking the word…", `check_password` with the key
+    file reloaded); a match is refused in the dialog (input cleared) and
+    not used. An empty word still removes it, without a check. On the
+    command line a refused word is zeroized, not just dropped
+    (reviewer-sonnet).
+  - Remaining risk (accepted by security-opus): a word that is only a PART
+    of the master password (`Justin` for `Justin2024!`) cannot be caught
+    without knowing the password.
+  Tests (tests/cli.rs): `an_own_word_that_is_the_master_password_is_refused`
+  (`add --own-word`, `--own-word=PW`, `generate --save`, nothing saved;
+  master password asked before the word; a normal word works) and the same
+  with a key file (checked to fail when the key file is not reloaded);
+  app/tests.rs `the_master_password_is_refused_as_your_own_word` (message
+  in the dialog, not used, "save as login" saves a password without it).
 
 - [x] **The update notification shows the CakePass logo** (branch
   `feature/notify-cakepass-icon`, from ADMIN `main` `76f627a`; asked for by

@@ -113,8 +113,6 @@ pub fn run(cli: args::Cli) -> Result<()> {
         }
         return interactive(&paths, &cfg, cli.no_tui);
     };
-    let mut command = command;
-    ask_own_word(&mut command)?;
     match command {
         Cmd::Setup { kdf } => setup::run(&paths, &kdf),
         Cmd::Init { kdf } => init(&paths, &kdf),
@@ -165,7 +163,11 @@ fn offer_screen_mode() -> bool {
 
 /// Run a command on an unlocked vault (also from `cakepass shell`).
 pub fn execute(uv: &mut UnlockedVault, mut cmd: Cmd, in_shell: bool) -> Result<()> {
-    ask_own_word(&mut cmd)?;
+    // `add`/`edit --own-word`: asked here, after the master password, so the
+    // word can be checked against it (see `ask_own_word`).
+    if let Cmd::Add(AddArgs { gen_opts, .. }) | Cmd::Edit(EditArgs { gen_opts, .. }) = &mut cmd {
+        ask_own_word(gen_opts, Some(uv))?;
+    }
     match cmd {
         Cmd::Add(a) => add(uv, a),
         Cmd::Get(g) => get(uv, &g),
@@ -434,22 +436,36 @@ impl Recipe {
 }
 
 /// `--own-word` without a value: ask for the word (hidden, so it is not in
-/// the shell history or on screen) once, before anything else is asked.
-fn ask_own_word(cmd: &mut Cmd) -> Result<()> {
-    let g = match cmd {
-        Cmd::Generate { opts, .. } => opts,
-        Cmd::Add(a) => &mut a.gen_opts,
-        Cmd::Edit(e) => &mut e.gen_opts,
-        _ => return Ok(()),
-    };
+/// the shell history or on screen).
+///
+/// SECURITY: the word ends up in a password that goes to a website. With the
+/// vault open (`add`, `edit`, `generate --save`, the shell) it is asked
+/// after the master password and refused if it IS the master password (one
+/// Argon2 run, only with `--own-word`; the key file is loaded again, as for
+/// `reconfirm`). A plain `generate` has no vault open: the question says it.
+fn ask_own_word(g: &mut GenArgs, uv: Option<&UnlockedVault>) -> Result<()> {
     if g.own_word.as_deref() == Some("") {
-        let word = prompt::secret("Your own word (hidden; it goes in the middle of the password): ")?;
+        let word = prompt::secret("Your own word for the password (hidden; NOT your master password): ")?;
         let word = word.expose_secret().trim();
         if word.is_empty() {
             return Err(Error::InvalidInput("no word given for --own-word".into()));
         }
         generator::check_own_word(word)?;
         g.own_word = Some(word.to_string());
+    }
+    if let (Some(word), Some(uv)) = (g.own_word.as_deref(), uv) {
+        let kf = key_file_for(uv.uses_key_file())?;
+        let typed = SecretString::from(word.to_string());
+        if uv.verify_password(credentials(&typed, &kf))? {
+            // Wipe it, not just drop it: it is the master password.
+            if let Some(mut w) = g.own_word.take() {
+                zeroize::Zeroize::zeroize(&mut w);
+            }
+            return Err(Error::InvalidInput(
+                "that is your master password; it must never go into another password. Use another word"
+                    .into(),
+            ));
+        }
     }
     Ok(())
 }
@@ -1684,6 +1700,10 @@ fn generate(
     if save.is_some() && uv.is_none() {
         unlocked = Some(unlock(paths)?);
     }
+    // The word of your own after the master password (and checked against it).
+    let mut g = g.clone();
+    ask_own_word(&mut g, uv.as_deref().or(unlocked.as_ref()))?;
+    let g = &g;
     if let Some(name) = &save {
         let vault = uv.as_ref().map(|u| &u.vault).or_else(|| unlocked.as_ref().map(|u| &u.vault));
         if vault.is_some_and(|v| v.contains(name)) {

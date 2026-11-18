@@ -195,6 +195,8 @@ pub enum Task {
     Measure(SecurityLevel),
     /// Re-check the master password, then re-key at this level.
     ChangeLevel(Zeroizing<String>, SecurityLevel),
+    /// Check that a word of your own is not the master password, then use it.
+    OwnWord(Zeroizing<String>),
     /// Write a share file with this item (Argon2 for its new key).
     Share {
         name: String,
@@ -794,9 +796,9 @@ impl App {
                         let mut p = Prompt::new(
                             "A word of your own",
                             vec![
-                                "It goes into the password at a random place, e.g. a name. The random part \
-                                 keeps its full length, so it is never weaker; the word itself adds no strength. \
-                                 Leave it empty to remove it."
+                                "It goes into the middle of the password, e.g. a name (NOT your master \
+                                 password). The random part keeps its full length, so it is never weaker; the \
+                                 word itself adds no strength. Leave it empty to remove it."
                                     .into(),
                             ],
                             "Word",
@@ -893,8 +895,21 @@ impl App {
                 )));
             }
             PromptPurpose::OwnWord => {
-                if let Some(Modal::Generator(g)) = self.modals.last_mut() {
-                    g.set_own_word(text.trim());
+                let word = Zeroizing::new(text.trim().to_string());
+                p.purpose = PromptPurpose::OwnWord;
+                if word.is_empty() {
+                    if let Some(Modal::Generator(g)) = self.modals.last_mut() {
+                        g.set_own_word(""); // removes it
+                    }
+                } else if let Err(e) = cakepass::generator::check_own_word(&word) {
+                    p.error = Some(error_text(&e));
+                    self.modals.push(Modal::Prompt(p));
+                } else {
+                    // SECURITY: the word goes into a password for a website;
+                    // never the master password (one Argon2 run, as a task).
+                    p.busy = Some("Checking the word…");
+                    self.modals.push(Modal::Prompt(p));
+                    self.task = Some(Task::OwnWord(word));
                 }
             }
             PromptPurpose::OwnPasswordRepeat(first) => {
@@ -1220,6 +1235,20 @@ impl App {
                     ))),
                 }
             }
+            Task::OwnWord(word) => match self.check_password(&word) {
+                Ok(true) => {
+                    top.input.clear();
+                    top.error =
+                        Some("That is your master password; it must never go into another password.".into());
+                    self.modals.push(Modal::Prompt(top));
+                }
+                Ok(false) => {
+                    if let Some(Modal::Generator(g)) = self.modals.last_mut() {
+                        g.set_own_word(&word);
+                    }
+                }
+                Err(e) => self.check_failed(top, &e),
+            },
             Task::Reconfirm(pw) => match self.check_password(&pw) {
                 Ok(true) => {
                     self.wrong_reconfirms = 0;

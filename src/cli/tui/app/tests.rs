@@ -486,6 +486,30 @@ fn generator_with_a_word_of_your_own() {
 }
 
 #[test]
+fn the_master_password_is_refused_as_your_own_word() {
+    let mut t = T::new();
+    t.key(Key::Char('g'));
+    t.key(Key::Char('w'));
+    let Some(Modal::Prompt(p)) = t.app.modals.last() else { panic!() };
+    assert!(p.lines.iter().any(|l| l.contains("NOT your master password")), "{}", t.screen());
+    t.typ(PW);
+    t.key(Key::Enter);
+    let Some(Modal::Prompt(p)) = t.app.modals.last() else { panic!("{}", t.screen()) };
+    assert!(p.error.as_deref().is_some_and(|e| e.contains("That is your master password")), "{:?}", p.error);
+    assert!(p.input.as_str().is_empty(), "what was typed is cleared");
+    t.key(Key::Esc);
+    let Some(Modal::Generator(g)) = t.app.modals.last() else { panic!("{}", t.screen()) };
+    assert!(g.prefs.own_word.is_empty() && !g.value.contains(PW), "not used");
+    // Enter (save as login) then saves a password without it.
+    t.key(Key::Enter);
+    t.typ("Router");
+    t.key(Key::Enter);
+    let uv = t.reopen(PW);
+    assert!(!get(&uv, "router").password(uv.item_key()).unwrap().contains(PW));
+    assert!(t.app.gen_prefs.own_word.is_empty());
+}
+
+#[test]
 fn generator_inside_the_form_and_own_password() {
     let mut t = T::new();
     t.key(Key::Char('a'));
