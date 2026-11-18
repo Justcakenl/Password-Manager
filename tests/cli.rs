@@ -386,7 +386,7 @@ fn generate_with_a_word_of_your_own() {
     // --own-word alone asks for it (hidden in a terminal; here from stdin),
     // so it stays out of the shell history.
     let (pw, err) = run(&["generate", "--show", "--own-word"], "Bakfiets\n");
-    assert!(pw.contains("Bakfiets") && err.contains("Your own word (hidden"), "{pw} / {err}");
+    assert!(pw.contains("Bakfiets") && err.contains("NOT your master password"), "{pw} / {err}");
     // A value needs the = (else it would be read as another argument).
     k.run(&["generate", "--show", "--own-word", "Justin"], "").failure();
     let (phrase, _) =
@@ -1006,6 +1006,40 @@ fn usb(v: &Vaulty) -> PathBuf {
     let d = v.dir().join("usb");
     std::fs::create_dir_all(&d).unwrap();
     d
+}
+
+/// `add`/`generate --save` with `--own-word`: the word is asked after the
+/// master password and refused when it IS the master password (it would
+/// go to the website inside the new password).
+fn own_word_that_is_the_master_password_is_refused(v: &Vaulty) {
+    let add = |word_arg: &str, stdin: String| {
+        v.run(&["add", "Site", "--generate", word_arg, "-u", "john", "-e", "", "--url", "", "-t", ""], &stdin)
+    };
+    add("--own-word", format!("{PW}\n{PW}\n")).failure().stderr(contains("that is your master password"));
+    let own = format!("--own-word={PW}");
+    add(&own, format!("{PW}\n")).failure().stderr(contains("that is your master password"));
+    v.run(&["generate", "--save", "Site", "--own-word"], &format!("{PW}\n{PW}\n"))
+        .failure()
+        .stderr(contains("that is your master password"));
+    v.run(&["get", "site"], &format!("{PW}\n")).failure();
+    // The master password is asked first, then the word.
+    let err = add("--own-word", format!("{PW}\nJustin\n")).success().get_output().stderr.clone();
+    let err = String::from_utf8_lossy(&err);
+    assert!(err.find("Master password").unwrap() < err.find("Your own word").unwrap(), "{err}");
+    v.run(&["get", "site", "--show"], &format!("{PW}\n")).success().stdout(contains("Justin"));
+}
+
+#[test]
+fn an_own_word_that_is_the_master_password_is_refused() {
+    own_word_that_is_the_master_password_is_refused(&Vaulty::new().init());
+}
+
+#[test]
+fn an_own_word_that_is_the_master_password_is_refused_with_a_key_file_too() {
+    // The key file is loaded again for the check (unlock drops it).
+    let v = Vaulty::new();
+    init_with_key_file(&v);
+    own_word_that_is_the_master_password_is_refused(&v);
 }
 
 fn make_key_file(v: &Vaulty, name: &str) -> PathBuf {

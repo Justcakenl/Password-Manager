@@ -344,6 +344,9 @@ installed to (step 5). More help: [Troubleshooting](#troubleshooting).
 - **A word of your own** in the generator (`w`, or `--own-word`): it goes in
   the middle with random characters around it.
 - The **version** shows small on the opening screen and in the title bar.
+- CakePass refuses your **master password as your own word** (it would end up
+  in a password for a website).
+- The **update notification** shows the CakePass logo.
 - Security fixes: an import with terminal escape codes is refused whole, and
   copies made before an update are re-encrypted when you change the master
   password.
@@ -893,7 +896,10 @@ your own (a name, the site) may be guessable, so it adds no strength. Up to 32
 characters; no control characters, no invisible ones (zero-width, direction
 marks) and no spaces at the ends. In the screen it is remembered (never saved)
 while CakePass is open; empty removes it. `--own-word=WORD` lands in your shell
-history like any argument; `--own-word` alone does not.
+history like any argument; `--own-word` alone does not. With `add`, `edit` and
+`generate --save` the word is asked after your master password, and CakePass
+refuses it if it *is* your master password (that would send your master
+password to the website); `w` in the screen checks it the same way.
 
 Passphrases come from the EFF diceware word list (7776 words, 12.9 bits per
 word). Six words give about 77 bits; the setup wizard makes seven (about 90
