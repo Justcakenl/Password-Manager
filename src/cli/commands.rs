@@ -457,7 +457,10 @@ fn ask_own_word(g: &mut GenArgs, uv: Option<&UnlockedVault>) -> Result<()> {
         let kf = key_file_for(uv.uses_key_file())?;
         let typed = SecretString::from(word.to_string());
         if uv.verify_password(credentials(&typed, &kf))? {
-            g.own_word = None;
+            // Wipe it, not just drop it: it is the master password.
+            if let Some(mut w) = g.own_word.take() {
+                zeroize::Zeroize::zeroize(&mut w);
+            }
             return Err(Error::InvalidInput(
                 "that is your master password; it must never go into another password. Use another word"
                     .into(),

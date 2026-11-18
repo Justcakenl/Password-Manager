@@ -627,7 +627,9 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
     your master password", and a word is checked against it as a task
     (`Task::OwnWord`, "Checking the word…", `check_password` with the key
     file reloaded); a match is refused in the dialog (input cleared) and
-    not used. An empty word still removes it, without a check.
+    not used. An empty word still removes it, without a check. On the
+    command line a refused word is zeroized, not just dropped
+    (reviewer-sonnet).
   - Remaining risk (accepted by security-opus): a word that is only a PART
     of the master password (`Justin` for `Justin2024!`) cannot be caught
     without knowing the password.
