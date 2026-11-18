@@ -493,7 +493,7 @@ pub fn show(animate: bool) {
     }
 }
 
-/// The version as shown on the opening screen, e.g. "v0.4.0".
+/// The version as shown on the opening screen, e.g. "v0.5.0".
 pub const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 
 /// A centered line below the logo, with the version small (dim) under it.

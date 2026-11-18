@@ -1,6 +1,6 @@
 # Progress: `cakepass` (CakePass)
 
-Last updated: step 18b (the own word is never the master password); content schema still 5.
+Last updated: version 0.5.0 (steps 15 to 18b); content schema still 5.
 Repository: `Justcakenl/Password-Manager`, branch `main` (private until it is made public).
 
 ## Maintainer checklist: manual testing on a real Arch machine
@@ -649,6 +649,16 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   the packages install them), else `dialog-information` as before (a `cargo
   install` has no logo). Test: `the_notification_uses_the_logo_only_when_it_is_installed`.
   Seen on this desktop (mako): the pink CakePass logo instead of the "i".
+
+- [x] **Version 0.5.0** (branch `release/0.5.0`, from ADMIN `main`; asked
+  for by the user). `Cargo.toml`/`Cargo.lock` 0.5.0; README "What's new in
+  0.5" (2FA tab, sharing, own word, version on screen, the logo in the
+  update notification, the 16a/16b fixes)
+  and the version examples. No format change: still format 3, content
+  schema 5, so 0.4 and 0.5 open each other's vaults. Every version shown on
+  screen comes from `CARGO_PKG_VERSION`; the AUR `pkgver` is recomputed by
+  `pkgver()` at build time. The git tag `v0.5.0` and the GitHub release
+  follow after the merge.
 
 ## Still to do
 

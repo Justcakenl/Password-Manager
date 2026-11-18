@@ -307,7 +307,7 @@ With no vault yet, the [first-time setup](#first-time-setup) starts by itself.
 ### Check that it works
 
 ```bash
-cakepass --version     # prints a version, e.g. "cakepass 0.4.0 (commit …)"
+cakepass --version     # prints a version, e.g. "cakepass 0.5.0 (commit …)"
 cakepass info          # shows your vault and system checks; needs no password
 ```
 
@@ -332,6 +332,27 @@ installed to (step 5). More help: [Troubleshooting](#troubleshooting).
   vault format the next time it **saves**. Make a [backup](#backups) first.
   (`cakepass --update` and the daily update check need Arch's `makepkg`, so on
   other systems they say they cannot run. The four lines above are the update.)
+
+### What's new in 0.5
+
+- **2FA tab** in the screen, like an authenticator app: every code live, with
+  the seconds left and the next code; set up a code with `a` on that tab or
+  the "2FA secret" field of any item.
+- **Sharing items** with someone else: `x` in the screen or `cakepass share`
+  makes an encrypted file with a generated password; they add it with `i` or
+  `cakepass import`. CakePass itself sends nothing.
+- **A word of your own** in the generator (`w`, or `--own-word`): it goes in
+  the middle with random characters around it.
+- The **version** shows small on the opening screen and in the title bar.
+- CakePass refuses your **master password as your own word** (it would end up
+  in a password for a website).
+- The **update notification** shows the CakePass logo.
+- Security fixes: an import with terminal escape codes is refused whole, and
+  copies made before an update are re-encrypted when you change the master
+  password.
+
+The vault format is the same as in 0.4 (format 3, content schema 5), so 0.4
+and 0.5 open each other's vaults.
 
 ### Uninstall
 
