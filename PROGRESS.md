@@ -1,6 +1,6 @@
 # Progress: `cakepass` (CakePass)
 
-Last updated: step 18 (a word of your own in the generator); content schema still 5.
+Last updated: version 0.5.0 (steps 15 to 18); content schema still 5.
 Repository: `Justcakenl/Password-Manager`, branch `main` (private until it is made public).
 
 ## Maintainer checklist: manual testing on a real Arch machine
@@ -609,6 +609,15 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   remembered); tests/cli.rs `generate_with_a_word_of_your_own` (length,
   bits of the random part, passphrase, escape code refused). Seen in tmux
   at 80×24.
+
+- [x] **Version 0.5.0** (branch `release/0.5.0`, from ADMIN `main`; asked
+  for by the user). `Cargo.toml`/`Cargo.lock` 0.5.0; README "What's new in
+  0.5" (2FA tab, sharing, own word, version on screen, the 16a/16b fixes)
+  and the version examples. No format change: still format 3, content
+  schema 5, so 0.4 and 0.5 open each other's vaults. Every version shown on
+  screen comes from `CARGO_PKG_VERSION`; the AUR `pkgver` is recomputed by
+  `pkgver()` at build time. The git tag `v0.5.0` and the GitHub release
+  follow after the merge.
 
 ## Still to do
 
