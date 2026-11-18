@@ -660,6 +660,26 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   `pkgver()` at build time. The git tag `v0.5.0` and the GitHub release
   follow after the merge.
 
+- [x] **Live TOTP code in the details** (branch `feature/totp-live-in-details`,
+  from ADMIN `main` `c2d3599`; the user: "the code changes every so often, it
+  must update live; offline; stops when CakePass closes"). `t` used to show
+  the code for `REVEAL_SECS` (10 s) and then "set (t shows it)" again, so in
+  the All tab a code never reached the next period. Now `totp_shown` is only
+  the item's name: the code (and the next code) is computed every frame from
+  the clock, offline, and stays until the selection or tab changes, a dialog
+  opens, or CakePass locks or quits. The loop already redraws at least every
+  second (`wait_ms` ≤ 1 s). The 2FA tab was already live (checked in tmux on
+  the installed 0.5.0: seconds count down, new codes after 30 s). Test:
+  `the_totp_code_is_computed_shown_and_copied` (still live long after
+  `REVEAL_SECS`, next code shown, only `t` copies, gone under a dialog, on
+  another item and on locking).
+  Known limitation (as asked by the user; raised by reviewer-sonnet): unlike
+  `v` for a password (hidden again after `REVEAL_SECS`), a code shown with
+  `t` stays on screen while its item stays selected, as on the 2FA tab.
+  Someone looking at the screen sees a code that is valid for at most one
+  period plus the next one; it still disappears under every dialog, on
+  another item or tab, and on the (idle) lock.
+
 ## Still to do
 
 - [x] **Step 16b: pre-update copies follow a re-key** (branch

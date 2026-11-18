@@ -524,14 +524,15 @@ impl App {
             // The 2FA tab always shows it, with the next code too (unless a
             // dialog is open: secrets only show on the bare screen).
             let code_tab = self.tab == Tab::TwoFactor && self.modals.is_empty();
-            let shown = code_tab || self.totp_shown.as_ref().is_some_and(|(n, _)| n == e.name());
+            let live = self.modals.is_empty() && self.totp_shown.as_deref() == Some(e.name());
+            let shown = code_tab || live;
             match (shown, e.totp(key)) {
                 (true, Ok(Some(t))) => {
                     let now = (self.clock)();
                     let code = t.code_at(now);
                     let text = Zeroizing::new(format!("{}  ({} s)", code.as_str(), code.seconds_left()));
                     row(g, &mut y, "TOTP", &text, Style::ACCENT_BOLD);
-                    if code_tab {
+                    if code_tab || live {
                         let next = t.code_at(now + code.seconds_left());
                         row(g, &mut y, "Next code", next.as_str(), Style::PLAIN);
                     }

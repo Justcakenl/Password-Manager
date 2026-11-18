@@ -9,7 +9,9 @@
 //!   buffers that are wiped right after. A revealed password or note is not
 //!   kept either: it is decrypted again for every frame while it is shown.
 //! - A revealed secret hides itself after [`REVEAL_SECS`], when the selection
-//!   changes, when a dialog or another screen opens, and on locking.
+//!   changes, when a dialog or another screen opens, and on locking. A TOTP
+//!   code shown with `t` stays live (a new code every period) until one of
+//!   those last three; it is computed offline from the clock, never kept.
 //! - Every change is saved at once with the library (`UnlockedVault::save`).
 //!   If saving fails the vault in memory is put back as it was, so memory and
 //!   file never differ.
@@ -251,9 +253,10 @@ pub struct App {
     /// First visible row of the list (kept between frames).
     pub top: Cell<usize>,
     pub reveal_until: Option<Instant>,
-    /// The TOTP code of this item is shown in the details until then. Only
-    /// the name is kept: the code is computed again for every frame.
-    pub totp_shown: Option<(String, Instant)>,
+    /// The TOTP code of this item is shown live in the details (`t`), until
+    /// the selection or tab changes, a dialog opens, or CakePass locks or
+    /// closes. Only the name is kept: the code is computed for every frame.
+    pub totp_shown: Option<String>,
     /// Seconds since 1970 (for TOTP codes). Replaced by a fixed time in the tests.
     pub clock: fn() -> u64,
     pub screen: Screen,
@@ -384,9 +387,6 @@ impl App {
         if self.reveal_until.is_some_and(|t| now >= t) {
             self.reveal_until = None;
         }
-        if self.totp_shown.as_ref().is_some_and(|(_, t)| now >= *t) {
-            self.totp_shown = None;
-        }
         if self.toast.as_ref().is_some_and(|t| now >= t.until) {
             self.toast = None;
         }
@@ -399,8 +399,8 @@ impl App {
     /// screen (at most a second, for the lock countdown).
     pub fn wait_ms(&self, now: Instant) -> i32 {
         let lock_at = self.last_input + self.lock_after;
-        let totp_until = self.totp_shown.as_ref().map(|(_, t)| *t);
-        let mut next = [Some(lock_at), self.reveal_until, totp_until, self.toast.as_ref().map(|t| t.until)]
+        // At most a second, so the seconds left and a new TOTP code show live.
+        let mut next = [Some(lock_at), self.reveal_until, self.toast.as_ref().map(|t| t.until)]
             .into_iter()
             .flatten()
             .map(|t| t.saturating_duration_since(now))
@@ -614,7 +614,8 @@ impl App {
 
     /// `t`: compute the current TOTP code of the selected item (fresh from
     /// the decrypted secret, which is wiped right after), copy it and show
-    /// it in the details for a while. The code itself is never kept.
+    /// it live in the details: every frame computes the code again, so a new
+    /// one appears each period. The code itself is never kept.
     fn copy_totp(&mut self) {
         let Some(e) = self.selected() else { return };
         let name = e.name().to_string();
@@ -628,7 +629,7 @@ impl App {
             Err(e) => return self.fail(error_text(&e)),
         };
         self.reveal_until = None;
-        self.totp_shown = Some((name, self.now + Duration::from_secs(REVEAL_SECS)));
+        self.totp_shown = Some(name);
         self.copy_value(code.as_str(), "The TOTP code");
     }
 

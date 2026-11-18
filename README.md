@@ -505,7 +505,7 @@ and **`?`** shows them all.
 | Enter or `v` | show / hide the password, API key, card number and CVV, private key and passphrase, and notes. They hide themselves after **10 seconds**, and when you choose another item or open another screen |
 | `c` | copy the password, API key, card number, private key, document number or note to the clipboard; it is **cleared after 20 seconds** (or your `clip-time`) |
 | `u` / `m` | copy the username (cardholder) / the e-mail address |
-| `t` | show the current two-factor (TOTP) code with its seconds left, and copy it (cleared like a password) |
+| `t` | copy the two-factor (TOTP) code (cleared like a password) and show it **live** in the details: the seconds count down and a new code (and the next one) appears every period, until you choose another item, open a dialog, or CakePass locks or closes. Computed from the clock, offline |
 | 2FA tab | every item with a TOTP secret and its **current code**, live, with the seconds left (red in the last 5), like an authenticator app; the details also show the next code. There **Enter** or `c` copies the code, and **`a` adds one**: choose the account (or a new login) and paste the secret. ← from All goes straight to it |
 | `f` | pin or unpin the item as a **favorite**: a ★ before its name, and favorites come first in the list |
 | `x` | **share** the item with someone else: an encrypted file plus a generated password (see [Sharing items with someone else](#sharing-items-with-someone-else)) |
@@ -841,7 +841,7 @@ Valid for:       8 more second(s)
 ```
 
 - `cakepass add GitHub --totp` asks for the secret while adding; `cakepass edit
-  GitHub --no-totp` removes it. In the screen, `t` shows and copies the code.
+  GitHub --no-totp` removes it. In the screen, `t` copies the code and shows it live; the 2FA tab shows every code live.
 - The screen's **2FA** tab works like an authenticator app (Proton
   Authenticator, Google Authenticator): all your codes in one list, each with
   the seconds it is still valid, and the next code in the details. Enter (or
