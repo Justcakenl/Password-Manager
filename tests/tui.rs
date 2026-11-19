@@ -420,6 +420,49 @@ fn add_an_item_with_the_arrow_keys_then_read_it_with_the_cli() {
 }
 
 #[test]
+fn a_2fa_only_login_from_the_command_line() {
+    // In a terminal an empty password with --totp asks first: no password,
+    // only the 2FA code? (Without a terminal a password is generated, as before.)
+    let v = Vault::new();
+    let seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+    let mut t = v.pty(&["add", "Discord", "-u", "", "-e", "", "--url", "", "-t", "", "--totp"], &[], 100, 30);
+    t.wait_for("Master password");
+    t.send(&format!("{PW}\r"));
+    t.wait_for("Password (leave empty");
+    t.send("\r");
+    t.wait_for("only for its 2FA code?");
+    t.send("y\r");
+    t.wait_for("TOTP");
+    t.send(&format!("{seed}\r"));
+    assert_eq!(t.wait_exit(), 0, "{}", t.screen());
+    let get = |args: &[&str]| {
+        let o = v.cmd().args(args).write_stdin(format!("{PW}\n")).output().unwrap();
+        (String::from_utf8_lossy(&o.stdout).into_owned(), o.status.success())
+    };
+    let (shown, ok) = get(&["get", "discord", "--show"]);
+    let pw_line = shown.lines().find(|l| l.starts_with("Password:")).expect(&shown);
+    assert!(ok && pw_line.trim_start_matches("Password:").trim() == "-", "no password: {shown}");
+    let (code, ok) = get(&["get", "discord", "--totp", "--no-copy"]);
+    assert!(ok && code.contains("TOTP code"), "{code}");
+    // The health check does not call it empty.
+    let (audit, _) = get(&["audit"]);
+    assert!(!audit.contains("Discord"), "{audit}");
+    // Through an export and an import it stays a 2FA-only login.
+    let file = v.dir.path().join("e.cakepass");
+    let f = file.to_str().unwrap();
+    v.cmd().args(["export", f]).write_stdin(format!("{PW}\n{PW}\n{PW}\n")).assert().success();
+    let w = Vault::new();
+    w.cmd().args(["import", f]).write_stdin(format!("{PW}\n{PW}\n")).assert().success();
+    let o = w
+        .cmd()
+        .args(["get", "discord", "--totp", "--no-copy"])
+        .write_stdin(format!("{PW}\n"))
+        .output()
+        .unwrap();
+    assert!(o.status.success() && String::from_utf8_lossy(&o.stdout).contains("TOTP code"));
+}
+
+#[test]
 fn cards_ssh_keys_and_totp_in_the_screen() {
     let v = Vault::new();
     // A login with a TOTP secret, added with the CLI (RFC 6238's seed).

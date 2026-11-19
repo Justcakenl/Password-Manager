@@ -539,11 +539,19 @@ fn find_entry<'a>(vault: &'a Vault, key: &ItemKey, name: &str) -> Result<&'a Ent
 }
 
 /// Ask for a new password for a login (with repetition in a terminal).
-/// Empty = generate one, which you can then view, edit or redo.
+/// Empty = generate one, which you can then view, edit or redo. With
+/// `with_totp` (a 2FA secret follows) a terminal first asks whether the
+/// login is only for its 2FA code, without a password (default no).
 /// Returns (password, entropy bits if it is a generated one).
-fn ask_item_password(g: &GenArgs) -> Result<(Zeroizing<String>, Option<f64>)> {
+fn ask_item_password(g: &GenArgs, with_totp: bool) -> Result<(Zeroizing<String>, Option<f64>)> {
     let first = prompt::secret("Password (leave empty to let cakepass generate one): ")?;
     if first.expose_secret().is_empty() {
+        if with_totp
+            && prompt::stdin_is_tty()
+            && prompt::ask_yes_no("No password: save it only for its 2FA code?", false)?
+        {
+            return Ok((Zeroizing::new(String::new()), None));
+        }
         let (pw, bits) = generate_secret(g)?;
         return review_for_saving(g, pw, bits);
     }
@@ -918,7 +926,7 @@ fn add_item(
                 let (pw, bits) = generate_secret(&a.gen_opts)?;
                 review_for_saving(&a.gen_opts, pw, bits)?
             }
-            Kind::Login => ask_item_password(&a.gen_opts)?,
+            Kind::Login => ask_item_password(&a.gen_opts, a.totp)?,
             Kind::Api => (ask_api_key()?, None),
             Kind::Card | Kind::SshKey | Kind::Identity => unreachable!("handled by add_card_key_or_identity"),
         }
@@ -1357,7 +1365,7 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
                 let choice = prompt::line("Password: (k)eep, (t)ype or (g)enerate? [k] ")?.to_lowercase();
                 match choice.as_str() {
                     "" | "k" | "keep" => {}
-                    "t" | "type" => new_secret = Some(ask_item_password(&a.gen_opts)?.0),
+                    "t" | "type" => new_secret = Some(ask_item_password(&a.gen_opts, false)?.0),
                     "g" | "generate" => {
                         let (pw, bits) = generate_secret(&a.gen_opts)?;
                         let (pw, bits) = review_for_saving(&a.gen_opts, pw, bits)?;

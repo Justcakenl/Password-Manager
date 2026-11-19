@@ -657,7 +657,7 @@ impl App {
             Picked::New => {
                 self.reveal_until = None;
                 self.screen = Screen::Form(Box::new(Form::add(Kind::Login)));
-                self.info("Fill in the name and password, then paste the 2FA secret.");
+                self.info("Type the name, then paste the 2FA secret (a password is optional).");
             }
             // The field's own help line says what to paste.
             Picked::Name(name) => self.open_edit_at(&name, Field::Totp),

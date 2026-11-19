@@ -158,9 +158,9 @@ impl Form {
             if let Some(input) = f.input(field) {
                 input.set(&value);
             }
-            // The password field always says "(unchanged)"; the others only
-            // when something is stored.
-            if field == Field::Secret || !value.is_empty() {
+            // "(unchanged)" only when something is stored (a 2FA-only login
+            // has no password, and must not look as if it had one).
+            if !value.is_empty() {
                 f.unchanged |= field.bit();
             }
         }
@@ -544,14 +544,20 @@ impl App {
             f.focus = Field::Name;
             return Err(Some("Give the item a name.".into()));
         }
-        if !note && f.secret.is_empty() && (f.adding() || f.is_changed(Field::Secret)) {
+        // A login may have only a 2FA code (like an authenticator app): no
+        // password needed when it has (or gets) a 2FA secret.
+        // (When editing, the field holds the stored secret unless changed.)
+        let totp_only = kind == Kind::Login && !f.totp.as_str().trim().is_empty();
+        let touched = f.adding() || f.is_changed(Field::Secret) || f.is_changed(Field::Totp);
+        if !note && !totp_only && f.secret.is_empty() && touched {
             f.focus = Field::Secret;
             return Err(Some(match kind {
                 Kind::Api => "The API key must not be empty.".into(),
                 Kind::Card => "The card number must not be empty.".into(),
                 Kind::SshKey => "The private key is empty: paste it.".into(),
                 Kind::Identity => "The number must not be empty.".into(),
-                _ => "The password is empty: type one or press Ctrl+G.".into(),
+                _ => "The password is empty: type one, press Ctrl+G, or paste a 2FA secret for a 2FA-only login."
+                    .into(),
             }));
         }
         // The 2FA secret is checked here too (the library checks it again), so

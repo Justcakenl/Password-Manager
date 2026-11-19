@@ -680,6 +680,23 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   period plus the next one; it still disappears under every dialog, on
   another item or tab, and on the (idle) lock.
 
+- [x] **A login with only a 2FA code** (branch `feature/2fa-only-login`, from
+  ADMIN `main` `cede637`; found while re-testing 2FA for the user: "+ New
+  login" on the 2FA tab ended in "The password is empty", unlike an
+  authenticator app). The form lets a login without a password be saved
+  when it has (or keeps) a 2FA secret; removing the 2FA secret of a login
+  without a password asks for one again. The edit form shows "(unchanged)"
+  only for a field that holds something. CLI `add --totp`: an empty password
+  in a terminal asks "No password: save it only for its 2FA code?" (default
+  no = generate one, as before; without a terminal unchanged). `audit`
+  leaves 2FA-only logins out (not "empty"). `c` says "This item has no
+  password." and copies nothing; details and `get` show "-".
+  Tests: app/tests.rs `a_login_with_only_a_2fa_code_like_an_authenticator_app`;
+  tests/tui.rs `a_2fa_only_login_from_the_command_line` (pty: the question,
+  `get`, `get --totp`, audit, export + import roundtrip); vault.rs
+  `a_2fa_only_login_is_shared_and_imported_whole` (`share_subset` with the
+  2FA secret + `merge`).
+
 ## Still to do
 
 - [x] **Step 16b: pre-update copies follow a re-key** (branch
