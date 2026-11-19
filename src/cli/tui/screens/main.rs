@@ -104,6 +104,7 @@ impl App {
             match key {
                 Key::Enter | Key::Char('c') => return self.copy_field(CopyWhat::Totp),
                 Key::Char('a' | 'n') => return self.ask_add_totp(),
+                Key::Char('s') => return self.ask_scan_qr(),
                 _ => {}
             }
         }
@@ -257,6 +258,7 @@ impl App {
                 ("↑↓", "move"),
                 ("Enter", "copy code"),
                 ("a", "add code"),
+                ("s", "scan QR"),
                 ("q", "quit"),
                 ("e", "edit"),
                 ("/", "search"),
@@ -334,7 +336,7 @@ impl App {
             } else if self.tab == Tab::TwoFactor {
                 [
                     "No two-factor codes yet.",
-                    "Press a to add one: choose the account, then paste the secret the site shows under its QR code.",
+                    "Press s to scan the site's QR code from the screen, or a to paste the secret shown under it.",
                 ]
             } else {
                 ["Nothing of this type yet.", "Press a to add one, or ← → for the other types."]
@@ -598,7 +600,7 @@ impl App {
                     let key = if self.tab == Tab::TwoFactor { "v" } else { "Enter" };
                     format!("Hides in {left} s · {key} hides")
                 }
-                None if self.tab == Tab::TwoFactor => "Enter copies · a adds a code".to_string(),
+                None if self.tab == Tab::TwoFactor => "Enter copies · a adds · s scans a QR code".to_string(),
                 None if e.has_secret() || e.has_notes() => "Enter shows · c copies · e edits".to_string(),
                 None => "e edits · d deletes".to_string(),
             };

@@ -1269,6 +1269,67 @@ fn a_login_with_only_a_2fa_code_like_an_authenticator_app() {
 }
 
 #[test]
+fn scan_a_2fa_qr_code_from_the_screen() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let mut t = new_types();
+    t.app.clock = || 59;
+    // What the stand-in for slurp + grim + zbarimg gives back, in turn.
+    let answers: Rc<RefCell<Vec<cakepass::Result<Option<&'static str>>>>> = Rc::new(RefCell::new(vec![
+        Ok(Some("otpauth://totp/Discord:me?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=Discord")),
+        Ok(Some("otpauth://totp/Server%20key:root?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")),
+        Ok(Some("otpauth://totp/x?secret=AAAA")),
+        Ok(None),
+        Err(cakepass::Error::InvalidInput(crate::cli::qr::NEEDS_TOOLS.into())),
+    ]));
+    let queue = answers.clone();
+    t.app.scanner =
+        Box::new(move || queue.borrow_mut().remove(0).map(|o| o.map(|s| Zeroizing::new(s.into()))));
+    t.key(Key::Left);
+    // 1. A new login, named after the code's issuer, without a password.
+    t.key(Key::Char('s'));
+    assert!(t.toast().contains("Drag a box around the QR code"), "{}", t.toast());
+    t.app.run_task();
+    let s = t.screen();
+    assert!(
+        s.contains("Add the scanned 2FA code") && s.contains("SHA1, 6 digits") && !s.contains("GEZD"),
+        "{s}"
+    );
+    t.key(Key::Enter); // + New login
+    let Screen::Form(f) = &t.app.screen else { panic!("no form: {}", t.screen()) };
+    assert_eq!(f.name.as_str(), "Discord");
+    assert!(!t.screen().contains("GEZD") && !t.screen().contains("otpauth"), "hidden: {}", t.screen());
+    t.key(Key::Ctrl('s'));
+    assert!(matches!(t.app.screen, Screen::Main), "{}", t.screen());
+    assert!(t.app.scanned.is_none(), "used and wiped");
+    // 2. An existing item: its edit form, the 2FA secret filled in.
+    t.key(Key::Char('s'));
+    t.app.run_task();
+    t.typ("server");
+    t.key(Key::Enter);
+    assert!(t.screen().contains("Edit 'Server key'"), "{}", t.screen());
+    t.key(Key::Ctrl('s'));
+    // 3. Too short a secret: refused before choosing an account.
+    t.key(Key::Char('s'));
+    t.app.run_task();
+    assert!(t.toast().contains("not a usable 2FA code") && t.app.modals.is_empty(), "{}", t.toast());
+    // 4. Esc in the selection, 5. the programs are missing.
+    t.key(Key::Char('s'));
+    t.app.run_task();
+    assert_eq!(t.toast(), "Scanning cancelled.");
+    t.key(Key::Char('s'));
+    t.app.run_task();
+    assert!(t.toast().contains("grim, slurp and zbar"), "{}", t.toast());
+    let uv = t.reopen(PW);
+    for name in ["Discord", "Server key"] {
+        let e = get(&uv, name);
+        assert_eq!(e.totp(uv.item_key()).unwrap().unwrap().code_at(59).as_str(), "287082", "{name}");
+    }
+    assert!(!get(&uv, "Discord").has_password());
+    assert!(answers.borrow().is_empty());
+}
+
+#[test]
 fn a_new_login_with_a_2fa_code_and_removing_a_code() {
     let mut t = new_types();
     t.app.clock = || 59;
@@ -1319,7 +1380,7 @@ fn the_2fa_tab_without_codes_says_how_to_add_one() {
     t.key(Key::Left);
     assert_eq!((t.app.tab, t.app.view.len()), (Tab::TwoFactor, 0));
     let s = t.screen();
-    assert!(s.contains("No two-factor codes yet.") && s.contains("Press a to add one"), "{s}");
+    assert!(s.contains("No two-factor codes yet.") && s.contains("Press s to scan"), "{s}");
     // Enter on an empty tab does nothing (and does not fail).
     t.key(Key::Enter);
     assert!(t.clip.borrow().is_empty() && t.app.toast.is_none());

@@ -380,7 +380,10 @@ impl HelpPage {
                         "t",
                         "copy the two-factor (TOTP) code and show it live (a new one every 30 s) until you move on",
                     ),
-                    ("", "the 2FA tab lists every item with a code; there Enter or c copies it, a adds one"),
+                    (
+                        "",
+                        "the 2FA tab lists every item with a code; there Enter or c copies it, a adds one, s scans a QR code",
+                    ),
                     ("p", "copy the public key of an SSH key"),
                     ("f", "pin or unpin as a favorite (★; favorites come first)"),
                     ("x", "share the item: an encrypted file plus a generated password for someone else"),

@@ -843,6 +843,14 @@ Valid for:       8 more second(s)
 - `cakepass add GitHub --totp` asks for the secret while adding; `cakepass edit
   GitHub --no-totp` removes it. In the screen, `t` copies the code and shows it live; the 2FA tab shows every code live.
 
+**Scan the QR code** instead of copying the secret: on the 2FA tab press `s`,
+drag a box around the QR code the site shows on your screen, and choose the
+account (or "+ New login", named after the site). The code is read by the
+separate programs `slurp`, `grim` and `zbarimg` (`sudo pacman -S grim slurp
+zbar`, Wayland); the picture stays in memory, never on disk or the clipboard,
+and nothing goes online. A Google Authenticator export (`otpauth-migration://`)
+is refused: move those codes one by one.
+
 **A login with only a 2FA code** (like an entry in an authenticator app): on
 the 2FA tab press `a`, choose "+ New login", type the name and paste the 2FA
 secret; leave the password empty. On the command line: `cakepass add Discord

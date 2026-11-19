@@ -215,6 +215,14 @@ impl Form {
         self.changed != 0
     }
 
+    /// Put a scanned 2FA link in the 2FA secret field (hidden, as if pasted).
+    pub fn put_totp(&mut self, link: &str) {
+        self.totp.clear();
+        self.totp.insert_str(link);
+        self.unchanged &= !Field::Totp.bit();
+        self.mark(Field::Totp);
+    }
+
     fn mark(&mut self, f: Field) {
         self.changed |= f.bit();
         self.error = None;

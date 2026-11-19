@@ -6,6 +6,7 @@ pub mod commands;
 pub mod config;
 pub mod logo;
 pub mod prompt;
+pub mod qr;
 pub mod setup;
 pub mod shell;
 pub mod tui;
