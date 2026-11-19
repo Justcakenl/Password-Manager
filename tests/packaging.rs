@@ -203,3 +203,26 @@ fn the_aur_srcinfo_is_up_to_date() {
         PKGBUILD.lines().find_map(|l| l.strip_prefix("pkgdesc=")).unwrap().trim_matches('"')
     );
 }
+
+/// `chrono` is in Cargo.lock only as a wasm32 dependency of `zxcvbn`, and its
+/// advisory RUSTSEC-2026-0543 is ignored in `.cargo/audit.toml` for that
+/// reason. If it ever ends up in the Linux build, that exception is wrong.
+#[test]
+fn chrono_is_not_in_the_linux_build() {
+    let out = std::process::Command::new(env!("CARGO"))
+        .args(["tree", "--locked", "--offline", "--edges", "normal,build,dev", "-i", "chrono"])
+        .args(["--target", "x86_64-unknown-linux-gnu"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("cargo runs");
+    let tree = String::from_utf8_lossy(&out.stdout);
+    let err = String::from_utf8_lossy(&out.stderr);
+    // "nothing to print" (no such package in this build) is the good case;
+    // cargo then also says so on stderr, which is not a failure.
+    assert!(
+        tree.trim().is_empty(),
+        "chrono is in the Linux build, so the RUSTSEC-2026-0543 exception in .cargo/audit.toml \
+         no longer holds:\n{tree}{err}"
+    );
+    assert!(out.status.success() || err.contains("nothing to print"), "cargo tree failed: {err}");
+}
