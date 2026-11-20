@@ -774,6 +774,23 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   code. Choose another account, or edit it with e to replace its code."
   instead of offering a new login that would fail on the duplicate name.
 
+- [x] **Tests never read the real cache or home** (branch
+  `fix/tests-own-cache`, from ADMIN `main` `f13d4d1`; tester-haiku saw
+  `first_run_wizard_in_a_terminal_then_the_screen` fail, reviewer-sonnet
+  found why). The pty and CLI harnesses set only `XDG_CONFIG_HOME`, so the
+  program read `~/.cache/cakepass/update-status` of whoever ran the tests:
+  a pending update notice ("News") covered the screen and caught the `s`.
+  Now every harness that starts the program (`tests/tui.rs` `envs()` and
+  its own `Cmd`, `tests/cli.rs` `cmd()` and the four direct `Command`s)
+  sets `XDG_CACHE_HOME`, `HOME` (and `XDG_DATA_HOME` where it had
+  `XDG_CONFIG_HOME`) to the test's temporary folder. Test
+  `the_tests_never_see_the_update_notice_of_whoever_runs_them`: a foreign
+  update-status shows "News" when pointed at, never through the harness,
+  and the four variables lie in the temporary folder. Reproduced first:
+  with `XDG_CACHE_HOME` at a folder with a foreign `remote=`, the wizard
+  test failed on `f13d4d1` ("A new version of CakePass is available") and
+  passes now. Tests only; the program is unchanged.
+
 ## Still to do
 
 - [x] **Step 16b: pre-update copies follow a re-key** (branch
