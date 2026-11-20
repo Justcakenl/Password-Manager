@@ -746,6 +746,15 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   (`qr::clock_synced`: `timedatectl show -p NTPSynchronized`, local only):
   test `the_2fa_tab_warns_when_the_clock_is_not_set_automatically`.
 
+- [x] **README: a 2FA code in CakePass is not a separate device** (branch
+  `docs/2fa-same-device`, from ADMIN `main` `23740e6`; security-opus, after
+  the user asked whether CakePass beats Proton or Google). One paragraph in
+  "Two-factor codes (TOTP)": the code and the password sit in the same
+  vault, so for e-mail, GitHub, the bank and backups keep the code on a
+  phone. Plus one sentence on what CakePass itself supports (6 to 8
+  digits, SHA1/256/512, a period of 1 s to 1 h, as `totp.rs` checks), no claims about other apps (reviewer-sonnet).
+  Docs only.
+
 ## Still to do
 
 - [x] **Step 16b: pre-update copies follow a re-key** (branch
