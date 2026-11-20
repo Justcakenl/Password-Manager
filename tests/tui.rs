@@ -615,7 +615,7 @@ fn hidden_tabs_from_the_settings_file() {
     t.wait_for("Nothing of this type yet");
     assert!(!t.screen().contains("Cloud"), "{}", t.screen());
     t.send("\x1b[C\x1b[C");
-    t.wait_for("No two-factor codes yet");
+    t.wait_for("No 2FA codes yet");
     t.send("\x1b[C");
     t.wait_for("Cloud");
     t.send("q");

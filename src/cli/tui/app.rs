@@ -720,9 +720,10 @@ impl App {
             Err(e) => return self.fail(format!("That QR code is not a usable 2FA code: {}", error_text(&e))),
         };
         // The name in the code (plain text only), so a wrong QR code shows.
-        let from = super::super::qr::suggested_name(&link).map_or(String::new(), |n| format!(" for \"{n}\""));
+        let suggested = super::super::qr::suggested_name(&link);
+        let from = suggested.as_ref().map_or(String::new(), |n| format!(" for \"{n}\""));
         let about = format!(
-            "QR code read{from}: {}, {} digits, a new code every {} s. Which account is it for?",
+            "QR code read{from}: {}, {} digits, a new code every {} s.",
             totp.algorithm().name(),
             totp.digits(),
             totp.period()
@@ -732,7 +733,18 @@ impl App {
         self.ask_add_totp();
         if let Some(Modal::Picker(p)) = self.modals.last_mut() {
             p.title = "Add the scanned 2FA code".into();
-            p.lines = vec![about];
+            // An item with that name (without a code yet) is chosen already:
+            // then Enter is all it takes.
+            let same =
+                suggested.and_then(|n| p.names.iter().position(|m| m.trim().eq_ignore_ascii_case(n.trim())));
+            let ask = match same {
+                Some(i) => {
+                    p.sel = i + 1;
+                    format!("Press Enter to add it to '{}', or choose another account.", p.names[i])
+                }
+                None => "Press Enter to save it as a new login, or choose the account it is for.".to_string(),
+            };
+            p.lines = vec![about, ask];
         }
         self.scanned = Some(link);
     }
