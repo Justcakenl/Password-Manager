@@ -842,6 +842,13 @@ Valid for:       8 more second(s)
 
 - `cakepass add GitHub --totp` asks for the secret while adding; `cakepass edit
   GitHub --no-totp` removes it. In the screen, `t` copies the code and shows it live; the 2FA tab shows every code live.
+
+**A login with only a 2FA code** (like an entry in an authenticator app): on
+the 2FA tab press `a`, choose "+ New login", type the name and paste the 2FA
+secret; leave the password empty. On the command line: `cakepass add Discord
+--totp`, leave the password empty and answer `y` to "No password: save it only
+for its 2FA code?". Such a login is not reported as "empty" by `cakepass
+audit`.
 - The screen's **2FA** tab works like an authenticator app (Proton
   Authenticator, Google Authenticator): all your codes in one list, each with
   the seconds it is still valid, and the next code in the details. Enter (or

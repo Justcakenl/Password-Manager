@@ -1219,6 +1219,56 @@ fn add_a_2fa_code_from_the_2fa_tab() {
 }
 
 #[test]
+fn a_login_with_only_a_2fa_code_like_an_authenticator_app() {
+    let mut t = new_types();
+    t.app.clock = || 59;
+    t.key(Key::Left);
+    t.key(Key::Char('a'));
+    t.typ("nothing like this");
+    t.key(Key::Enter); // + New login
+    assert!(t.toast().contains("a password is optional"), "{}", t.toast());
+    t.typ("Discord");
+    t.keys(&[Key::Down; 7]); // to the 2FA secret, the password left empty
+    t.paste("gezd gnbv gy3t qojq gezd gnbv gy3t qojq");
+    t.key(Key::Ctrl('s'));
+    assert!(matches!(t.app.screen, Screen::Main), "saved without a password: {}", t.screen());
+    assert_eq!(t.app.selected().unwrap().name(), "Discord");
+    assert!(t.screen().contains("287 082"), "{}", t.screen());
+    // Its details say there is no password, and c copies nothing.
+    t.key(Key::Right); // All
+    select(&mut t, "Discord");
+    let clips = t.clip.borrow().len();
+    t.key(Key::Char('c'));
+    assert_eq!(t.toast(), "This item has no password.");
+    assert_eq!(t.clip.borrow().len(), clips, "nothing on the clipboard");
+    t.key(Key::Char('t'));
+    assert_eq!(t.clip.borrow().last().unwrap(), "287082");
+    // Removing its 2FA code too would leave nothing: then a password is needed.
+    t.key(Key::Char('e'));
+    let s = t.screen();
+    assert!(s.contains("2FA secret   ••••••••  (unchanged)"), "{s}");
+    assert!(!s.contains("Password     ••••••••"), "no password shown as dots: {s}");
+    t.keys(&[Key::Down; 6]);
+    let Screen::Form(f) = &t.app.screen else { panic!("no form") };
+    assert_eq!(f.focus, Field::Totp, "{}", t.screen());
+    t.key(Key::Ctrl('u'));
+    t.key(Key::Ctrl('s'));
+    assert!(t.screen().contains("The password is empty"), "{}", t.screen());
+    t.key(Key::Esc);
+    t.key(Key::Char('y'));
+    // Without a 2FA secret a login still needs a password.
+    t.key(Key::Char('a'));
+    t.typ("Nothing");
+    t.key(Key::Ctrl('s'));
+    assert!(t.screen().contains("The password is empty"), "{}", t.screen());
+    let uv = t.reopen(PW);
+    let d = get(&uv, "Discord");
+    assert!(!d.has_password() && d.totp(uv.item_key()).unwrap().unwrap().code_at(59).as_str() == "287082");
+    let report = cakepass::audit::audit(&uv.vault, uv.item_key(), 59, 365, |_| true).unwrap();
+    assert!(!report.empty.contains(&"Discord".to_string()), "2FA only is not an empty login: {report:?}");
+}
+
+#[test]
 fn a_new_login_with_a_2fa_code_and_removing_a_code() {
     let mut t = new_types();
     t.app.clock = || 59;

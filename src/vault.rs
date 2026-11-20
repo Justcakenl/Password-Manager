@@ -1839,6 +1839,26 @@ mod tests {
     }
 
     #[test]
+    fn a_2fa_only_login_is_shared_and_imported_whole() {
+        // No password, only a 2FA secret (like an authenticator app): it gets
+        // through `share_subset` and the import check of `merge`.
+        let (mine, theirs) = (test_item_key(1), test_item_key(2));
+        let mut v = Vault::new();
+        let e = Entry::new(
+            NewEntry { name: "Discord".into(), totp_secret: TOTP_SEED.into(), ..Default::default() },
+            &mine,
+        )
+        .unwrap();
+        v.add(e).unwrap();
+        let part = v.share_subset(&["discord"], &mine, true).unwrap();
+        let mut other = Vault::new();
+        assert_eq!(other.merge(&part, &mine, &theirs).unwrap(), (1, 0));
+        let got = other.get("Discord").unwrap();
+        assert!(!got.has_password());
+        assert_eq!(got.totp(&theirs).unwrap().unwrap().code_at(59).as_str(), "287082");
+    }
+
+    #[test]
     fn a_share_holds_only_the_chosen_items_without_personal_marks() {
         let k = test_item_key(1);
         let mut v = Vault::new();
