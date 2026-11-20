@@ -824,7 +824,17 @@ Most sites offer two-factor login with an authenticator app: you scan a QR
 code, and the app shows a six-digit code that changes every 30 seconds. Under
 the QR code the site also shows the **secret** (a text like `JBSW Y3DP EHPK
 3PXP`, sometimes a link starting with `otpauth://`). Give that to CakePass and
-it computes the codes itself, offline:
+it computes the codes itself, offline. CakePass supports codes of 6 to 8 digits,
+SHA1, SHA256 and SHA512, and any period from 1 second to an hour (30 seconds
+unless the `otpauth://` link says otherwise).
+
+> **Same device, same vault.** A code in an authenticator app on your phone
+> is a real second factor: someone who has your password also needs that
+> separate phone. A code in CakePass is on the same computer and in the same
+> vault as the password, so whoever opens your vault has both. For most
+> accounts that is a fair trade for the convenience; for your e-mail, GitHub
+> (`cakepass --update` gets its code from there), your bank and your backups,
+> keep the 2FA code on your phone instead.
 
 ```text
 $ cakepass edit GitHub --totp
