@@ -280,6 +280,9 @@ pub struct App {
     /// A scanned 2FA link waiting for its account (the picker is open).
     /// Wiped when dropped.
     pub scanned: Option<Zeroizing<String>>,
+    /// Whether the clock is set automatically (see `qr::clock_synced`);
+    /// `Some(false)` puts a warning on the 2FA tab.
+    pub clock_synced: Option<bool>,
     /// Unlock times per level (index into `SecurityLevel::ALL`), measured
     /// the first time a level is shown.
     pub level_times: [Option<Timing>; 3],
@@ -323,6 +326,7 @@ impl App {
             measurer: Box::new(crypto::measure_unlock),
             scanner: Box::new(super::super::qr::scan_screen),
             scanned: None,
+            clock_synced: None,
             level_times: Default::default(),
         };
         app.refilter();
@@ -700,7 +704,7 @@ impl App {
     /// `s` on the 2FA tab: drag a box around a QR code on the screen.
     pub fn ask_scan_qr(&mut self) {
         self.reveal_until = None;
-        self.info("Drag a box around the QR code on the screen (Esc cancels)…");
+        self.info("Drag a box around the QR code on the screen (Esc cancels); a screenshot on the clipboard works too…");
         self.task = Some(Task::ScanQr);
     }
 
@@ -722,6 +726,7 @@ impl App {
             totp.period()
         );
         drop(totp);
+        self.toast = None;
         self.ask_add_totp();
         if let Some(Modal::Picker(p)) = self.modals.last_mut() {
             p.title = "Add the scanned 2FA code".into();

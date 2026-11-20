@@ -34,12 +34,20 @@ const MAX_LINK: usize = 2 * 1024;
 pub const NEEDS_TOOLS: &str =
     "Scanning a QR code needs grim, slurp and zbar (sudo pacman -S grim slurp zbar) and a Wayland desktop.";
 
-/// Drag a box around a QR code on the screen and read it. `Ok(None)` when
-/// the selection was cancelled (Esc). The link is an `otpauth://totp/`
-/// link, still to be checked with `Totp::parse_new`.
+/// Read a 2FA QR code: from a picture on the clipboard (a screenshot you
+/// just took), else by dragging a box around it on the screen. `Ok(None)`
+/// when the selection was cancelled (Esc). The link is an
+/// `otpauth://totp/` link, still to be checked with `Totp::parse_new`.
+///
+/// SECURITY: a picture on the clipboard that held a 2FA code is cleared
+/// from the clipboard once it is read (it holds the secret).
 pub fn scan_screen() -> Result<Option<Zeroizing<String>>> {
     if std::env::var_os("WAYLAND_DISPLAY").is_none() {
         return Err(Error::InvalidInput(NEEDS_TOOLS.into()));
+    }
+    if let Some(link) = from_clipboard() {
+        let _ = run("wl-copy", &["--clear"], None, 0, Duration::from_secs(5));
+        return Ok(Some(link));
     }
     // 1. Where is the QR code? (Esc in slurp: it exits with an error.)
     let (ok, geometry) = run("slurp", &[], None, MAX_GEOMETRY, Duration::from_secs(120))?;
@@ -60,6 +68,41 @@ pub fn scan_screen() -> Result<Option<Zeroizing<String>>> {
         run("zbarimg", &["--raw", "-q", "-"], Some(&picture), MAX_DECODED, Duration::from_secs(30))?;
     drop(picture);
     pick_link(&decoded).map(Some)
+}
+
+/// A 2FA link from a PNG picture on the clipboard, if there is one that
+/// holds a 2FA QR code. Anything else (no picture, another QR code, a
+/// missing program): `None`, and the screen is used instead.
+fn from_clipboard() -> Option<Zeroizing<String>> {
+    let (ok, types) = run("wl-paste", &["--list-types"], None, 4096, Duration::from_secs(5)).ok()?;
+    if !ok || !String::from_utf8_lossy(&types).lines().any(|t| t.trim() == "image/png") {
+        return None;
+    }
+    let (ok, picture) =
+        run("wl-paste", &["--no-newline", "--type", "image/png"], None, MAX_PICTURE, Duration::from_secs(10))
+            .ok()?;
+    if !ok || picture.is_empty() {
+        return None;
+    }
+    let (_, decoded) =
+        run("zbarimg", &["--raw", "-q", "-"], Some(&picture), MAX_DECODED, Duration::from_secs(30)).ok()?;
+    drop(picture);
+    pick_link(&decoded).ok()
+}
+
+/// Whether this computer sets its clock automatically (`timedatectl`:
+/// NTPSynchronized). 2FA codes come from the clock, so a clock that is off
+/// by half a minute gives codes that sites refuse. `None` when it cannot be
+/// told (no systemd): then nothing is said. Local only, no network.
+pub fn clock_synced() -> Option<bool> {
+    let (ok, out) =
+        run("timedatectl", &["show", "-p", "NTPSynchronized", "--value"], None, 64, Duration::from_secs(3))
+            .ok()?;
+    match (ok, String::from_utf8_lossy(&out).trim()) {
+        (true, "yes") => Some(true),
+        (true, "no") => Some(false),
+        _ => None,
+    }
 }
 
 /// A selection from `slurp`: digits, `,`, `x` and one space (`10,20 30x40`).

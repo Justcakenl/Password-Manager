@@ -123,6 +123,7 @@ pub fn run_unlocked(uv: UnlockedVault, notices: Vec<Notice>, cfg: &Config) -> Re
     let now = Instant::now();
     let mut app = App::new(uv, cfg.clone(), config::path(), Duration::from_secs(lock), copier, now);
     app.key_file = commands::key_file_path();
+    app.clock_synced = super::qr::clock_synced();
     app.show_notices(notices);
     prompt::mark_activity();
     term::set_lock_secs(lock);

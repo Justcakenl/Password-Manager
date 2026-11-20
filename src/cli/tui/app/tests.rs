@@ -1269,6 +1269,18 @@ fn a_login_with_only_a_2fa_code_like_an_authenticator_app() {
 }
 
 #[test]
+fn the_2fa_tab_warns_when_the_clock_is_not_set_automatically() {
+    let mut t = new_types();
+    t.key(Key::Left);
+    for (synced, warned) in [(None, false), (Some(true), false), (Some(false), true)] {
+        t.app.clock_synced = synced;
+        assert_eq!(t.screen().contains("not set automatically (NTP)"), warned, "{synced:?}");
+    }
+    t.key(Key::Right); // only on the 2FA tab
+    assert!(!t.screen().contains("NTP"));
+}
+
+#[test]
 fn scan_a_2fa_qr_code_from_the_screen() {
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1287,9 +1299,11 @@ fn scan_a_2fa_qr_code_from_the_screen() {
         Box::new(move || queue.borrow_mut().remove(0).map(|o| o.map(|s| Zeroizing::new(s.into()))));
     t.key(Key::Left);
     // 1. A new login, named after the code's issuer, without a password.
-    t.key(Key::Char('s'));
+    t.app.ask_scan_qr(); // what s does; the key would also run the scan at once
     assert!(t.toast().contains("Drag a box around the QR code"), "{}", t.toast());
+    assert!(t.toast().contains("clipboard works too"));
     t.app.run_task();
+    assert!(t.toast().is_empty(), "the message goes once the code is read");
     let s = t.screen();
     assert!(
         s.contains("Add the scanned 2FA code") && s.contains("SHA1, 6 digits") && !s.contains("GEZD"),

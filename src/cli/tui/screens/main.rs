@@ -247,6 +247,10 @@ impl App {
                 self.view.len(),
                 self.search.as_str()
             )
+        } else if self.tab == Tab::TwoFactor && self.clock_synced == Some(false) {
+            "⚠ The clock of this computer is not set automatically (NTP), so codes may be refused. \
+             Turn it on: sudo timedatectl set-ntp true"
+                .to_string()
         } else {
             commands::capitalize(&commands::vault_summary(&self.uv.vault))
         };
