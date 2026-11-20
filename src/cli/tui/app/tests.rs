@@ -1208,7 +1208,7 @@ fn add_a_2fa_code_from_the_2fa_tab() {
     assert!(t.screen().contains("gezd gnbv"), "Ctrl+R shows it");
     t.key(Key::Ctrl('s'));
     assert!(matches!(t.app.screen, Screen::Main));
-    assert_eq!(t.toast(), "Item 'Visa' updated. Its 2FA code is in the 2FA tab.");
+    assert_eq!(t.toast(), "Item 'Visa' updated. Type this 2FA code on the website now (Enter copies it).");
     assert_eq!((t.app.tab, t.app.view.len()), (Tab::TwoFactor, 2));
     assert_eq!(t.app.selected().unwrap().name(), "Visa");
     assert_eq!(t.screen().matches("287 082").count(), 2, "{}", t.screen());
@@ -1278,6 +1278,64 @@ fn the_2fa_tab_warns_when_the_clock_is_not_set_automatically() {
     }
     t.key(Key::Right); // only on the 2FA tab
     assert!(!t.screen().contains("NTP"));
+}
+
+#[test]
+fn the_2fa_steps_show_in_an_empty_vault_too() {
+    // An empty vault: the 2FA tab still explains the steps (the footer
+    // already said s and a; the list said "Your vault is empty").
+    let mut t = T::with(|_| {});
+    t.key(Key::Left);
+    assert_eq!(t.app.tab, Tab::TwoFactor);
+    let s = t.screen();
+    assert!(s.contains("Add one in 4 steps") && !s.contains("Your vault is empty"), "{s}");
+    t.key(Key::Right);
+    assert!(t.screen().contains("Your vault is empty"));
+}
+
+#[test]
+fn after_adding_a_2fa_code_its_live_code_is_shown_and_a_scan_finds_the_account() {
+    let mut t = new_types();
+    t.app.clock = || 59;
+    t.app.scanner = Box::new(|| {
+        Ok(Some(Zeroizing::new(
+            "otpauth://totp/server%20KEY:root?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ".into(),
+        )))
+    });
+    // On "All": scan, and the item with the same name is chosen already.
+    t.key(Key::Left);
+    t.app.ask_scan_qr();
+    t.app.run_task();
+    let s = t.screen();
+    assert!(s.contains("Press Enter to add it to 'Server key'"), "{s}");
+    t.key(Key::Enter);
+    assert!(t.screen().contains("Edit 'Server key'"), "{}", t.screen());
+    t.key(Key::Ctrl('s'));
+    // Saved: straight to the 2FA tab, on that item, with its live code.
+    assert_eq!(t.app.tab, Tab::TwoFactor);
+    assert_eq!(t.app.selected().unwrap().name(), "Server key");
+    assert!(t.toast().contains("Type this 2FA code on the website now"), "{}", t.toast());
+    assert!(t.screen().contains("287 082"), "{}", t.screen());
+    // No item of that name: "+ New login" is chosen.
+    t.app.scanner = Box::new(|| {
+        Ok(Some(Zeroizing::new("otpauth://totp/Nowhere:me?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ".into())))
+    });
+    t.app.ask_scan_qr();
+    t.app.run_task();
+    assert!(t.screen().contains("Press Enter to save it as a new login"), "{}", t.screen());
+    let Some(Modal::Picker(p)) = t.app.modals.last() else { panic!("no picker") };
+    assert_eq!(p.sel, 0);
+    t.key(Key::Esc);
+    // The same site again: 'Server key' has a code now, so it is not offered.
+    t.app.scanner = Box::new(|| {
+        Ok(Some(Zeroizing::new(
+            "otpauth://totp/Server%20key:root?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ".into(),
+        )))
+    });
+    t.app.ask_scan_qr();
+    t.app.run_task();
+    let s = t.screen();
+    assert!(s.contains("'Server key' already has a 2FA code") && s.contains("edit it with e"), "{s}");
 }
 
 #[test]
@@ -1367,7 +1425,10 @@ fn a_new_login_with_a_2fa_code_and_removing_a_code() {
     t.key(Key::Down);
     t.paste(TOTP_SEED);
     t.key(Key::Ctrl('s'));
-    assert_eq!(t.toast(), "Login 'Mail' saved (encrypted). Its 2FA code is in the 2FA tab.");
+    assert_eq!(
+        t.toast(),
+        "Login 'Mail' saved (encrypted). Type this 2FA code on the website now (Enter copies it)."
+    );
     assert_eq!(t.app.view.len(), 2);
     // Removing a code: edit, the 2FA secret says "(unchanged)", Ctrl+U, save.
     select(&mut t, "GitHub");
@@ -1395,7 +1456,14 @@ fn the_2fa_tab_without_codes_says_how_to_add_one() {
     t.key(Key::Left);
     assert_eq!((t.app.tab, t.app.view.len()), (Tab::TwoFactor, 0));
     let s = t.screen();
-    assert!(s.contains("No two-factor codes yet.") && s.contains("Press s to scan"), "{s}");
+    assert!(
+        s.contains("No 2FA codes yet. Add one in 4 steps:") && s.contains("Press s and drag a box"),
+        "{s}"
+    );
+    assert!(
+        s.contains("3. Press Enter to choose the account") && s.contains("4. Type the 6-digit code"),
+        "{s}"
+    );
     // Enter on an empty tab does nothing (and does not fail).
     t.key(Key::Enter);
     assert!(t.clip.borrow().is_empty() && t.app.toast.is_none());

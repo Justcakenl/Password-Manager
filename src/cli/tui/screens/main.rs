@@ -333,17 +333,24 @@ impl App {
         let r = lay.list;
         let rows = r.h.max(1) as usize;
         if self.view.is_empty() {
-            let lines: [&str; 2] = if self.entries().is_empty() {
-                ["Your vault is empty.", "Press a to add your first item, or g to generate a password."]
-            } else if !self.search.is_empty() {
-                ["No items match.", "Esc clears the search."]
+            let lines: &[&str] = if !self.search.is_empty() {
+                &["No items match.", "Esc clears the search."]
             } else if self.tab == Tab::TwoFactor {
-                [
-                    "No two-factor codes yet.",
-                    "Press s to scan the site's QR code from the screen, or a to paste the secret shown under it.",
+                // The whole way, step by step: also in an empty vault.
+                &[
+                    "No 2FA codes yet. Add one in 4 steps:",
+                    "",
+                    "1. On the website, turn on two-factor login with an \"authenticator app\". It shows a QR code.",
+                    "2. Press s and drag a box around that QR code with the mouse. (No QR code? Press a and paste the text the site shows.)",
+                    "3. Press Enter to choose the account, then Ctrl+S to save.",
+                    "4. Type the 6-digit code you then see here on the website.",
+                    "",
+                    "Logging in later: come to this tab, choose the account and press Enter to copy its code.",
                 ]
+            } else if self.entries().is_empty() {
+                &["Your vault is empty.", "Press a to add your first item, or g to generate a password."]
             } else {
-                ["Nothing of this type yet.", "Press a to add one, or ← → for the other types."]
+                &["Nothing of this type yet.", "Press a to add one, or ← → for the other types."]
             };
             let width = r.w.saturating_sub(3);
             let wrapped = lines.iter().flat_map(|l| wrap(l, width as usize));

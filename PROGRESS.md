@@ -755,6 +755,25 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   digits, SHA1/256/512, a period of 1 s to 1 h, as `totp.rs` checks), no claims about other apps (reviewer-sonnet).
   Docs only.
 
+- [x] **2FA made easier** (branch `feature/2fa-easier`, from ADMIN `main`
+  `2fe1c84`; the user: "make 2FA much clearer, it has to be really easy").
+  UI text and flow only, no crypto or storage change:
+  the empty 2FA tab shows the whole way in 3 numbered steps, also in an
+  empty vault (it said "Your vault is empty" there before); after saving a
+  new or changed 2FA secret the screen goes to the 2FA tab on that item, so
+  its live code is right there, and the message says "Type this 2FA code on
+  the website now (Enter copies it)."; after a QR scan an item without a
+  code whose name equals the name in the code (case-insensitive) is chosen
+  already, and the picker says what Enter will do. Tests:
+  `the_2fa_steps_show_in_an_empty_vault_too`,
+  `after_adding_a_2fa_code_its_live_code_is_shown_and_a_scan_finds_the_account`,
+  updated `the_2fa_tab_without_codes_says_how_to_add_one`.
+  After reviewer-sonnet's review: 4 steps (step 3 "Press Enter to choose
+  the account, then Ctrl+S to save", the step the 3 steps skipped); a scan
+  whose name is an item that already has a code says "'X' already has a 2FA
+  code. Choose another account, or edit it with e to replace its code."
+  instead of offering a new login that would fail on the duplicate name.
+
 ## Still to do
 
 - [x] **Step 16b: pre-update copies follow a re-key** (branch

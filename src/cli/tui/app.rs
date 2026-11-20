@@ -720,19 +720,45 @@ impl App {
             Err(e) => return self.fail(format!("That QR code is not a usable 2FA code: {}", error_text(&e))),
         };
         // The name in the code (plain text only), so a wrong QR code shows.
-        let from = super::super::qr::suggested_name(&link).map_or(String::new(), |n| format!(" for \"{n}\""));
+        let suggested = super::super::qr::suggested_name(&link);
+        let from = suggested.as_ref().map_or(String::new(), |n| format!(" for \"{n}\""));
         let about = format!(
-            "QR code read{from}: {}, {} digits, a new code every {} s. Which account is it for?",
+            "QR code read{from}: {}, {} digits, a new code every {} s.",
             totp.algorithm().name(),
             totp.digits(),
             totp.period()
         );
         drop(totp);
+        // An item of that name that has a code already (not in the picker).
+        let has_code = suggested.as_ref().and_then(|n| {
+            self.entries()
+                .iter()
+                .find(|e| e.has_totp() && e.name().trim().eq_ignore_ascii_case(n.trim()))
+                .map(|e| e.name().to_string())
+        });
         self.toast = None;
         self.ask_add_totp();
         if let Some(Modal::Picker(p)) = self.modals.last_mut() {
             p.title = "Add the scanned 2FA code".into();
-            p.lines = vec![about];
+            // An item with that name (without a code yet) is chosen already:
+            // then Enter is all it takes.
+            let same =
+                suggested.and_then(|n| p.names.iter().position(|m| m.trim().eq_ignore_ascii_case(n.trim())));
+            let ask = match (same, has_code) {
+                (Some(i), _) => {
+                    p.sel = i + 1;
+                    format!("Press Enter to add it to '{}', or choose another account.", p.names[i])
+                }
+                (None, Some(name)) => {
+                    format!(
+                        "'{name}' already has a 2FA code. Choose another account, or edit it with e to replace its code."
+                    )
+                }
+                (None, None) => {
+                    "Press Enter to save it as a new login, or choose the account it is for.".to_string()
+                }
+            };
+            p.lines = vec![about, ask];
         }
         self.scanned = Some(link);
     }

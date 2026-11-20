@@ -27,7 +27,7 @@ use cakepass::vault::{Entry, Kind, NewEntry};
 use cakepass::{Error, Result};
 
 use super::super::super::commands;
-use super::super::app::{App, Modal, Screen};
+use super::super::app::{App, Modal, Screen, Tab};
 use super::super::grid::{Grid, Rect};
 use super::super::input::TextInput;
 use super::super::keys::{Event, Key};
@@ -525,9 +525,16 @@ impl App {
 
     fn save_form(&mut self) {
         let Screen::Form(mut f) = std::mem::replace(&mut self.screen, Screen::Main) else { return };
+        let new_code = (f.adding() || f.is_changed(Field::Totp)) && !f.totp.as_str().trim().is_empty();
         match self.try_save(&mut f) {
             // The form is dropped here, which wipes what was typed.
             Ok((name, msg)) => {
+                if new_code {
+                    // Straight to its live code: the site asks for it next.
+                    self.tab = Tab::TwoFactor;
+                    self.search.clear();
+                    self.searching = false;
+                }
                 self.refilter();
                 self.select_name(&name);
                 self.ok(msg);
@@ -663,7 +670,7 @@ impl App {
         match result {
             Ok((name, mut msg)) => {
                 if totp_set {
-                    msg.push_str(" Its 2FA code is in the 2FA tab.");
+                    msg.push_str(" Type this 2FA code on the website now (Enter copies it).");
                 }
                 if odd_mail {
                     msg.push_str(" Note: that e-mail address looks odd (saved anyway).");
