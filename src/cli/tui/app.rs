@@ -704,7 +704,7 @@ impl App {
     /// `s` on the 2FA tab: drag a box around a QR code on the screen.
     pub fn ask_scan_qr(&mut self) {
         self.reveal_until = None;
-        self.info("Drag a box around the QR code on the screen (Esc cancels); a screenshot on the clipboard works too…");
+        self.info("Drag a box around the QR code on the screen (Esc cancels)…");
         self.task = Some(Task::ScanQr);
     }
 
@@ -719,8 +719,10 @@ impl App {
             Ok(t) => t,
             Err(e) => return self.fail(format!("That QR code is not a usable 2FA code: {}", error_text(&e))),
         };
+        // The name in the code (plain text only), so a wrong QR code shows.
+        let from = super::super::qr::suggested_name(&link).map_or(String::new(), |n| format!(" for \"{n}\""));
         let about = format!(
-            "QR code read: {}, {} digits, a new code every {} s. Which account is it for?",
+            "QR code read{from}: {}, {} digits, a new code every {} s. Which account is it for?",
             totp.algorithm().name(),
             totp.digits(),
             totp.period()

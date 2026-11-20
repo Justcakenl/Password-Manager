@@ -34,20 +34,17 @@ const MAX_LINK: usize = 2 * 1024;
 pub const NEEDS_TOOLS: &str =
     "Scanning a QR code needs grim, slurp and zbar (sudo pacman -S grim slurp zbar) and a Wayland desktop.";
 
-/// Read a 2FA QR code: from a picture on the clipboard (a screenshot you
-/// just took), else by dragging a box around it on the screen. `Ok(None)`
-/// when the selection was cancelled (Esc). The link is an
-/// `otpauth://totp/` link, still to be checked with `Totp::parse_new`.
+/// Drag a box around a QR code on the screen and read it. `Ok(None)` when
+/// the selection was cancelled (Esc). The link is an `otpauth://totp/`
+/// link, still to be checked with `Totp::parse_new`.
 ///
-/// SECURITY: a picture on the clipboard that held a 2FA code is cleared
-/// from the clipboard once it is read (it holds the secret).
+/// SECURITY: never from the clipboard. A clipboard history (Omarchy's keeps
+/// every picture as a PNG file) would store a screenshot of the QR code, and
+/// with it the secret, on disk; the picture from `grim` only goes through a
+/// pipe.
 pub fn scan_screen() -> Result<Option<Zeroizing<String>>> {
     if std::env::var_os("WAYLAND_DISPLAY").is_none() {
         return Err(Error::InvalidInput(NEEDS_TOOLS.into()));
-    }
-    if let Some(link) = from_clipboard() {
-        let _ = run("wl-copy", &["--clear"], None, 0, Duration::from_secs(5));
-        return Ok(Some(link));
     }
     // 1. Where is the QR code? (Esc in slurp: it exits with an error.)
     let (ok, geometry) = run("slurp", &[], None, MAX_GEOMETRY, Duration::from_secs(120))?;
@@ -70,26 +67,6 @@ pub fn scan_screen() -> Result<Option<Zeroizing<String>>> {
     pick_link(&decoded).map(Some)
 }
 
-/// A 2FA link from a PNG picture on the clipboard, if there is one that
-/// holds a 2FA QR code. Anything else (no picture, another QR code, a
-/// missing program): `None`, and the screen is used instead.
-fn from_clipboard() -> Option<Zeroizing<String>> {
-    let (ok, types) = run("wl-paste", &["--list-types"], None, 4096, Duration::from_secs(5)).ok()?;
-    if !ok || !String::from_utf8_lossy(&types).lines().any(|t| t.trim() == "image/png") {
-        return None;
-    }
-    let (ok, picture) =
-        run("wl-paste", &["--no-newline", "--type", "image/png"], None, MAX_PICTURE, Duration::from_secs(10))
-            .ok()?;
-    if !ok || picture.is_empty() {
-        return None;
-    }
-    let (_, decoded) =
-        run("zbarimg", &["--raw", "-q", "-"], Some(&picture), MAX_DECODED, Duration::from_secs(30)).ok()?;
-    drop(picture);
-    pick_link(&decoded).ok()
-}
-
 /// Whether this computer sets its clock automatically (`timedatectl`:
 /// NTPSynchronized). 2FA codes come from the clock, so a clock that is off
 /// by half a minute gives codes that sites refuse. `None` when it cannot be
@@ -105,12 +82,22 @@ pub fn clock_synced() -> Option<bool> {
     }
 }
 
-/// A selection from `slurp`: digits, `,`, `x` and one space (`10,20 30x40`).
+/// A selection from `slurp`: `X,Y WxH`. X and Y may be negative (a monitor
+/// left of or above the main one); W and H are positive numbers.
 fn valid_geometry(g: &str) -> bool {
-    !g.is_empty()
-        && g.len() <= MAX_GEOMETRY
-        && g.chars().all(|c| c.is_ascii_digit() || matches!(c, ',' | 'x' | ' '))
-        && g.split(' ').count() == 2
+    fn int(s: &str) -> bool {
+        let digits = s.strip_prefix('-').unwrap_or(s);
+        !digits.is_empty() && digits.len() <= 6 && digits.bytes().all(|b| b.is_ascii_digit())
+    }
+    fn size(s: &str) -> bool {
+        !s.is_empty() && s.len() <= 6 && s.bytes().all(|b| b.is_ascii_digit()) && s.bytes().any(|b| b != b'0')
+    }
+    if g.len() > MAX_GEOMETRY {
+        return false;
+    }
+    let Some((pos, dims)) = g.split_once(' ') else { return false };
+    let (Some((x, y)), Some((w, h))) = (pos.split_once(','), dims.split_once('x')) else { return false };
+    int(x) && int(y) && size(w) && size(h)
 }
 
 /// The 2FA link in what `zbarimg` read: the first line that is an
@@ -277,7 +264,18 @@ mod tests {
     #[test]
     fn a_selection_is_only_numbers() {
         assert!(valid_geometry("10,20 300x400"));
-        for bad in ["", "10,20", "10,20 30x40; rm -rf ~", "-g 1", "1,2 3x4 5"] {
+        assert!(valid_geometry("-1920,-100 300x300"), "a monitor to the left");
+        for bad in [
+            "",
+            "10,20",
+            "10,20 30x40; rm -rf ~",
+            "-g 1",
+            "1,2 3x4 5",
+            "1,2 0x4",
+            "1,2 -3x4",
+            "--1,2 3x4",
+            "1,,2 3x4",
+        ] {
             assert!(!valid_geometry(bad), "{bad:?}");
         }
     }

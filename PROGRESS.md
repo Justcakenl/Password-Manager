@@ -722,14 +722,17 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   Seen for real: a QR code shown full screen with imv, read by the real
   grim and zbarimg (only slurp replaced by a script giving the area), saved
   as "QRTest" with the right code.
-  Then ("make 2FA the best ever"): `s` first reads a PNG picture on the
-  clipboard (`wl-paste --list-types` / `--type image/png`, same limits, a
-  screenshot of the QR code) and clears the clipboard after a 2FA code was
-  read from it (`wl-copy --clear`: the picture holds the secret); else the
-  screen selection as above. Seen for real: a qrencode PNG put on the
-  clipboard with wl-copy, read with no slurp or grim involved, saved as
-  "ClipTest" with the right code, clipboard empty afterwards. And the 2FA
-  tab warns when the clock is not set automatically
+  Then ("make 2FA the best ever"): reading a QR screenshot from the
+  clipboard was tried in `f50c81d` and taken out again after
+  security-opus's review: Omarchy's clipboard history stores every picture
+  as a PNG file (`~/.local/state/omarchy/clipboard-images/`), so it would
+  put the 2FA secret on disk, and an old screenshot could be read instead of
+  the new QR code. Only the drag route remains; the README warns against
+  screenshots of 2FA QR codes. (The test picture from that try was removed
+  from the history.) The picker now shows the name in the code ("QR code
+  read for \"Discord\"") so a wrong code shows. `valid_geometry` accepts
+  negative X/Y (a monitor left of or above the main one; reviewer-sonnet).
+  And the 2FA tab warns when the clock is not set automatically
   (`qr::clock_synced`: `timedatectl show -p NTPSynchronized`, local only):
   test `the_2fa_tab_warns_when_the_clock_is_not_set_automatically`.
 

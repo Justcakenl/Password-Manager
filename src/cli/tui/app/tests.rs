@@ -1301,7 +1301,7 @@ fn scan_a_2fa_qr_code_from_the_screen() {
     // 1. A new login, named after the code's issuer, without a password.
     t.app.ask_scan_qr(); // what s does; the key would also run the scan at once
     assert!(t.toast().contains("Drag a box around the QR code"), "{}", t.toast());
-    assert!(t.toast().contains("clipboard works too"));
+    assert!(!t.toast().contains("clipboard"), "never from the clipboard");
     t.app.run_task();
     assert!(t.toast().is_empty(), "the message goes once the code is read");
     let s = t.screen();
@@ -1309,6 +1309,7 @@ fn scan_a_2fa_qr_code_from_the_screen() {
         s.contains("Add the scanned 2FA code") && s.contains("SHA1, 6 digits") && !s.contains("GEZD"),
         "{s}"
     );
+    assert!(s.contains("QR code read for \"Discord\""), "the name in the code shows: {s}");
     t.key(Key::Enter); // + New login
     let Screen::Form(f) = &t.app.screen else { panic!("no form: {}", t.screen()) };
     assert_eq!(f.name.as_str(), "Discord");

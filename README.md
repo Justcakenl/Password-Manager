@@ -845,10 +845,12 @@ Valid for:       8 more second(s)
 
 **Scan the QR code** instead of copying the secret: on the 2FA tab press `s`,
 drag a box around the QR code the site shows on your screen, and choose the
-account (or "+ New login", named after the site). Took a screenshot of the
-QR code already (it is on the clipboard)? Then `s` reads that, and clears it
-from the clipboard afterwards. If the clock of your computer is not set
-automatically, the 2FA tab warns you: codes come from the clock. The code is read by the
+account (or "+ New login", named after the site). **Do not take a
+screenshot of a 2FA QR code**: a clipboard history (Omarchy keeps every
+picture) and a screenshots folder keep it, and with it the secret, as a
+plain file on disk. Drag the box with `s` instead: that picture only goes
+through a pipe. If the clock of your computer is not set automatically, the
+2FA tab warns you: codes come from the clock. The code is read by the
 separate programs `slurp`, `grim` and `zbarimg` (`sudo pacman -S grim slurp
 zbar`, Wayland); the picture stays in memory, never on disk or the clipboard,
 and nothing goes online. A Google Authenticator export (`otpauth-migration://`)
