@@ -696,6 +696,16 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   `get`, `get --totp`, audit, export + import roundtrip); vault.rs
   `a_2fa_only_login_is_shared_and_imported_whole` (`share_subset` with the
   2FA secret + `merge`).
+- [x] **`cargo audit`: the chrono warning** (branch `fix/audit-chrono-wasm-only`,
+  found by tester-haiku). RUSTSEC-2026-0543 (chrono 0.4.45 unmaintained, a
+  warning) made `cargo audit -D warnings` fail. chrono is only a wasm32
+  dependency of zxcvbn 3.1.1 and not in the Linux build, so
+  `.cargo/audit.toml` ignores that one ID (approved by security-opus and
+  reviewer-sonnet; a new chrono advisory has its own ID and still fails).
+  `tests/packaging.rs` `chrono_is_not_in_the_linux_build` (`cargo tree
+  --offline -i chrono` for x86_64 Linux must print nothing; checked to fail
+  for a crate that is in the build). Look again when a zxcvbn without
+  chrono is released or Cargo.lock changes.
 
 ## Still to do
 
