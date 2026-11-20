@@ -729,6 +729,13 @@ impl App {
             totp.period()
         );
         drop(totp);
+        // An item of that name that has a code already (not in the picker).
+        let has_code = suggested.as_ref().and_then(|n| {
+            self.entries()
+                .iter()
+                .find(|e| e.has_totp() && e.name().trim().eq_ignore_ascii_case(n.trim()))
+                .map(|e| e.name().to_string())
+        });
         self.toast = None;
         self.ask_add_totp();
         if let Some(Modal::Picker(p)) = self.modals.last_mut() {
@@ -737,12 +744,19 @@ impl App {
             // then Enter is all it takes.
             let same =
                 suggested.and_then(|n| p.names.iter().position(|m| m.trim().eq_ignore_ascii_case(n.trim())));
-            let ask = match same {
-                Some(i) => {
+            let ask = match (same, has_code) {
+                (Some(i), _) => {
                     p.sel = i + 1;
                     format!("Press Enter to add it to '{}', or choose another account.", p.names[i])
                 }
-                None => "Press Enter to save it as a new login, or choose the account it is for.".to_string(),
+                (None, Some(name)) => {
+                    format!(
+                        "'{name}' already has a 2FA code. Choose another account, or edit it with e to replace its code."
+                    )
+                }
+                (None, None) => {
+                    "Press Enter to save it as a new login, or choose the account it is for.".to_string()
+                }
             };
             p.lines = vec![about, ask];
         }

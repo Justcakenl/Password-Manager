@@ -338,11 +338,12 @@ impl App {
             } else if self.tab == Tab::TwoFactor {
                 // The whole way, step by step: also in an empty vault.
                 &[
-                    "No 2FA codes yet. Add one in 3 steps:",
+                    "No 2FA codes yet. Add one in 4 steps:",
                     "",
                     "1. On the website, turn on two-factor login with an \"authenticator app\". It shows a QR code.",
                     "2. Press s and drag a box around that QR code with the mouse. (No QR code? Press a and paste the text the site shows.)",
-                    "3. Press Ctrl+S, then type the 6-digit code you see here on the website.",
+                    "3. Press Enter to choose the account, then Ctrl+S to save.",
+                    "4. Type the 6-digit code you then see here on the website.",
                     "",
                     "Logging in later: come to this tab, choose the account and press Enter to copy its code.",
                 ]

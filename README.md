@@ -880,11 +880,12 @@ audit`.
   the next code too: mind who can see your screen. Each code works for one
   period only and is useless without the password; under a dialog (help,
   delete, …) the codes turn into dots, and the screen locks itself as usual.
-- **An empty 2FA tab shows the 3 steps** (also in an empty vault). After
+- **An empty 2FA tab shows the 4 steps** (also in an empty vault). After
   saving a 2FA code, CakePass jumps to the 2FA tab on that item, so the code
   the site asks for next is right there (Enter copies it). A scanned QR code
   whose name matches an item without a code chooses that item already:
-  Enter is all it takes.
+  Enter is all it takes; an item of that name that already has a code is
+  named, with how to replace its code (`e`).
 - **Setting it up in the screen**, no commands needed:
   1. On the site, turn on two-factor login with an authenticator app. Below
      the QR code, click "can't scan it?" (or similar) and copy the secret.

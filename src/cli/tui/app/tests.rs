@@ -1288,7 +1288,7 @@ fn the_2fa_steps_show_in_an_empty_vault_too() {
     t.key(Key::Left);
     assert_eq!(t.app.tab, Tab::TwoFactor);
     let s = t.screen();
-    assert!(s.contains("Add one in 3 steps") && !s.contains("Your vault is empty"), "{s}");
+    assert!(s.contains("Add one in 4 steps") && !s.contains("Your vault is empty"), "{s}");
     t.key(Key::Right);
     assert!(t.screen().contains("Your vault is empty"));
 }
@@ -1325,6 +1325,17 @@ fn after_adding_a_2fa_code_its_live_code_is_shown_and_a_scan_finds_the_account()
     assert!(t.screen().contains("Press Enter to save it as a new login"), "{}", t.screen());
     let Some(Modal::Picker(p)) = t.app.modals.last() else { panic!("no picker") };
     assert_eq!(p.sel, 0);
+    t.key(Key::Esc);
+    // The same site again: 'Server key' has a code now, so it is not offered.
+    t.app.scanner = Box::new(|| {
+        Ok(Some(Zeroizing::new(
+            "otpauth://totp/Server%20key:root?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ".into(),
+        )))
+    });
+    t.app.ask_scan_qr();
+    t.app.run_task();
+    let s = t.screen();
+    assert!(s.contains("'Server key' already has a 2FA code") && s.contains("edit it with e"), "{s}");
 }
 
 #[test]
@@ -1446,10 +1457,13 @@ fn the_2fa_tab_without_codes_says_how_to_add_one() {
     assert_eq!((t.app.tab, t.app.view.len()), (Tab::TwoFactor, 0));
     let s = t.screen();
     assert!(
-        s.contains("No 2FA codes yet. Add one in 3 steps:") && s.contains("Press s and drag a box"),
+        s.contains("No 2FA codes yet. Add one in 4 steps:") && s.contains("Press s and drag a box"),
         "{s}"
     );
-    assert!(s.contains("3. Press Ctrl+S"), "every step fits: {s}");
+    assert!(
+        s.contains("3. Press Enter to choose the account") && s.contains("4. Type the 6-digit code"),
+        "{s}"
+    );
     // Enter on an empty tab does nothing (and does not fail).
     t.key(Key::Enter);
     assert!(t.clip.borrow().is_empty() && t.app.toast.is_none());

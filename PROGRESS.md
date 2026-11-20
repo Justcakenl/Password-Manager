@@ -768,6 +768,11 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   `the_2fa_steps_show_in_an_empty_vault_too`,
   `after_adding_a_2fa_code_its_live_code_is_shown_and_a_scan_finds_the_account`,
   updated `the_2fa_tab_without_codes_says_how_to_add_one`.
+  After reviewer-sonnet's review: 4 steps (step 3 "Press Enter to choose
+  the account, then Ctrl+S to save", the step the 3 steps skipped); a scan
+  whose name is an item that already has a code says "'X' already has a 2FA
+  code. Choose another account, or edit it with e to replace its code."
+  instead of offering a new login that would fail on the duplicate name.
 
 ## Still to do
 
