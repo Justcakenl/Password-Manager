@@ -707,6 +707,45 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   for a crate that is in the build). Look again when a zxcvbn without
   chrono is released or Cargo.lock changes.
 
+- [x] **Scan a 2FA QR code from the screen** (branch `feature/2fa-scan-qr`, on
+  `feature/2fa-only-login`; most sites first show only a QR code). `s` on the
+  2FA tab: `src/cli/qr.rs` runs `slurp` (drag a box; Esc = cancelled),
+  `grim -g GEOM -` (the picture into a `Zeroizing` buffer through a pipe) and
+  `zbarimg --raw -q -` (reads it from stdin). No shell, no image code inside
+  CakePass, nothing on disk or the clipboard, offline. Every program has a
+  time limit (killed after) and an output limit (geometry 64 B, picture
+  32 MiB, decoded text 4 KiB); the geometry must be digits, `,`, `x` and one
+  space. Only the first `otpauth://totp/` line (at most 2 KiB, no control
+  characters) gets through, checked again with `Totp::parse_new`; an
+  `otpauth-migration://` export is refused whole; missing programs or no
+  Wayland give "needs grim, slurp and zbar". Then the usual picker: the
+  form opens with the 2FA secret filled in (hidden) and, for a new login,
+  the issuer as name (`qr::suggested_name`: percent-decoded, no control or
+  invisible characters, at most 40). The picker shows only algorithm,
+  digits and period; a scanned link not used is wiped (picker Esc, lock).
+  Tests: qr.rs `only_a_2fa_link_gets_through`, `a_selection_is_only_numbers`,
+  `the_suggested_name_is_plain_text`, `the_programs_run_with_limits` (time
+  limit, output limit, missing program), `zbarimg_reads_a_2fa_qr_code_from_a_pipe`
+  (real qrencode + zbarimg, skipped when missing); app/tests.rs
+  `scan_a_2fa_qr_code_from_the_screen` (new login named after the issuer
+  without a password, existing item, too short, cancelled, missing tools).
+  Seen for real: a QR code shown full screen with imv, read by the real
+  grim and zbarimg (only slurp replaced by a script giving the area), saved
+  as "QRTest" with the right code.
+  Then ("make 2FA the best ever"): reading a QR screenshot from the
+  clipboard was tried in `f50c81d` and taken out again after
+  security-opus's review: Omarchy's clipboard history stores every picture
+  as a PNG file (`~/.local/state/omarchy/clipboard-images/`), so it would
+  put the 2FA secret on disk, and an old screenshot could be read instead of
+  the new QR code. Only the drag route remains; the README warns against
+  screenshots of 2FA QR codes. (The test picture from that try was removed
+  from the history.) The picker now shows the name in the code ("QR code
+  read for \"Discord\"") so a wrong code shows. `valid_geometry` accepts
+  negative X/Y (a monitor left of or above the main one; reviewer-sonnet).
+  And the 2FA tab warns when the clock is not set automatically
+  (`qr::clock_synced`: `timedatectl show -p NTPSynchronized`, local only):
+  test `the_2fa_tab_warns_when_the_clock_is_not_set_automatically`.
+
 ## Still to do
 
 - [x] **Step 16b: pre-update copies follow a re-key** (branch

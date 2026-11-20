@@ -195,6 +195,9 @@ pub enum Task {
     Reload(Zeroizing<String>),
     /// Time one unlock at this level (settings screen; no dialog involved).
     Measure(SecurityLevel),
+    /// Read a 2FA QR code from the screen (runs outside CakePass: slurp,
+    /// grim, zbarimg).
+    ScanQr,
     /// Re-check the master password, then re-key at this level.
     ChangeLevel(Zeroizing<String>, SecurityLevel),
     /// Check that a word of your own is not the master password, then use it.
@@ -219,6 +222,10 @@ pub type Copier = Box<dyn FnMut(&str) -> Result<&'static str>>;
 /// Measures how long one unlock takes with these settings (Argon2 on this
 /// computer). Replaced by a fake in the tests.
 pub type Measurer = Box<dyn FnMut(&KdfParams) -> Result<Duration>>;
+
+/// Reads a 2FA QR code from the screen (`qr::scan_screen`; a stand-in in
+/// the tests). `Ok(None)`: cancelled.
+pub type Scanner = Box<dyn FnMut() -> Result<Option<Zeroizing<String>>>>;
 
 /// A measured unlock time, or why it could not be measured.
 pub type Timing = std::result::Result<Duration, String>;
@@ -269,6 +276,13 @@ pub struct App {
     /// Where the key file is, for a vault that needs one (only the path).
     pub key_file: Option<PathBuf>,
     pub measurer: Measurer,
+    pub scanner: Scanner,
+    /// A scanned 2FA link waiting for its account (the picker is open).
+    /// Wiped when dropped.
+    pub scanned: Option<Zeroizing<String>>,
+    /// Whether the clock is set automatically (see `qr::clock_synced`);
+    /// `Some(false)` puts a warning on the 2FA tab.
+    pub clock_synced: Option<bool>,
     /// Unlock times per level (index into `SecurityLevel::ALL`), measured
     /// the first time a level is shown.
     pub level_times: [Option<Timing>; 3],
@@ -310,6 +324,9 @@ impl App {
             wrong_reconfirms: 0,
             key_file: None,
             measurer: Box::new(crypto::measure_unlock),
+            scanner: Box::new(super::super::qr::scan_screen),
+            scanned: None,
+            clock_synced: None,
             level_times: Default::default(),
         };
         app.refilter();
@@ -370,6 +387,7 @@ impl App {
     pub fn lock_idle(&mut self) {
         self.reveal_until = None;
         self.totp_shown = None;
+        self.scanned = None;
         self.exit.get_or_insert(Exit::Idle);
     }
 
@@ -651,17 +669,72 @@ impl App {
         )));
     }
 
-    /// Open the form for the chosen item, on its 2FA secret field.
+    /// Open the form for the chosen item, on its 2FA secret field. After a
+    /// QR scan the field is already filled in (hidden), and a new login gets
+    /// the account's name from the code.
     fn add_totp_to(&mut self, picked: Picked) {
+        let scanned = self.scanned.take();
         match picked {
             Picked::New => {
                 self.reveal_until = None;
-                self.screen = Screen::Form(Box::new(Form::add(Kind::Login)));
-                self.info("Type the name, then paste the 2FA secret (a password is optional).");
+                let mut f = Form::add(Kind::Login);
+                match &scanned {
+                    Some(link) => {
+                        if let Some(name) = super::super::qr::suggested_name(link) {
+                            f.name.set(&name);
+                        }
+                        f.put_totp(link);
+                        self.info("The 2FA code is filled in. Check the name; a password is optional. Ctrl+S saves.");
+                    }
+                    None => self.info("Type the name, then paste the 2FA secret (a password is optional)."),
+                }
+                self.screen = Screen::Form(Box::new(f));
             }
             // The field's own help line says what to paste.
-            Picked::Name(name) => self.open_edit_at(&name, Field::Totp),
+            Picked::Name(name) => {
+                self.open_edit_at(&name, Field::Totp);
+                if let (Some(link), Screen::Form(f)) = (&scanned, &mut self.screen) {
+                    f.put_totp(link);
+                    self.info("The 2FA code is filled in. Ctrl+S saves.");
+                }
+            }
         }
+    }
+
+    /// `s` on the 2FA tab: drag a box around a QR code on the screen.
+    pub fn ask_scan_qr(&mut self) {
+        self.reveal_until = None;
+        self.info("Drag a box around the QR code on the screen (Esc cancels)…");
+        self.task = Some(Task::ScanQr);
+    }
+
+    /// The QR scan is done: on success choose the account (as with `a`).
+    fn scanned_qr(&mut self) {
+        let link = match (self.scanner)() {
+            Ok(Some(link)) => link,
+            Ok(None) => return self.info("Scanning cancelled."),
+            Err(e) => return self.fail(error_text(&e)),
+        };
+        let totp = match cakepass::totp::Totp::parse_new(&link) {
+            Ok(t) => t,
+            Err(e) => return self.fail(format!("That QR code is not a usable 2FA code: {}", error_text(&e))),
+        };
+        // The name in the code (plain text only), so a wrong QR code shows.
+        let from = super::super::qr::suggested_name(&link).map_or(String::new(), |n| format!(" for \"{n}\""));
+        let about = format!(
+            "QR code read{from}: {}, {} digits, a new code every {} s. Which account is it for?",
+            totp.algorithm().name(),
+            totp.digits(),
+            totp.period()
+        );
+        drop(totp);
+        self.toast = None;
+        self.ask_add_totp();
+        if let Some(Modal::Picker(p)) = self.modals.last_mut() {
+            p.title = "Add the scanned 2FA code".into();
+            p.lines = vec![about];
+        }
+        self.scanned = Some(link);
     }
 
     /// `f`: pin the selected item as a favorite, or unpin it. Saved at once
@@ -769,6 +842,7 @@ impl App {
                 }
                 Some(None) => {
                     self.modals.pop();
+                    self.scanned = None; // a scanned code that was not used is wiped
                 }
                 None => {}
             },
@@ -1160,6 +1234,10 @@ impl App {
             self.level_times[level_index(level)] = Some(timing);
             return true;
         }
+        if let Task::ScanQr = task {
+            self.scanned_qr();
+            return true;
+        }
         // The prompt that queued the task is on top; it is replaced or updated.
         let mut top = match self.modals.pop() {
             Some(Modal::Prompt(p)) => p,
@@ -1171,7 +1249,7 @@ impl App {
         };
         top.busy = None;
         match task {
-            Task::Measure(_) => unreachable!("handled above"),
+            Task::Measure(_) | Task::ScanQr => unreachable!("handled above"),
             Task::Share { name, path, with_totp } => match self.share(&name, &path, with_totp) {
                 Ok(message) => self.modals.push(Modal::Message(message)),
                 Err(e) => {
