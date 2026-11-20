@@ -41,6 +41,11 @@ impl Vault {
         vec![
             ("CAKEPASS_VAULT", self.path().display().to_string()),
             ("XDG_CONFIG_HOME", self.dir.path().join("config-home").display().to_string()),
+            // Never the real cache or home of whoever runs the tests: a pending
+            // update notice there ("News") would cover the screen.
+            ("XDG_CACHE_HOME", self.dir.path().join("cache-home").display().to_string()),
+            ("XDG_DATA_HOME", self.dir.path().join("data-home").display().to_string()),
+            ("HOME", self.dir.path().join("home").display().to_string()),
             ("CAKEPASS_NO_ANIMATION", "1".into()),
             ("TERM", "xterm-256color".into()),
             ("LANG", "C.UTF-8".into()),
@@ -650,6 +655,9 @@ fn passwd_rekeys_the_pre_update_copies_and_offers_to_delete_older_ones() {
         Cmd::new(env!("CARGO_BIN_EXE_cakepass"))
             .args(["--vault", file.to_str().unwrap(), "list"])
             .env("XDG_CONFIG_HOME", dir.join("config-home"))
+            .env("XDG_CACHE_HOME", dir.join("cache-home"))
+            .env("XDG_DATA_HOME", dir.join("data-home"))
+            .env("HOME", dir.join("home"))
             .write_stdin(format!("{pw}\n"))
             .output()
             .unwrap()
@@ -1011,6 +1019,39 @@ fn logging_in_to_a_vault_with_a_key_file() {
     t.send(&format!("{PW}\r"));
     t.wait_for("Wrong master password or key file. 2 attempt(s) left.");
     drop(t);
+}
+
+#[test]
+fn the_tests_never_see_the_update_notice_of_whoever_runs_them() {
+    // A pending update notice in a cache (as in the home of a developer
+    // whose checkout is ahead of the installed program) shows "News" over
+    // the screen; the harness must not read the real one.
+    let v = Vault::new();
+    let cache = v.dir.path().join("someone-elses-cache");
+    std::fs::create_dir_all(cache.join("cakepass")).unwrap();
+    std::fs::write(cache.join("cakepass/update-status"), format!("remote={}\nnotified=\n", "f".repeat(40)))
+        .unwrap();
+    let open = |extra: &[(&str, &str)]| {
+        let mut t = v.pty(&[], extra, 100, 30);
+        t.wait_for("Master password");
+        t.send(&format!("{PW}\r"));
+        t.wait_for("locks in");
+        std::thread::sleep(Duration::from_millis(300));
+        t.pump();
+        let s = t.screen();
+        t.send("\x1b");
+        t.send("q");
+        s
+    };
+    let with_it = open(&[("XDG_CACHE_HOME", cache.to_str().unwrap())]);
+    assert!(with_it.contains("A new version of CakePass is available"), "the file matters: {with_it}");
+    let harness = open(&[]);
+    assert!(!harness.contains("A new version"), "{harness}");
+    let envs = v.envs();
+    for var in ["XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "HOME"] {
+        let (_, path) = envs.iter().find(|(k, _)| *k == var).unwrap_or_else(|| panic!("{var} not set"));
+        assert!(Path::new(path).starts_with(v.dir.path()), "{var}={path}");
+    }
 }
 
 #[test]

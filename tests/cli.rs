@@ -41,6 +41,10 @@ impl Vaulty {
         c.env("CAKEPASS_VAULT", &self.path)
             .env("NO_COLOR", "1")
             .env("XDG_CONFIG_HOME", self.dir().join("config-home"))
+            // Never the real cache or home of whoever runs the tests.
+            .env("XDG_CACHE_HOME", self.dir().join("cache-home"))
+            .env("XDG_DATA_HOME", self.dir().join("data-home"))
+            .env("HOME", self.dir().join("home"))
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY")
             .timeout(Duration::from_secs(60));
@@ -211,6 +215,9 @@ fn backup_holds_previous_version() {
     let out = Command::new(env!("CARGO_BIN_EXE_cakepass"))
         .args(["--vault", bak.to_str().unwrap(), "list"])
         .env("NO_COLOR", "1")
+        .env("XDG_CONFIG_HOME", k.dir().join("config-home"))
+        .env("XDG_CACHE_HOME", k.dir().join("cache-home"))
+        .env("HOME", k.dir().join("home"))
         .write_stdin(format!("{PW}\n"))
         .assert()
         .success();
@@ -228,6 +235,9 @@ fn change_master_password() {
     let bak = k.dir().join("vault.enc.bak");
     Command::new(env!("CARGO_BIN_EXE_cakepass"))
         .args(["--vault", bak.to_str().unwrap(), "list"])
+        .env("XDG_CONFIG_HOME", k.dir().join("config-home"))
+        .env("XDG_CACHE_HOME", k.dir().join("cache-home"))
+        .env("HOME", k.dir().join("home"))
         .write_stdin(format!("{PW}\n"))
         .assert()
         .failure();
@@ -458,6 +468,8 @@ fn shell_until_locked(k: &Vaulty, input: &str) -> String {
         .env("CAKEPASS_VAULT", &k.path)
         .env("NO_COLOR", "1")
         .env("XDG_CONFIG_HOME", k.dir().join("config-home"))
+        .env("XDG_CACHE_HOME", k.dir().join("cache-home"))
+        .env("HOME", k.dir().join("home"))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -1386,6 +1398,8 @@ fn setup_with_passphrase(v: &Vaulty, after: impl FnOnce(&str) -> String) -> (std
         .env("CAKEPASS_VAULT", &v.path)
         .env("NO_COLOR", "1")
         .env("XDG_CONFIG_HOME", v.dir().join("config-home"))
+        .env("XDG_CACHE_HOME", v.dir().join("cache-home"))
+        .env("HOME", v.dir().join("home"))
         .env_remove("CAKEPASS_KEYFILE")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
