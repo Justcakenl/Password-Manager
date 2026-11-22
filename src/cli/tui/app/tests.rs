@@ -1095,12 +1095,10 @@ fn the_totp_code_is_computed_shown_and_copied() {
     t.key(Key::Char('t'));
     t.app.lock_idle();
     assert!(t.app.totp_shown.is_none(), "locking ends it");
-    // An item without a 2FA code: t turns it on (here without the scan
-    // tools, so its form opens on the 2FA secret field).
+    // A card without a 2FA code: t says how to add one.
     select(&mut t, "Visa");
     t.key(Key::Char('t'));
-    assert!(t.toast().contains("Paste the 2FA secret instead"), "{}", t.toast());
-    assert!(matches!(t.app.screen, Screen::Form(_)));
+    assert!(t.toast().contains("has no 2FA code"), "{}", t.toast());
     assert_eq!(t.clip.borrow().len(), 3, "one copy per t on GitHub, none for Visa");
 }
 
@@ -1362,6 +1360,12 @@ fn t_turns_2fa_on_for_an_item_without_a_code() {
     // (whatever name the QR code carries).
     assert!(t.app.modals.is_empty(), "no picker");
     assert!(t.screen().contains("Edit 'GitHub'"), "{}", t.screen());
+    // The code names another site: said before saving.
+    assert!(
+        t.toast().contains("This QR code is for 'Other'; Ctrl+S saves it under 'GitHub'"),
+        "{}",
+        t.toast()
+    );
     t.key(Key::Ctrl('s'));
     assert_eq!((t.app.tab, t.app.selected().unwrap().name()), (Tab::TwoFactor, "GitHub"));
     assert!(t.screen().contains("287 082"), "live right away: {}", t.screen());
@@ -1371,11 +1375,29 @@ fn t_turns_2fa_on_for_an_item_without_a_code() {
     assert!(t.screen().contains("on · t shows it live"), "{}", t.screen());
     t.key(Key::Char('t'));
     assert!(t.screen().contains("287082  ("), "{}", t.screen());
-    // Without the scan tools: the form opens on the 2FA secret to paste it.
-    t.app.scanner = Box::new(|| Err(cakepass::Error::InvalidInput(crate::cli::qr::NEEDS_TOOLS.into())));
+    // A card: no scan on t (only logins and API keys use 2FA this way).
     t.app.select_name("Visa");
     t.key(Key::Char('t'));
-    t.app.run_task();
+    assert!(matches!(t.app.screen, Screen::Main) && t.app.scan_for.is_none());
+    assert!(t.toast().contains("has no 2FA code. To add one anyway: press e"), "{}", t.toast());
+    // A login without a code, the QR code missed: just the message, t again.
+    t.app
+        .commit(|v, key| {
+            v.add(Entry::new(
+                NewEntry { name: "Mail".into(), password: "pw-Mail-1234".into(), ..Default::default() },
+                key,
+            )?)
+        })
+        .unwrap();
+    t.app.refilter();
+    t.app.select_name("Mail");
+    t.app.scanner = Box::new(|| Err(cakepass::Error::InvalidInput("no QR code found in that area".into())));
+    t.key(Key::Char('t'));
+    assert!(matches!(t.app.screen, Screen::Main), "no form for a missed QR code");
+    assert!(t.toast().contains("No QR code found"), "{}", t.toast());
+    // Without the scan tools: the form opens on the 2FA secret to paste it.
+    t.app.scanner = Box::new(|| Err(cakepass::Error::InvalidInput(crate::cli::qr::NEEDS_TOOLS.into())));
+    t.key(Key::Char('t'));
     let Screen::Form(f) = &t.app.screen else { panic!("no form: {}", t.screen()) };
     assert_eq!(f.focus, Field::Totp);
     assert!(t.toast().contains("Paste the 2FA secret instead"), "{}", t.toast());

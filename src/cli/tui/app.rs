@@ -643,8 +643,14 @@ impl App {
         let name = e.name().to_string();
         let code = match e.totp(self.uv.item_key()) {
             Ok(Some(totp)) => totp.code_at((self.clock)()),
-            // No code yet: turn 2FA on for this item, by scanning its QR code.
-            Ok(None) => return self.ask_scan_qr_for(name),
+            // No code yet: turn 2FA on for this login, by scanning its QR code.
+            Ok(None) if matches!(e.kind(), Kind::Login | Kind::Api) => return self.ask_scan_qr_for(name),
+            Ok(None) => {
+                let noun = commands::kind_noun(e.kind());
+                return self.info(format!(
+                    "{noun} has no 2FA code. To add one anyway: press e and paste it in \"2FA secret\"."
+                ));
+            }
             Err(e) => return self.fail(error_text(&e)),
         };
         self.reveal_until = None;
@@ -726,8 +732,9 @@ impl App {
         let link = match (self.scanner)() {
             Ok(Some(link)) => link,
             Ok(None) => return self.info("Scanning cancelled."),
-            // No scan tools (or no Wayland): paste the secret instead.
-            Err(e) if target.is_some() => {
+            // No scan tools (or no Wayland): paste the secret instead. Any
+            // other error (missed the QR code): just say so; t tries again.
+            Err(e) if target.is_some() && super::super::qr::tools_missing(&e) => {
                 let name = target.unwrap_or_default();
                 self.open_edit_at(&name, Field::Totp);
                 return self.info(format!(
@@ -742,11 +749,23 @@ impl App {
             Err(e) => return self.fail(format!("That QR code is not a usable 2FA code: {}", error_text(&e))),
         };
         if let Some(name) = target {
-            // The item was chosen with `t`: straight to its form.
+            // The item was chosen with `t`: straight to its form. When the
+            // name in the code is another one, say so (a wrong QR code shows).
             drop(totp);
+            let other = super::super::qr::suggested_name(&link).filter(|n| {
+                !n.trim().eq_ignore_ascii_case(name.trim())
+                    && !name.to_lowercase().contains(&n.trim().to_lowercase())
+            });
             self.toast = None;
             self.scanned = Some(link);
-            return self.add_totp_to(Picked::Name(name));
+            self.add_totp_to(Picked::Name(name.clone()));
+            if let (Some(other), Screen::Form(_)) = (other, &self.screen) {
+                self.say(
+                    Style::ERROR,
+                    format!("This QR code is for '{other}'; Ctrl+S saves it under '{name}' (Esc cancels)."),
+                );
+            }
+            return;
         }
         // The name in the code (plain text only), so a wrong QR code shows.
         let suggested = super::super::qr::suggested_name(&link);

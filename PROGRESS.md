@@ -807,6 +807,15 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   without a code, `t`, a QR code on screen read by the real grim and
   zbarimg (slurp replaced), Ctrl+S, the live code; back on All, `t` copies
   it (marked sensitive: not in Omarchy's clipboard history).
+  After reviewer-sonnet's review: when the name in the scanned code is
+  another one than the chosen item, the form says so in red ("This QR code
+  is for 'Discord'; Ctrl+S saves it under 'Mail' (Esc cancels)."); only
+  missing tools or Wayland (`qr::tools_missing`) open the form to paste,
+  any other scan error (QR code missed) is only said, `t` tries again; `t`
+  scans only for logins and API keys (where the "2FA code" row shows), on
+  other items it says "press e and paste it in 2FA secret". Seen for real:
+  the red line for a Discord QR code on "Mail", and "No QR code found"
+  without a form when the QR code was not on screen.
 
 ## Still to do
 

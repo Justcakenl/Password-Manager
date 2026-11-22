@@ -34,6 +34,12 @@ const MAX_LINK: usize = 2 * 1024;
 pub const NEEDS_TOOLS: &str =
     "Scanning a QR code needs grim, slurp and zbar (sudo pacman -S grim slurp zbar) and a Wayland desktop.";
 
+/// Whether a scan error means the programs (or Wayland) are missing, so
+/// scanning cannot work at all here (other errors: try again).
+pub fn tools_missing(e: &Error) -> bool {
+    matches!(e, Error::InvalidInput(text) if text == NEEDS_TOOLS)
+}
+
 /// Drag a box around a QR code on the screen and read it. `Ok(None)` when
 /// the selection was cancelled (Esc). The link is an `otpauth://totp/`
 /// link, still to be checked with `Totp::parse_new`.
