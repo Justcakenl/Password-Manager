@@ -791,6 +791,32 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   test failed on `f13d4d1` ("A new version of CakePass is available") and
   passes now. Tests only; the program is unchanged.
 
+- [x] **2FA live: one key, `t`** (branch `feature/2fa-live-clearer`, from
+  ADMIN `main` `7e2281d`; the user: "how to turn 2FA live on in the screen is
+  far too unclear"). UI only. The details of every login/API key now have
+  a "2FA code" row (was "TOTP", and only when set): "off · t turns it on"
+  or "on · t shows it live", then the live code. `t` on an item without a
+  code (was: "use cakepass edit --totp") scans the QR code for that item
+  (`App::scan_for`, no account to choose) and opens its form with the
+  secret filled in; Ctrl+S goes to its live code. Without the scan tools
+  the form opens on the 2FA secret field to paste it. The footer on "All"
+  shows "t 2FA"; the copy message says "2FA code". The test harness's
+  scanner is now a stand-in by default, so no test can start the real
+  slurp. Tests: `t_turns_2fa_on_for_an_item_without_a_code`, updated
+  `the_totp_code_is_computed_shown_and_copied`. Seen for real: a login
+  without a code, `t`, a QR code on screen read by the real grim and
+  zbarimg (slurp replaced), Ctrl+S, the live code; back on All, `t` copies
+  it (marked sensitive: not in Omarchy's clipboard history).
+  After reviewer-sonnet's review: when the name in the scanned code is
+  another one than the chosen item, the form says so in red ("This QR code
+  is for 'Discord'; Ctrl+S saves it under 'Mail' (Esc cancels)."); only
+  missing tools or Wayland (`qr::tools_missing`) open the form to paste,
+  any other scan error (QR code missed) is only said, `t` tries again; `t`
+  scans only for logins and API keys (where the "2FA code" row shows), on
+  other items it says "press e and paste it in 2FA secret". Seen for real:
+  the red line for a Discord QR code on "Mail", and "No QR code found"
+  without a form when the QR code was not on screen.
+
 ## Still to do
 
 - [x] **Step 16b: pre-update copies follow a re-key** (branch

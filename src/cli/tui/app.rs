@@ -280,6 +280,8 @@ pub struct App {
     /// A scanned 2FA link waiting for its account (the picker is open).
     /// Wiped when dropped.
     pub scanned: Option<Zeroizing<String>>,
+    /// The item `t` turns 2FA on for (the scan skips choosing an account).
+    pub scan_for: Option<String>,
     /// Whether the clock is set automatically (see `qr::clock_synced`);
     /// `Some(false)` puts a warning on the 2FA tab.
     pub clock_synced: Option<bool>,
@@ -326,6 +328,7 @@ impl App {
             measurer: Box::new(crypto::measure_unlock),
             scanner: Box::new(super::super::qr::scan_screen),
             scanned: None,
+            scan_for: None,
             clock_synced: None,
             level_times: Default::default(),
         };
@@ -388,6 +391,7 @@ impl App {
         self.reveal_until = None;
         self.totp_shown = None;
         self.scanned = None;
+        self.scan_for = None;
         self.exit.get_or_insert(Exit::Idle);
     }
 
@@ -639,16 +643,19 @@ impl App {
         let name = e.name().to_string();
         let code = match e.totp(self.uv.item_key()) {
             Ok(Some(totp)) => totp.code_at((self.clock)()),
+            // No code yet: turn 2FA on for this login, by scanning its QR code.
+            Ok(None) if matches!(e.kind(), Kind::Login | Kind::Api) => return self.ask_scan_qr_for(name),
             Ok(None) => {
+                let noun = commands::kind_noun(e.kind());
                 return self.info(format!(
-                    "'{name}' has no TOTP secret. Add one with: cakepass edit \"{name}\" --totp"
+                    "{noun} has no 2FA code. To add one anyway: press e and paste it in \"2FA secret\"."
                 ));
             }
             Err(e) => return self.fail(error_text(&e)),
         };
         self.reveal_until = None;
         self.totp_shown = Some(name);
-        self.copy_value(code.as_str(), "The TOTP code");
+        self.copy_value(code.as_str(), "The 2FA code");
     }
 
     /// `a` on the 2FA tab: ask which item gets a 2FA code (or a new login).
@@ -701,8 +708,19 @@ impl App {
         }
     }
 
+    /// `t` on an item without a 2FA code: scan the QR code for that item
+    /// (no account to choose); without the scan tools, its form opens on the
+    /// 2FA secret field to paste the secret instead.
+    fn ask_scan_qr_for(&mut self, name: String) {
+        self.reveal_until = None;
+        self.info(format!("2FA for '{name}': drag a box around the website's QR code (Esc cancels)…"));
+        self.scan_for = Some(name);
+        self.task = Some(Task::ScanQr);
+    }
+
     /// `s` on the 2FA tab: drag a box around a QR code on the screen.
     pub fn ask_scan_qr(&mut self) {
+        self.scan_for = None;
         self.reveal_until = None;
         self.info("Drag a box around the QR code on the screen (Esc cancels)…");
         self.task = Some(Task::ScanQr);
@@ -710,15 +728,45 @@ impl App {
 
     /// The QR scan is done: on success choose the account (as with `a`).
     fn scanned_qr(&mut self) {
+        let target = self.scan_for.take();
         let link = match (self.scanner)() {
             Ok(Some(link)) => link,
             Ok(None) => return self.info("Scanning cancelled."),
+            // No scan tools (or no Wayland): paste the secret instead. Any
+            // other error (missed the QR code): just say so; t tries again.
+            Err(e) if target.is_some() && super::super::qr::tools_missing(&e) => {
+                let name = target.unwrap_or_default();
+                self.open_edit_at(&name, Field::Totp);
+                return self.info(format!(
+                    "{} Paste the 2FA secret instead (the text under the QR code), then Ctrl+S.",
+                    error_text(&e)
+                ));
+            }
             Err(e) => return self.fail(error_text(&e)),
         };
         let totp = match cakepass::totp::Totp::parse_new(&link) {
             Ok(t) => t,
             Err(e) => return self.fail(format!("That QR code is not a usable 2FA code: {}", error_text(&e))),
         };
+        if let Some(name) = target {
+            // The item was chosen with `t`: straight to its form. When the
+            // name in the code is another one, say so (a wrong QR code shows).
+            drop(totp);
+            let other = super::super::qr::suggested_name(&link).filter(|n| {
+                !n.trim().eq_ignore_ascii_case(name.trim())
+                    && !name.to_lowercase().contains(&n.trim().to_lowercase())
+            });
+            self.toast = None;
+            self.scanned = Some(link);
+            self.add_totp_to(Picked::Name(name.clone()));
+            if let (Some(other), Screen::Form(_)) = (other, &self.screen) {
+                self.say(
+                    Style::ERROR,
+                    format!("This QR code is for '{other}'; Ctrl+S saves it under '{name}' (Esc cancels)."),
+                );
+            }
+            return;
+        }
         // The name in the code (plain text only), so a wrong QR code shows.
         let suggested = super::super::qr::suggested_name(&link);
         let from = suggested.as_ref().map_or(String::new(), |n| format!(" for \"{n}\""));
