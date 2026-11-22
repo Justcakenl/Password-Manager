@@ -378,7 +378,8 @@ impl HelpPage {
                     ("u  m", "copy the username / the e-mail address"),
                     (
                         "t",
-                        "copy the two-factor (TOTP) code and show it live (a new one every 30 s) until you move on",
+                        "2FA: copy the two-factor code and show it live (a new one every 30 s) until you move on; \
+                         on an item without one, turn 2FA on: drag a box around the website's QR code",
                     ),
                     (
                         "",

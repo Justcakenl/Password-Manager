@@ -68,6 +68,8 @@ impl T {
         app.resize((80, 24));
         // Never run Argon2 at a real level just to show a time: 1 ms per 256 KiB.
         app.measurer = Box::new(|p: &KdfParams| Ok(Duration::from_millis(u64::from(p.memory_kib) / 256)));
+        // Never the real slurp on the desktop of whoever runs the tests.
+        app.scanner = Box::new(|| Err(cakepass::Error::InvalidInput(crate::cli::qr::NEEDS_TOOLS.into())));
         T { dir, app, clip, now }
     }
 
@@ -1065,10 +1067,10 @@ fn the_totp_code_is_computed_shown_and_copied() {
     t.app.clock = || 59;
     select(&mut t, "GitHub");
     let s = t.screen();
-    assert!(s.contains("TOTP") && s.contains("set (t shows it)") && !s.contains("287082"), "{s}");
+    assert!(s.contains("2FA code") && s.contains("on · t shows it live") && !s.contains("287082"), "{s}");
     t.key(Key::Char('t'));
     assert_eq!(t.clip.borrow().as_slice(), ["287082"], "the RFC 6238 code at t = 59");
-    assert_eq!(t.toast(), "The TOTP code copied (test-clipboard)", "the code is not kept in a message");
+    assert_eq!(t.toast(), "The 2FA code copied (test-clipboard)", "the code is not kept in a message");
     assert!(t.screen().contains("287082  (1 s)"), "{}", t.screen());
     // Computed again for every frame: the next period has another code.
     t.app.clock = || 60;
@@ -1093,10 +1095,12 @@ fn the_totp_code_is_computed_shown_and_copied() {
     t.key(Key::Char('t'));
     t.app.lock_idle();
     assert!(t.app.totp_shown.is_none(), "locking ends it");
-    // An item without a TOTP secret says how to add one.
+    // An item without a 2FA code: t turns it on (here without the scan
+    // tools, so its form opens on the 2FA secret field).
     select(&mut t, "Visa");
     t.key(Key::Char('t'));
-    assert!(t.toast().contains("has no TOTP secret") && t.toast().contains("--totp"), "{}", t.toast());
+    assert!(t.toast().contains("Paste the 2FA secret instead"), "{}", t.toast());
+    assert!(matches!(t.app.screen, Screen::Form(_)));
     assert_eq!(t.clip.borrow().len(), 3, "one copy per t on GitHub, none for Visa");
 }
 
@@ -1132,7 +1136,7 @@ fn the_2fa_tab_lists_every_code_like_an_authenticator_app() {
     t.key(Key::Down);
     t.key(Key::Char('c'));
     assert_eq!(t.clip.borrow().as_slice(), ["359152", "359152"]);
-    assert_eq!(t.toast(), "The TOTP code copied (test-clipboard)");
+    assert_eq!(t.toast(), "The 2FA code copied (test-clipboard)");
     assert_eq!(t.app.tab, Tab::TwoFactor, "copying stays on the tab");
     // Under a dialog the codes are dots.
     t.key(Key::Char('?'));
@@ -1152,7 +1156,7 @@ fn the_2fa_tab_lists_every_code_like_an_authenticator_app() {
     t.key(Key::Char('c'));
     assert_eq!(t.clip.borrow().last().unwrap(), "gh-Secret-1");
     let s = t.screen();
-    assert!(s.contains("set (t shows it)") && !s.contains("Next code"), "{s}");
+    assert!(s.contains("t shows it live") && !s.contains("Next code"), "{s}");
 }
 
 #[test]
@@ -1336,6 +1340,46 @@ fn after_adding_a_2fa_code_its_live_code_is_shown_and_a_scan_finds_the_account()
     t.app.run_task();
     let s = t.screen();
     assert!(s.contains("'Server key' already has a 2FA code") && s.contains("edit it with e"), "{s}");
+}
+
+#[test]
+fn t_turns_2fa_on_for_an_item_without_a_code() {
+    let mut t = T::with(|uv| {
+        add(uv, "GitHub", Kind::Login, "john", "gh-Secret-1", "");
+        add(uv, "Visa", Kind::Card, "J. Doe", "4111 1111 1111 1111", "");
+    });
+    t.app.clock = || 59;
+    t.app.scanner = Box::new(|| {
+        Ok(Some(Zeroizing::new("otpauth://totp/Other:me?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ".into())))
+    });
+    // On "All", the details say what t does, with or without a code.
+    t.app.select_name("GitHub");
+    let s = t.screen();
+    assert!(s.contains("2FA code") && s.contains("off · t turns it on"), "{s}");
+    assert!(s.contains("t 2FA"), "the footer names it: {s}");
+    t.key(Key::Char('t')); // the test harness runs the scan right away
+    // No account to choose: straight to GitHub's form, the secret filled in
+    // (whatever name the QR code carries).
+    assert!(t.app.modals.is_empty(), "no picker");
+    assert!(t.screen().contains("Edit 'GitHub'"), "{}", t.screen());
+    t.key(Key::Ctrl('s'));
+    assert_eq!((t.app.tab, t.app.selected().unwrap().name()), (Tab::TwoFactor, "GitHub"));
+    assert!(t.screen().contains("287 082"), "live right away: {}", t.screen());
+    // Back on "All": the code is on, t shows it live.
+    t.key(Key::Right);
+    t.app.select_name("GitHub");
+    assert!(t.screen().contains("on · t shows it live"), "{}", t.screen());
+    t.key(Key::Char('t'));
+    assert!(t.screen().contains("287082  ("), "{}", t.screen());
+    // Without the scan tools: the form opens on the 2FA secret to paste it.
+    t.app.scanner = Box::new(|| Err(cakepass::Error::InvalidInput(crate::cli::qr::NEEDS_TOOLS.into())));
+    t.app.select_name("Visa");
+    t.key(Key::Char('t'));
+    t.app.run_task();
+    let Screen::Form(f) = &t.app.screen else { panic!("no form: {}", t.screen()) };
+    assert_eq!(f.focus, Field::Totp);
+    assert!(t.toast().contains("Paste the 2FA secret instead"), "{}", t.toast());
+    assert!(t.app.scan_for.is_none());
 }
 
 #[test]

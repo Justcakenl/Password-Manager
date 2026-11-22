@@ -277,6 +277,7 @@ impl App {
                 ("↑↓", "move"),
                 ("Enter", "show"),
                 ("c", "copy"),
+                ("t", "2FA"),
                 ("a", "add"),
                 ("q", "quit"),
                 ("e", "edit"),
@@ -532,6 +533,9 @@ impl App {
         let tags = e.tags().join(", ");
         row(g, &mut y, "Tags", if tags.is_empty() { "-" } else { &tags }, Style::PLAIN);
         row(g, &mut y, "Modified", &ui::format_time(e.modified()), Style::DIM);
+        if !e.has_totp() && matches!(kind, Kind::Login | Kind::Api) {
+            row(g, &mut y, "2FA code", "off · t turns it on", Style::PLAIN);
+        }
         if e.has_totp() {
             // Computed for this frame from the decrypted secret; nothing is kept.
             // The 2FA tab always shows it, with the next code too (unless a
@@ -544,14 +548,14 @@ impl App {
                     let now = (self.clock)();
                     let code = t.code_at(now);
                     let text = Zeroizing::new(format!("{}  ({} s)", code.as_str(), code.seconds_left()));
-                    row(g, &mut y, "TOTP", &text, Style::ACCENT_BOLD);
+                    row(g, &mut y, "2FA code", &text, Style::ACCENT_BOLD);
                     if code_tab || live {
                         let next = t.code_at(now + code.seconds_left());
                         row(g, &mut y, "Next code", next.as_str(), Style::PLAIN);
                     }
                 }
-                (_, Err(_)) => row(g, &mut y, "TOTP", "(cannot decrypt)", Style::ERROR),
-                _ => row(g, &mut y, "TOTP", "set (t shows it)", Style::DIM),
+                (_, Err(_)) => row(g, &mut y, "2FA code", "(cannot decrypt)", Style::ERROR),
+                _ => row(g, &mut y, "2FA code", "on · t shows it live", Style::PLAIN),
             }
         }
 
