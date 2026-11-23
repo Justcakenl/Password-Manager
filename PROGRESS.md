@@ -817,6 +817,32 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   the red line for a Discord QR code on "Mail", and "No QR code found"
   without a form when the QR code was not on screen.
 
+- [x] **Make the screen your own, step 1: colors and tab names** (branch
+  `feature/customize-ui`, from ADMIN `main` `153e858`; the user: "people
+  must be able to change everything in the settings: colors, edit tabs,
+  delete Notes or rename it to Clients"). Settings got a **Colors** row
+  (← →: pink, blue, green, purple, orange, red, teal; `config::Colors`,
+  `colors=` in the settings file, no line while pink) and the **Tabs** row
+  got `r`: rename the chosen tab (`PromptPurpose::RenameTab`,
+  `tab_names=note:Clients`; `config::parse_tab_name`: 1 to 16 characters,
+  no control or invisible characters and none of `,` `:` `=`, so the file
+  reads back the same; empty or the usual name removes it). Hiding a tab
+  ("delete Notes") already existed on that row; its help line now says
+  so. The colors: `Theme` maps CakePass's three pinks (211, 205, 175) to the
+  three shades of the chosen accent when drawing (`theme::shades`); error
+  red, success green and the gray stay; the whole screen is redrawn when
+  the accent changes (`Terminal::set_accent`), and the accent of the
+  settings file is used from the first frame. Only the screen mode changes:
+  items keep their type, the command line says "note". Tests: config
+  `colors_and_tab_names_read_back`, `bad_colors_and_tab_names_are_ignored`;
+  theme `the_accent_color_replaces_the_pinks_only`; app/tests.rs
+  `rename_a_tab_and_choose_the_colors_in_the_settings`; settings-row
+  counts updated in five tests (one row more). Seen for real: Notes renamed
+  to Clients in the tab bar, `colors=blue` drawn with only 117/33/74 (no
+  pink left), the file reads back.
+  Next steps (to plan): own tabs (e.g. a tab per tag: "Clients" = every
+  item tagged client), the order of the tabs, the order of the fields.
+
 ## Still to do
 
 - [x] **Step 16b: pre-update copies follow a re-key** (branch

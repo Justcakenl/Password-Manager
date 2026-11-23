@@ -394,7 +394,7 @@ mod tests {
     use super::super::theme::{ASCII, UNICODE};
     use super::*;
 
-    const MONO: Theme = Theme { color: false, unicode: true };
+    const MONO: Theme = Theme { color: false, unicode: true, accent: crate::cli::config::Colors::Pink };
 
     #[test]
     fn widths() {

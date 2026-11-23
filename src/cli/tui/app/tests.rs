@@ -565,7 +565,7 @@ fn change_the_master_password() {
     // A copy made before an update follows the new password too.
     let copy = cakepass::storage::backup_before_update(&paths(&t.dir)).unwrap().unwrap();
     t.key(Key::Char('s'));
-    t.keys(&[Key::Down, Key::Down, Key::Down, Key::Enter]); // past the Tabs row
+    t.keys(&[Key::Down, Key::Down, Key::Down, Key::Down, Key::Enter]); // past Tabs and Colors
     assert!(t.screen().contains("current master password"));
     t.typ("wrong");
     assert!(t.screen().contains("•••••") && !t.screen().contains("wrong"), "hidden input");
@@ -855,7 +855,7 @@ fn the_security_level_row_measures_lazily_and_switches_the_level() {
         Ok(Duration::from_millis(u64::from(p.memory_kib) / 256))
     });
     t.key(Key::Char('s'));
-    t.keys(&[Key::Down, Key::Down, Key::Down]); // to the master password
+    t.keys(&[Key::Down, Key::Down, Key::Down, Key::Down]); // to the master password
     assert!(measured.borrow().is_empty(), "nothing is measured before the row is shown");
     t.key(Key::Down);
     let s = t.screen();
@@ -896,6 +896,57 @@ fn the_security_level_row_measures_lazily_and_switches_the_level() {
 }
 
 #[test]
+fn rename_a_tab_and_choose_the_colors_in_the_settings() {
+    let mut t = T::sample();
+    t.key(Key::Char('s'));
+    t.keys(&[Key::Down, Key::Down]); // Tabs
+    for _ in 0..5 {
+        t.key(Key::Right); // to Notes
+    }
+    t.key(Key::Char('r'));
+    let s = t.screen();
+    assert!(s.contains("Rename the Notes tab") && s.contains("Notes"), "{s}");
+    // A name the settings file cannot hold is refused, the prompt stays.
+    t.key(Key::Ctrl('u'));
+    t.typ("Clients:old");
+    t.key(Key::Enter);
+    assert!(t.screen().contains("without , : or ="), "{}", t.screen());
+    t.key(Key::Ctrl('u'));
+    t.typ("Clients");
+    t.key(Key::Enter);
+    assert_eq!(t.toast(), "The Notes tab is now called \"Clients\".");
+    assert!(t.screen().contains("✔Clients"), "{}", t.screen());
+    // Saved, and the tab bar uses it (the items keep their type).
+    assert_eq!(t.app.cfg.tab_name(Kind::Note), Some("Clients"));
+    let saved = std::fs::read_to_string(t.app.config_path.as_ref().unwrap()).unwrap();
+    assert!(saved.contains("tab_names=note:Clients"), "{saved}");
+    // Colors: ← → through the accents, saved right away.
+    t.key(Key::Down);
+    assert!(t.screen().contains("Colors             ‹ pink ›"), "{}", t.screen());
+    t.key(Key::Right);
+    assert_eq!(
+        (t.app.cfg.colors, t.toast()),
+        (crate::cli::config::Colors::Blue, "Colors: blue.".to_string())
+    );
+    t.key(Key::Left);
+    t.key(Key::Left);
+    assert_eq!(t.app.cfg.colors, crate::cli::config::Colors::Teal, "wraps around");
+    t.key(Key::Esc);
+    assert!(tab_bar(&t).contains("Clients") && !tab_bar(&t).contains("Notes"), "{}", tab_bar(&t));
+    // Empty gives the usual name back.
+    t.key(Key::Char('s'));
+    t.keys(&[Key::Down, Key::Down]);
+    for _ in 0..5 {
+        t.key(Key::Right);
+    }
+    t.key(Key::Char('r'));
+    t.key(Key::Ctrl('u'));
+    t.key(Key::Enter);
+    assert_eq!(t.toast(), "The Notes tab has its usual name again.");
+    assert_eq!(t.app.cfg.tab_name(Kind::Note), None);
+}
+
+#[test]
 fn a_level_this_computer_cannot_run_is_explained() {
     let mut t = T::new();
     t.app.measurer = Box::new(|p: &KdfParams| {
@@ -905,7 +956,7 @@ fn a_level_this_computer_cannot_run_is_explained() {
         Ok(Duration::from_millis(5))
     });
     t.key(Key::Char('s'));
-    t.keys(&[Key::Down, Key::Down, Key::Down, Key::Down, Key::Right]);
+    t.keys(&[Key::Down, Key::Down, Key::Down, Key::Down, Key::Down, Key::Right]);
     let s = t.screen_at(120, 30);
     assert!(s.contains("Maximum") && s.contains("needs about 1366 MiB of free memory"), "{s}");
 }
@@ -934,7 +985,7 @@ fn a_vault_with_a_key_file_in_the_screen_mode() {
     t.key(Key::Char('s'));
     assert!(t.screen_at(120, 30).contains("required:"), "{}", t.screen_at(120, 30));
     // Changing the master password re-reads the key file and keeps it.
-    t.keys(&[Key::Down, Key::Down, Key::Down, Key::Enter]);
+    t.keys(&[Key::Down, Key::Down, Key::Down, Key::Down, Key::Enter]);
     t.typ("wrong");
     t.key(Key::Enter);
     assert!(t.screen().contains("Wrong master password (or key file)"), "{}", t.screen());
@@ -1781,7 +1832,7 @@ fn hiding_a_tab_in_the_settings_keeps_its_items_under_all() {
     t.keys(&[Key::Down, Key::Down]);
     let s = t.screen();
     assert!(s.contains("Tabs") && s.contains("✔Logins  ✔API keys  ✔Cards  ✔IDs  ✔SSH  ✔Notes"), "{s}");
-    assert!(s.contains("Enter: show or hide its tab (its items stay under All)."), "{s}");
+    assert!(s.contains("Enter: show/hide it (items stay under All) · r: rename it"), "{s}");
     t.key(Key::Right);
     t.key(Key::Enter);
     assert_eq!(t.toast(), "The API keys tab is hidden; its items stay under All.");

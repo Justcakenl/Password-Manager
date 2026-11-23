@@ -237,6 +237,15 @@ impl Terminal {
         Ok(term)
     }
 
+    /// Use this accent color from the next frame on (redrawn whole when it
+    /// changes, since only changed cells are written otherwise).
+    pub fn set_accent(&mut self, accent: super::super::config::Colors) {
+        if self.theme.accent != accent {
+            self.theme.accent = accent;
+            self.full = true;
+        }
+    }
+
     pub fn size(&self) -> (u16, u16) {
         size().unwrap_or((self.front.width(), self.front.height()))
     }

@@ -35,7 +35,7 @@ use cakepass::vault::{Entry, Kind, Vault};
 use cakepass::{Error, Result};
 
 use super::super::commands::{self, Notice};
-use super::super::config::Config;
+use super::super::config::{self, Config};
 use super::super::prompt;
 use super::grid::{Grid, Rect, wrap};
 use super::input::TextInput;
@@ -453,6 +453,11 @@ impl App {
     /// "All" and "2FA" are not a type, so they are always shown.
     pub fn tab_shown(&self, tab: Tab) -> bool {
         tab.kind().is_none_or(|k| self.cfg.shows_tab(k))
+    }
+
+    /// The name a tab shows: its own name from the settings, else the usual one.
+    pub fn tab_label(&self, tab: Tab) -> &str {
+        tab.kind().and_then(|k| self.cfg.tab_name(k)).unwrap_or(tab.label())
     }
 
     /// The tab ← → (or Tab, Shift+Tab) moves to, skipping hidden ones.
@@ -1042,6 +1047,30 @@ impl App {
                     true,
                     PromptPurpose::OwnPasswordRepeat(text),
                 )));
+            }
+            PromptPurpose::RenameTab(kind) => {
+                let usual = Tab::of(kind).label();
+                let name = match text.trim() {
+                    "" => None,
+                    t => match config::parse_tab_name(t) {
+                        Some(n) if n != usual => Some(n),
+                        Some(_) => None,
+                        None => {
+                            p.purpose = PromptPurpose::RenameTab(kind);
+                            p.error =
+                                Some(format!("1 to {} characters, without , : or =.", config::MAX_TAB_NAME));
+                            return self.modals.push(Modal::Prompt(p));
+                        }
+                    },
+                };
+                let mut cfg = self.cfg.clone();
+                cfg.set_tab_name(kind, name.clone());
+                if self.save_config(cfg) {
+                    match name {
+                        Some(n) => self.ok(format!("The {usual} tab is now called \"{n}\".")),
+                        None => self.ok(format!("The {usual} tab has its usual name again.")),
+                    }
+                }
             }
             PromptPurpose::OwnWord => {
                 let word = Zeroizing::new(text.trim().to_string());

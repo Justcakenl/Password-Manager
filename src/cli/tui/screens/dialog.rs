@@ -9,6 +9,7 @@ use std::cell::Cell;
 use zeroize::Zeroizing;
 
 use cakepass::crypto::SecurityLevel;
+use cakepass::vault::Kind;
 
 use super::super::grid::{Grid, Rect, str_width, wrap};
 use super::super::input::TextInput;
@@ -135,6 +136,8 @@ pub enum PromptPurpose {
     ImportFrom,
     /// The password of this export or share file.
     ImportPassword(std::path::PathBuf),
+    /// An own name for the tab of this type (empty: its usual name).
+    RenameTab(Kind),
 }
 
 pub struct Prompt {
@@ -437,11 +440,16 @@ impl HelpPage {
                     ("↑ ↓", "choose a setting"),
                     (
                         "← →",
-                        "change it (saved right away); on Tabs: choose a type; on Security level: a level",
+                        "change it (saved right away); on Tabs: choose a type; on Colors: the color of CakePass; \
+                         on Security level: a level",
                     ),
                     ("PgUp PgDn", "auto-lock +10 / -10 minutes"),
                     ("Enter", "switch / change the master password / apply the chosen security level"),
                     ("Enter  Space", "on Tabs: show or hide the tab of that type (its items stay under All)"),
+                    (
+                        "r",
+                        "on Tabs: give that tab a name of your own, e.g. Notes → Clients (empty: its usual name)",
+                    ),
                     ("", "the unlock time of a level is measured on this computer when you choose it"),
                     ("Esc", "back to the list"),
                 ],

@@ -556,7 +556,8 @@ Enter asks for a name and saves it as a new login (like `cakepass generate --sav
 
 **Settings** (`s`): the startup animation (on/off), the auto-lock time (← → one
 minute, PgUp/PgDn ten), the **Tabs** (← → choose a type, Enter or Space shows
-or hides its tab), **Change master password** (asks for the current one
+or hides its tab, `r` renames it), the **Colors** (← → pink, blue, green,
+purple, orange, red or teal), **Change master password** (asks for the current one
 first, then a new strong one twice), the **Security level** (← → choose a
 level; the first time a level is shown CakePass measures how long unlocking
 takes on this computer; Enter switches after you type your master password),
@@ -570,6 +571,12 @@ type with ✔ (shown) or ✖ (hidden); the same setting is
 Hiding a tab hides **no items**: they stay in the **All** tab (which cannot be
 hidden), and `list`, `search` and `get` show them as always. It only changes
 which tabs the screen offers.
+
+**Renaming tabs.** Keep your clients in notes? On the Tabs row choose Notes,
+press `r` and type "Clients" (at most 16 characters; empty gives the usual
+name back). Only the tab is renamed: the items keep their type, and the
+command line still says "note". Stored as `tab_names=note:Clients` in the
+settings file, the colors as `colors=blue`.
 
 Good to know:
 
