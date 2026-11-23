@@ -39,11 +39,13 @@ pub struct Settings {
     update: Option<String>,
 }
 
-const ROWS: usize = 5;
-/// The row that shows or hides the type tabs.
+const ROWS: usize = 6;
+/// The row that shows, hides or renames the type tabs.
 pub const TABS_ROW: usize = 2;
+/// The row of the accent color.
+pub const COLORS_ROW: usize = 3;
 /// The row of the security level.
-pub const LEVEL_ROW: usize = 4;
+pub const LEVEL_ROW: usize = 5;
 
 impl Settings {
     /// The screen as it opens (the cursor on the first setting). The level
@@ -69,6 +71,10 @@ impl App {
             Key::Up | Key::BackTab => s.row = row.saturating_sub(1),
             Key::Down | Key::Tab => s.row = (row + 1).min(ROWS - 1),
             Key::Char('?') | Key::F(1) => self.modals.push(Modal::Help(Help::new(HelpPage::Settings))),
+            Key::Char('r') if row == TABS_ROW => {
+                let kind = Kind::ALL[s.tab_kind.min(Kind::ALL.len() - 1)];
+                self.ask_rename_tab(kind);
+            }
             Key::Left | Key::Right | Key::Enter | Key::Char(' ') | Key::PageUp | Key::PageDown => {
                 self.change_setting(row, key)
             }
@@ -123,6 +129,17 @@ impl App {
                     _ => {}
                 }
             }
+            COLORS_ROW => {
+                let delta = match key {
+                    Key::Left | Key::PageDown => -1,
+                    _ => 1,
+                };
+                cfg.colors = cfg.colors.step(delta);
+                let name = cfg.colors.name();
+                if self.save_config(cfg) {
+                    self.ok(format!("Colors: {name}."));
+                }
+            }
             LEVEL_ROW => {
                 let Screen::Settings(s) = &mut self.screen else { return };
                 match key {
@@ -164,7 +181,7 @@ impl App {
         if !self.save_config(cfg) {
             return;
         }
-        let label = Tab::of(kind).label();
+        let label = self.tab_label(Tab::of(kind)).to_string();
         if hide {
             self.ok(format!("The {label} tab is hidden; its items stay under All."));
         } else {
@@ -177,12 +194,35 @@ impl App {
         }
     }
 
+    /// `r` on the Tabs row: give the chosen tab its own name.
+    fn ask_rename_tab(&mut self, kind: Kind) {
+        let usual = Tab::of(kind).label();
+        let mut p = Prompt::new(
+            &format!("Rename the {usual} tab"),
+            vec![
+                format!(
+                    "A name of your own for this tab, e.g. \"Clients\" (at most {} characters). \
+                     Leave it empty for its usual name, \"{usual}\".",
+                    config::MAX_TAB_NAME
+                ),
+                "Only the tab changes: the items and their type stay the same.".into(),
+            ],
+            "Name",
+            false,
+            PromptPurpose::RenameTab(kind),
+        );
+        p.input.set(self.cfg.tab_name(kind).unwrap_or(usual));
+        self.modals.push(Modal::Prompt(p));
+    }
+
     /// The Tabs row: every type with ✔ (shown) or ✖ (hidden), the chosen one
     /// highlighted. Too narrow for all six: only the chosen one, ‹ › style.
     fn draw_tabs_row(&self, g: &mut Grid, x: u16, y: u16, w: u16, s: &Settings, focused: bool) {
         let mark = |k: Kind| if self.cfg.shows_tab(k) { g.g.check } else { g.g.cross };
-        let items: Vec<(Kind, String)> =
-            Kind::ALL.into_iter().map(|k| (k, format!("{}{}", mark(k), Tab::of(k).label()))).collect();
+        let items: Vec<(Kind, String)> = Kind::ALL
+            .into_iter()
+            .map(|k| (k, format!("{}{}", mark(k), self.tab_label(Tab::of(k)))))
+            .collect();
         let full: usize = items.iter().map(|(_, t)| str_width(t) + 2).sum();
         if full <= w as usize + 2 {
             let (mut x, end) = (x, x + w);
@@ -199,7 +239,7 @@ impl App {
         } else {
             let k = Kind::ALL[s.tab_kind.min(Kind::ALL.len() - 1)];
             let state = if self.cfg.shows_tab(k) { "shown" } else { "hidden" };
-            let text = format!("{} {}: {state} {}", g.g.left, Tab::of(k).label(), g.g.right);
+            let text = format!("{} {}: {state} {}", g.g.left, self.tab_label(Tab::of(k)), g.g.right);
             g.print(x, y, w, &text, if focused { Style::SELECTED } else { Style::PLAIN });
         }
     }
@@ -222,7 +262,7 @@ impl App {
     }
 
     /// Save the settings file; on success they take effect.
-    fn save_config(&mut self, cfg: Config) -> bool {
+    pub fn save_config(&mut self, cfg: Config) -> bool {
         let saved = match &self.config_path {
             Some(path) => config::save_to(path, &cfg),
             None => Err(Error::InvalidInput("HOME is not set; cannot save settings".into())),
@@ -254,6 +294,7 @@ impl App {
             ("Startup animation", format!("{l} {} {rt}", if self.cfg.animation { "on" } else { "off" })),
             ("Auto-lock after", format!("{l} {} min {rt}", self.cfg.lock_timeout_minutes)),
             ("Tabs", String::new()), // drawn below, one type at a time
+            ("Colors", format!("{l} {} {rt}", self.cfg.colors.name())),
             ("Master password", "[ Change… ]".to_string()),
             (
                 "Security level",
@@ -334,7 +375,10 @@ impl App {
             0 => "← → or Enter: an animated or a still logo at startup.".to_string(),
             1 => "← → (PgUp PgDn: ±10): minutes until CakePass locks itself.".to_string(),
             TABS_ROW => {
-                "← →: choose a type · Enter: show or hide its tab (its items stay under All).".to_string()
+                "← →: choose a tab · Enter: show/hide it (items stay under All) · r: rename it".to_string()
+            }
+            COLORS_ROW => {
+                "← →: the color of CakePass (pink, blue, green, purple, orange, red, teal)".to_string()
             }
             LEVEL_ROW => self.level_line(s.level),
             _ => "Enter: change it (asks for the current one first).".to_string(),

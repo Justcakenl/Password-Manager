@@ -297,7 +297,8 @@ impl App {
         let count = |t: Tab| self.entries().iter().filter(|e| t.shows(e)).count();
         // Only the tabs that are not hidden (and always "All").
         let tabs: Vec<Tab> = Tab::ALL.into_iter().filter(|&t| self.tab_shown(t)).collect();
-        let labels: Vec<String> = tabs.iter().map(|&t| format!("{} {}", t.label(), count(t))).collect();
+        let labels: Vec<String> =
+            tabs.iter().map(|&t| format!("{} {}", self.tab_label(t), count(t))).collect();
         // With counts if they fit (with a narrower gap when needed), else without.
         // 12 columns stay free for the search: "/ search" and its margins.
         let needed = |gap: usize| labels.iter().map(|l| str_width(l) + gap).sum::<usize>() + 12;
@@ -308,7 +309,7 @@ impl App {
         };
         let mut x = 1;
         for (i, &t) in tabs.iter().enumerate() {
-            let label = if with_counts { labels[i].as_str() } else { t.label() };
+            let label = if with_counts { labels[i].as_str() } else { self.tab_label(t) };
             let style = if t == self.tab { Style::ACTIVE_TAB } else { Style::DIM };
             x += g.print(x, 1, w.saturating_sub(x), label, style) + gap;
         }

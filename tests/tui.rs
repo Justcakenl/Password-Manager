@@ -956,7 +956,8 @@ fn the_settings_row_switches_the_security_level() {
     t.wait_for("Startup animation");
     t.send(DOWN);
     t.send(DOWN);
-    t.send(DOWN); // past the Tabs row
+    t.send(DOWN);
+    t.send(DOWN); // past the Tabs and Colors rows
     assert!(!t.screen().contains("Unlock here"), "nothing measured yet");
     t.send(DOWN);
     // The High level is measured for real on this computer (256 MiB).
@@ -1099,7 +1100,7 @@ fn first_run_wizard_in_a_terminal_then_the_screen() {
     // The key file recorded by the wizard is used at once (re-check in settings).
     t.send("s");
     t.wait_for("Startup animation");
-    t.send(&format!("{DOWN}{DOWN}{DOWN}\r")); // past the Tabs row
+    t.send(&format!("{DOWN}{DOWN}{DOWN}{DOWN}\r")); // past the Tabs and Colors rows
     t.wait_for("current master password");
     t.send(&format!("{phrase}\r"));
     t.wait_for("Choose a new master password");
