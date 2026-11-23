@@ -840,6 +840,11 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   counts updated in five tests (one row more). Seen for real: Notes renamed
   to Clients in the tab bar, `colors=blue` drawn with only 117/33/74 (no
   pink left), the file reads back.
+  After the review: a tab name that another tab has (its usual or own
+  name, any case) is refused ("Another tab is already called …"), and in
+  the screen a name may take at most 16 columns (wide characters count
+  double), so 16 CJK characters are refused there. Errors already start
+  with ✖ (`x` without UTF-8), so a red accent does not hide them.
   Next steps (to plan): own tabs (e.g. a tab per tag: "Clients" = every
   item tagged client), the order of the tabs, the order of the fields.
 

@@ -911,6 +911,16 @@ fn rename_a_tab_and_choose_the_colors_in_the_settings() {
     t.typ("Clients:old");
     t.key(Key::Enter);
     assert!(t.screen().contains("without , : or ="), "{}", t.screen());
+    // The name of another tab (usual or own, any case) is refused too.
+    t.key(Key::Ctrl('u'));
+    t.typ("logins");
+    t.key(Key::Enter);
+    assert!(t.screen().contains("Another tab is already called \"logins\"."), "{}", t.screen());
+    // As are 16 wide characters (32 columns).
+    t.key(Key::Ctrl('u'));
+    t.typ(&"客".repeat(16));
+    t.key(Key::Enter);
+    assert!(t.screen().contains("without , : or ="), "{}", t.screen());
     t.key(Key::Ctrl('u'));
     t.typ("Clients");
     t.key(Key::Enter);
