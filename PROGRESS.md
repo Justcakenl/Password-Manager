@@ -882,6 +882,16 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   (0.4 and 0.5 still open each other's vaults); 0.4 ignores the new lines
   in the settings file.
 
+- [x] **0.5.0 to the public repository** (the user: "release it to the
+  original GitHub of CakePass, no API keys or my vault, version 0.5, README
+  with what is new and everything it can do"). Branch
+  `release/0.5.0-public` from ADMIN `main` `ef076ad`; public `main`
+  (`b230e59`, 0.4.0) is an ancestor, so nothing there is lost. The README's
+  "What you get" now lists 2FA like an authenticator app, sharing, the
+  generator and making the screen your own. Checked before pushing: no
+  secret patterns in any commit since `b230e59`, no vault, key, backup or
+  share file in the tree, only the fake test secrets of the tests.
+
 ## Still to do
 
 - [x] **Step 16b: pre-update copies follow a re-key** (branch

@@ -30,8 +30,17 @@ Free and open source under the [MIT license](LICENSE).
   e-mail addresses, tags and favorites.
 - 🩺 **Password health check** (`cakepass audit`): weak, reused, old and empty
   passwords, offline, without ever printing one.
-- 🔢 **Two-factor codes (TOTP)** on any item: the six-digit code of your
-  authenticator app, computed offline from the stored secret.
+- 🔢 **Two-factor codes (TOTP), like an authenticator app.** A 2FA tab with
+  every code live and the next one, `t` to turn 2FA on for a login by
+  dragging a box around the website's QR code, logins with only a 2FA code,
+  and a warning when your clock is off. Offline, from the stored secret.
+  ([Why your e-mail's code is still best on your phone](#two-factor-codes-totp).)
+- 🤝 **Share items safely.** `x` makes an encrypted file for someone else with
+  a generated password; they add it with `i`. CakePass itself sends nothing.
+- 🎲 **Password generator** with passwords or passphrases, and a word of your
+  own in the middle if you like.
+- 🎨 **Make it yours.** Choose the colors, rename tabs (Notes → Clients), make
+  your own tabs (one per tag) and hide the ones you do not use, 2FA included.
 - 📋 **Clipboard that cleans up.** Copied secrets are wiped after 20 seconds
   (or the time you set: `cakepass config set clip-time`).
 - 🧹 **Careful with memory.** Secrets are wiped after use; core dumps are off;
