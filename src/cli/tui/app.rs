@@ -1050,15 +1050,33 @@ impl App {
             }
             PromptPurpose::RenameTab(kind) => {
                 let usual = Tab::of(kind).label();
+                // The name of another tab (its own or usual one): two tabs
+                // with one name would only confuse.
+                let taken = |n: &str| {
+                    Tab::ALL.into_iter().filter(|&t| t != Tab::of(kind)).any(|t| {
+                        self.tab_label(t).to_lowercase() == n.to_lowercase()
+                            || t.label().to_lowercase() == n.to_lowercase()
+                    })
+                };
                 let name = match text.trim() {
                     "" => None,
                     t => match config::parse_tab_name(t) {
-                        Some(n) if n != usual => Some(n),
-                        Some(_) => None,
-                        None => {
+                        Some(n) if taken(&n) => {
                             p.purpose = PromptPurpose::RenameTab(kind);
-                            p.error =
-                                Some(format!("1 to {} characters, without , : or =.", config::MAX_TAB_NAME));
+                            p.error = Some(format!("Another tab is already called \"{n}\"."));
+                            return self.modals.push(Modal::Prompt(p));
+                        }
+                        // Wide characters take two columns: the tab bar has room for 16.
+                        Some(n) if super::grid::str_width(&n) <= config::MAX_TAB_NAME && n != usual => {
+                            Some(n)
+                        }
+                        Some(n) if n == usual => None,
+                        _ => {
+                            p.purpose = PromptPurpose::RenameTab(kind);
+                            p.error = Some(format!(
+                                "1 to {} characters (wide ones count double), without , : or =.",
+                                config::MAX_TAB_NAME
+                            ));
                             return self.modals.push(Modal::Prompt(p));
                         }
                     },
