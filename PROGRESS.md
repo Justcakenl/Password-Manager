@@ -418,7 +418,7 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   tests updated for the eighth tab (`tests/tui.rs`
   `hidden_tabs_from_the_settings_file`;
   `with_every_type_tab_hidden_only_all_and_2fa_are_left`). Waits for
-  review (reviewer-sonnet) and security audit (security-opus).
+  code review and security audit.
   **Setting it up in the screen (asked for next):** every add/edit form
   has an optional, hidden "2FA secret" field (`Field::Totp`, before
   Notes; all types, like the CLI). It works like the CVV: dots,
@@ -440,7 +440,7 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   of 10 bytes for new secrets (see "Decisions made"), tests in
   `totp.rs`, the form test and `tests/cli.rs`; the README says the 2FA tab
   shows every code and the next one at once; a code that cannot be
-  decrypted says "can't decrypt" (fits the code column). security-opus's
+  decrypted says "can't decrypt" (fits the code column). The security review's
   last nit is fixed too: the too-short message rounds the base32 count up
   ((n * 8).div_ceil(5)), so 4 bytes reads "about 7 characters", not 6.
   Not in this step: scanning a QR code (no camera or image code in
@@ -451,7 +451,7 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
 
 - [x] **Step 16a: escape codes via an imported export** (branch
   `fix/16a-import-escape-codes`, from `feature/2fa-tab`; finding 1 of
-  security-opus's audit, rated medium). A crafted `cakepass import` file
+  the security audit, rated medium). A crafted `cakepass import` file
   (not CSV: CSV import already strips control characters) could put
   terminal escape codes (e.g. OSC 0 window title, OSC 52 "write the
   clipboard") into username/URL, which `list` and `search` printed raw.
@@ -486,18 +486,18 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   fail without the fix (import succeeded; `list` printed the escape).
   `every_encrypted_field_is_validated_resealed_and_merged` now uses a real
   TOTP secret as the "different" value (imports check it).
-  After review (security-opus, low): `validate_line` trims before it
+  After the security review (low): `validate_line` trims before it
   looks for control characters, so `\r`, `\x0b`, `\x0c` and U+0085 at
   either end of a one-line field or the TOTP secret slipped through. The
   check now demands the value be exactly what a setter would store
   (`is_ok_and(|t| t == v)`, as for tags); setters and migrations trim, so
   real exports pass. Tested per field with `x\r`, `\u{85}x`, `\u{b}x`,
   `\u{c}x\r` (fails without the fix). The item name in the message is cut
-  to 40 characters (reviewer-sonnet). README: an export from an older
+  to 40 characters (the code review). README: an export from an older
   CakePass with a value today's setters refuse is refused as a whole.
 
 - [x] **The version on the opening screen** (`da8f98c` cherry-picked onto
-  this `main`; approved by reviewer-sonnet and security-opus). The version
+  this `main`; approved by the code review and the security review). The version
   (`logo::VERSION`, "v0.4.0") shows small (dim) and centered under the
   tagline (login, setup, `cakepass logo`), and in the title bar as
   "v0.4.0 · locks in 4:59" when the subtitle keeps its full width.
@@ -526,7 +526,7 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   app/tests.rs `share_an_item_and_add_it_in_another_cakepass` (screen: x,
   path, the password dialog, existing file refused; i in another vault,
   wrong then right password, the item arrives, nothing else).
-  Review (security-opus, reviewer-sonnet) asked for changes, now done:
+  Review (security review, code review) asked for changes, now done:
   - 2FA secrets stay home by default (`Vault::share_subset` seals an empty
     one); `--with-totp`, or in the screen a question before writing with
     "Leave it out" as the default.
@@ -546,7 +546,7 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   `sharing_leaves_the_2fa_secret_out_unless_you_say_so` (both answers,
   Standard KDF). The flaky wrapped-text assertion now checks the prompt's
   own lines.
-  Second round (security-opus, reviewer-sonnet), after merging the 16b
+  Second round (security review, code review), after merging the 16b
   follow-up into this branch:
   - `ClearScreenGuard` (commands.rs) is made before the password is
     printed: on drop, and on Ctrl+C while it lives (a SIGINT handler that
@@ -561,9 +561,9 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   clear; and `2>/dev/null`: refused, no file), `Pty::spawn_with`;
   `importing_the_vaults_own_backup_does_not_offer_to_delete_it` in
   tests/tui.rs and app/tests.rs (both checked to fail without `owns`).
-  Remaining risk (accepted by security-opus): only SIGINT clears the share
+  Remaining risk (accepted by the security review): only SIGINT clears the share
   password; after Ctrl+\\ (SIGQUIT) or `kill` it stays in the scrollback.
-  Test fix (found by reviewer-sonnet): the two "6 words" checks split on
+  Test fix (found by the code review): the two "6 words" checks split on
   `-`, but four list words have a dash themselves (`drop-down`, `felt-tip`,
   `t-shirt`, `yo-yo`), so about 0.3% of runs counted 7. They now accept 6
   to 12 parts.
@@ -585,7 +585,7 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   - CLI: `--own-word` on every command with generator options
     (`generate`, `add`, `edit`), via `Recipe::generate(own)`; a note says
     the strength counts only the random part. After review
-    (security-opus, reviewer-sonnet): `require_equals`, so `--own-word`
+    (security review, code review): `require_equals`, so `--own-word`
     alone asks for the word hidden once before anything else
     (`commands::ask_own_word`, out of the shell history) and
     `--own-word=WORD` gives it directly; `check_own_word` also refuses
@@ -612,7 +612,7 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
 
 - [x] **Step 18b: the own word is never the master password** (branch
   `fix/own-word-not-master`, from ADMIN `main` `76f627a`; raised by
-  deepseek, reviewer-sonnet and security-opus after step 18). A word of
+  the second security review, the code review and the security review after step 18). A word of
   your own goes into a password that is sent to a website, so a master
   password typed there out of habit would leak.
   - `ask_own_word(g, uv)` no longer runs before the unlock: `add`/`edit`
@@ -623,14 +623,14 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
     since `unlock` drops it. A match is refused before anything is saved.
   - A plain `generate` has no vault open: the question now says "NOT your
     master password".
-  - The screen (found by deepseek): the generator's `w` dialog says "NOT
+  - The screen (found by the second security review): the generator's `w` dialog says "NOT
     your master password", and a word is checked against it as a task
     (`Task::OwnWord`, "Checking the word…", `check_password` with the key
     file reloaded); a match is refused in the dialog (input cleared) and
     not used. An empty word still removes it, without a check. On the
     command line a refused word is zeroized, not just dropped
-    (reviewer-sonnet).
-  - Remaining risk (accepted by security-opus): a word that is only a PART
+    (the code review).
+  - Remaining risk (accepted by the security review): a word that is only a PART
     of the master password (`Justin` for `Justin2024!`) cannot be caught
     without knowing the password.
   Tests (tests/cli.rs): `an_own_word_that_is_the_master_password_is_refused`
@@ -673,7 +673,7 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   `the_totp_code_is_computed_shown_and_copied` (still live long after
   `REVEAL_SECS`, next code shown, only `t` copies, gone under a dialog, on
   another item and on locking).
-  Known limitation (as asked by the user; raised by reviewer-sonnet): unlike
+  Known limitation (as asked by the user; raised by the code review): unlike
   `v` for a password (hidden again after `REVEAL_SECS`), a code shown with
   `t` stays on screen while its item stays selected, as on the 2FA tab.
   Someone looking at the screen sees a code that is valid for at most one
@@ -697,11 +697,11 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   `a_2fa_only_login_is_shared_and_imported_whole` (`share_subset` with the
   2FA secret + `merge`).
 - [x] **`cargo audit`: the chrono warning** (branch `fix/audit-chrono-wasm-only`,
-  found by tester-haiku). RUSTSEC-2026-0543 (chrono 0.4.45 unmaintained, a
+  found by testing). RUSTSEC-2026-0543 (chrono 0.4.45 unmaintained, a
   warning) made `cargo audit -D warnings` fail. chrono is only a wasm32
   dependency of zxcvbn 3.1.1 and not in the Linux build, so
-  `.cargo/audit.toml` ignores that one ID (approved by security-opus and
-  reviewer-sonnet; a new chrono advisory has its own ID and still fails).
+  `.cargo/audit.toml` ignores that one ID (approved by the security review and
+  the code review; a new chrono advisory has its own ID and still fails).
   `tests/packaging.rs` `chrono_is_not_in_the_linux_build` (`cargo tree
   --offline -i chrono` for x86_64 Linux must print nothing; checked to fail
   for a crate that is in the build). Look again when a zxcvbn without
@@ -734,25 +734,25 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   as "QRTest" with the right code.
   Then ("make 2FA the best ever"): reading a QR screenshot from the
   clipboard was tried in `f50c81d` and taken out again after
-  security-opus's review: Omarchy's clipboard history stores every picture
+  the security review: Omarchy's clipboard history stores every picture
   as a PNG file (`~/.local/state/omarchy/clipboard-images/`), so it would
   put the 2FA secret on disk, and an old screenshot could be read instead of
   the new QR code. Only the drag route remains; the README warns against
   screenshots of 2FA QR codes. (The test picture from that try was removed
   from the history.) The picker now shows the name in the code ("QR code
   read for \"Discord\"") so a wrong code shows. `valid_geometry` accepts
-  negative X/Y (a monitor left of or above the main one; reviewer-sonnet).
+  negative X/Y (a monitor left of or above the main one; the code review).
   And the 2FA tab warns when the clock is not set automatically
   (`qr::clock_synced`: `timedatectl show -p NTPSynchronized`, local only):
   test `the_2fa_tab_warns_when_the_clock_is_not_set_automatically`.
 
 - [x] **README: a 2FA code in CakePass is not a separate device** (branch
-  `docs/2fa-same-device`, from ADMIN `main` `23740e6`; security-opus, after
+  `docs/2fa-same-device`, from ADMIN `main` `23740e6`; the security review, after
   the user asked whether CakePass beats Proton or Google). One paragraph in
   "Two-factor codes (TOTP)": the code and the password sit in the same
   vault, so for e-mail, GitHub, the bank and backups keep the code on a
   phone. Plus one sentence on what CakePass itself supports (6 to 8
-  digits, SHA1/256/512, a period of 1 s to 1 h, as `totp.rs` checks), no claims about other apps (reviewer-sonnet).
+  digits, SHA1/256/512, a period of 1 s to 1 h, as `totp.rs` checks), no claims about other apps (the code review).
   Docs only.
 
 - [x] **2FA made easier** (branch `feature/2fa-easier`, from ADMIN `main`
@@ -768,15 +768,15 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   `the_2fa_steps_show_in_an_empty_vault_too`,
   `after_adding_a_2fa_code_its_live_code_is_shown_and_a_scan_finds_the_account`,
   updated `the_2fa_tab_without_codes_says_how_to_add_one`.
-  After reviewer-sonnet's review: 4 steps (step 3 "Press Enter to choose
+  After the code review: 4 steps (step 3 "Press Enter to choose
   the account, then Ctrl+S to save", the step the 3 steps skipped); a scan
   whose name is an item that already has a code says "'X' already has a 2FA
   code. Choose another account, or edit it with e to replace its code."
   instead of offering a new login that would fail on the duplicate name.
 
 - [x] **Tests never read the real cache or home** (branch
-  `fix/tests-own-cache`, from ADMIN `main` `f13d4d1`; tester-haiku saw
-  `first_run_wizard_in_a_terminal_then_the_screen` fail, reviewer-sonnet
+  `fix/tests-own-cache`, from ADMIN `main` `f13d4d1`; testing saw
+  `first_run_wizard_in_a_terminal_then_the_screen` fail, the code review
   found why). The pty and CLI harnesses set only `XDG_CONFIG_HOME`, so the
   program read `~/.cache/cakepass/update-status` of whoever ran the tests:
   a pending update notice ("News") covered the screen and caught the `s`.
@@ -807,7 +807,7 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   without a code, `t`, a QR code on screen read by the real grim and
   zbarimg (slurp replaced), Ctrl+S, the live code; back on All, `t` copies
   it (marked sensitive: not in Omarchy's clipboard history).
-  After reviewer-sonnet's review: when the name in the scanned code is
+  After the code review: when the name in the scanned code is
   another one than the chosen item, the form says so in red ("This QR code
   is for 'Discord'; Ctrl+S saves it under 'Mail' (Esc cancels)."); only
   missing tools or Wayland (`qr::tools_missing`) open the form to paste,
@@ -871,7 +871,7 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   tests updated (the row has 2FA and "+ New" now). Seen for real: "+ New"
   → Klanten, 2FA hidden, a login made on the Klanten tab got the tag, the
   file has `own_tabs=Klanten` and `two_factor_tab=off`.
-  README (security-opus): tab names and tags are not encrypted, so no
+  README (the security review): tab names and tags are not encrypted, so no
   secrets in them (whoever publishes their dotfiles publishes the names).
 
 - [x] **0.5.0 holds everything up to now** (the user: "no version 0.6, this
@@ -896,7 +896,7 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
 
 - [x] **Step 16b: pre-update copies follow a re-key** (branch
   `fix/16b-rekey-pre-update-copies`, from `fix/16a-import-escape-codes`;
-  finding 2 of security-opus's audit, medium). After `passwd` or
+  finding 2 of the security audit, medium). After `passwd` or
   `security`, the `vault.enc.pre-update-<time>` copies made by
   `cakepass --update` still opened with the OLD password or key file.
   - `UnlockedVault::rekey` now returns a `CopiesReport`: after the vault
@@ -934,7 +934,7 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   `passwd_rekeys_the_pre_update_copies_and_offers_to_delete_older_ones`
   (piped: listed, not deleted; in a pseudo-terminal: yes deletes it); the
   screen's `change_the_master_password` checks the copy and the dialog.
-  After review (reviewer-sonnet, security-opus): `backup_before_update`
+  After review (code review, security review): `backup_before_update`
   takes the write lock (a copy is never made half-way through a save or
   while a re-key converts the copies); `seal_like` writes a version 1 copy
   in the current layout (version 1 used the master key itself for the
@@ -985,7 +985,7 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   permissive deserializer plus a clear error message ("this vault uses an
   item type this version doesn't know: '…'") instead of the generic
   "damaged vault" message. Not a blocker for merging step 12/13 (nothing
-  has shipped yet, so no real vault can hit this today) — deepseek's step
+  has shipped yet, so no real vault can hit this today) — the second security review's step
   13 review recommended filing it as a pre-release item specifically, not
   a merge gate.
 - [x] **App icon / desktop integration**: done on `feature/tabs-and-icon`
