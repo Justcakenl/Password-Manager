@@ -963,7 +963,7 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   (`$YES` is checked before asking); only the test coverage for that one
   combination is missing. Add a terminal test with `--yes --no-setup`
   and a typed `n` that expects no question and the file kept.
-- [ ] **Leftover branch on GitHub**: `claude/blissful-dijkstra-etqobs`
+- [ ] **Leftover branch on GitHub**: an old docs branch from before 0.4
   (one commit, "Docs: repository is public, remove private-repo
   instructions", not merged into `main`). Harmless, just needs a
   decision: merge it or delete the remote branch.
@@ -994,7 +994,7 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   the `cakepass-icon` variant). The branding logo in
   `docs/cakepass-logo.png` was left as it is, as asked for this round.
   The original scope note: Assets
-  already exist at `/mnt/data/Claude code pr/CakePass-logo/`: SVG sources
+  already exist in the maintainer's logo folder: SVG sources
   (`cakepass-logo*.svg`, `cakepass-icon*.svg`, dark and monochrome
   variants) and rasterized app icons at 32/256/512/1024 px
   (`cakepass-app-icon-{32,256,512,1024}.png`), distinct from the
