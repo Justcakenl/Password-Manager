@@ -30,8 +30,17 @@ Free and open source under the [MIT license](LICENSE).
   e-mail addresses, tags and favorites.
 - 🩺 **Password health check** (`cakepass audit`): weak, reused, old and empty
   passwords, offline, without ever printing one.
-- 🔢 **Two-factor codes (TOTP)** on any item: the six-digit code of your
-  authenticator app, computed offline from the stored secret.
+- 🔢 **Two-factor codes (TOTP), like an authenticator app.** A 2FA tab with
+  every code live and the next one, `t` to turn 2FA on for a login by
+  dragging a box around the website's QR code, logins with only a 2FA code,
+  and a warning when your clock is off. Offline, from the stored secret.
+  ([Why your e-mail's code is still best on your phone](#two-factor-codes-totp).)
+- 🤝 **Share items safely.** `x` makes an encrypted file for someone else with
+  a generated password; they add it with `i`. CakePass itself sends nothing.
+- 🎲 **Password generator** with passwords or passphrases, and a word of your
+  own in the middle if you like.
+- 🎨 **Make it yours.** Choose the colors, rename tabs (Notes → Clients), make
+  your own tabs (one per tag) and hide the ones you do not use, 2FA included.
 - 📋 **Clipboard that cleans up.** Copied secrets are wiped after 20 seconds
   (or the time you set: `cakepass config set clip-time`).
 - 🧹 **Careful with memory.** Secrets are wiped after use; core dumps are off;
@@ -307,7 +316,7 @@ With no vault yet, the [first-time setup](#first-time-setup) starts by itself.
 ### Check that it works
 
 ```bash
-cakepass --version     # prints a version, e.g. "cakepass 0.4.0 (commit …)"
+cakepass --version     # prints a version, e.g. "cakepass 0.5.0 (commit …)"
 cakepass info          # shows your vault and system checks; needs no password
 ```
 
@@ -332,6 +341,39 @@ installed to (step 5). More help: [Troubleshooting](#troubleshooting).
   vault format the next time it **saves**. Make a [backup](#backups) first.
   (`cakepass --update` and the daily update check need Arch's `makepkg`, so on
   other systems they say they cannot run. The four lines above are the update.)
+
+### What's new in 0.5
+
+- **2FA tab** in the screen, like an authenticator app: every code live, with
+  the seconds left and the next code; set up a code with `a` on that tab or
+  the "2FA secret" field of any item. An empty 2FA tab shows the steps.
+- **2FA in one key: `t`.** On a login without a code it turns 2FA on (drag a
+  box around the website's QR code, Ctrl+S); on one with a code it copies it
+  and shows it live in the details.
+- **Scan a QR code** from the screen with `s` on the 2FA tab (grim, slurp and
+  zbar; the picture never touches the disk or the clipboard).
+- **A login with only a 2FA code**, without a password, like in an
+  authenticator app.
+- A warning on the 2FA tab when the clock of the computer is not set
+  automatically.
+- **Make the screen your own** (Settings, `s`): choose the **colors**, give a
+  tab **your own name** (`r`), make **your own tabs** ("+ New": a tab per
+  tag), and hide the tabs you do not use, **2FA included**.
+- **Sharing items** with someone else: `x` in the screen or `cakepass share`
+  makes an encrypted file with a generated password; they add it with `i` or
+  `cakepass import`. CakePass itself sends nothing.
+- **A word of your own** in the generator (`w`, or `--own-word`): it goes in
+  the middle with random characters around it.
+- The **version** shows small on the opening screen and in the title bar.
+- CakePass refuses your **master password as your own word** (it would end up
+  in a password for a website).
+- The **update notification** shows the CakePass logo.
+- Security fixes: an import with terminal escape codes is refused whole, and
+  copies made before an update are re-encrypted when you change the master
+  password.
+
+The vault format is the same as in 0.4 (format 3, content schema 5), so 0.4
+and 0.5 open each other's vaults.
 
 ### Uninstall
 
@@ -479,13 +521,16 @@ and **`?`** shows them all.
 | Key | What it does |
 |---|---|
 | ↑ ↓, PgUp PgDn, Home End | choose an item |
-| ← → (or Tab) | switch between All · Logins · API keys · Cards · IDs (identities) · SSH (keys) · Notes; tabs you do not use can be hidden (see Settings below) |
-| `/` | search in name, type, tags, username, e-mail and URL (never in passwords or notes). Any key that is not a shortcut (a capital letter, a digit) starts the search too. Esc clears it |
+| ← → (or Tab) | switch between All · Logins · API keys · Cards · IDs (identities) · SSH (keys) · Notes · 2FA; tabs you do not use can be hidden (see Settings below) |
+| `/` | search in name, type, tags, username, e-mail and URL (never in passwords or notes). Any key that is not a shortcut (a capital letter, a digit; note that `f`, `x` and `i` are shortcuts) starts the search too. Esc clears it |
 | Enter or `v` | show / hide the password, API key, card number and CVV, private key and passphrase, and notes. They hide themselves after **10 seconds**, and when you choose another item or open another screen |
 | `c` | copy the password, API key, card number, private key, document number or note to the clipboard; it is **cleared after 20 seconds** (or your `clip-time`) |
 | `u` / `m` | copy the username (cardholder) / the e-mail address |
-| `t` | show the current two-factor (TOTP) code with its seconds left, and copy it (cleared like a password) |
+| `t` | **2FA in one key.** Item with a 2FA code (details: "2FA code: on"): copy the code and show it **live** in the details: the seconds count down and a new code (and the next one) appears every period, until you choose another item, open a dialog, or CakePass locks or closes. Login or API key without one ("2FA code: off"): **turn 2FA on**: drag a box around the website's QR code, Ctrl+S, and its live code is shown; if the QR code names another site, the form says so first (without grim/slurp/zbar the form opens to paste the secret). Computed from the clock, offline |
+| 2FA tab | every item with a TOTP secret and its **current code**, live, with the seconds left (red in the last 5), like an authenticator app; the details also show the next code. There **Enter** or `c` copies the code, and **`a` adds one**: choose the account (or a new login) and paste the secret. ← from All goes straight to it |
 | `f` | pin or unpin the item as a **favorite**: a ★ before its name, and favorites come first in the list |
+| `x` | **share** the item with someone else: an encrypted file plus a generated password (see [Sharing items with someone else](#sharing-items-with-someone-else)) |
+| `i` | add the items of a file someone **shared** with you (or an export of your own) |
 | `p` | copy the public key of an SSH key |
 | `a` or `n` | add an item |
 | `e` | edit the selected item |
@@ -499,9 +544,10 @@ and **`?`** shows them all.
 **Adding and editing** (`a`, `e`): a form with the fields Name, Type, Username
 (for an API key: Account/ID), E-mail, URL, Tags, Password (or API key) and Notes.
 A card has Cardholder, Expiry date, Card number and CVV instead; an SSH key has
-Host, Public key, Private key (several lines; paste it) and Passphrase. A TOTP
-secret is added with `cakepass add/edit … --totp` (see
-[Two-factor codes](#two-factor-codes-totp)).
+Host, Public key, Private key (several lines; paste it) and Passphrase. Every
+type also has an optional, hidden **2FA secret**: paste the secret a site shows
+under its QR code (see [Two-factor codes](#two-factor-codes-totp)). A typo is
+refused when you save, with the cursor back on the field.
 
 | Key | What it does |
 |---|---|
@@ -515,7 +561,8 @@ secret is added with `cakepass add/edit … --totp` (see
 | Esc | cancel (asks first when you changed something) |
 
 When you edit an item, the password field shows `•••••••• (unchanged)` (so do a
-stored CVV and passphrase). Leave it
+stored CVV, passphrase and 2FA secret; Ctrl+U on the 2FA secret and saving
+removes the code). Leave it
 and the password stays as it is; type and you replace it; Ctrl+R shows it.
 Pasting (Ctrl+Shift+V) works in every field, also for long API keys: pasted text
 is always just text, it never triggers a shortcut.
@@ -524,12 +571,14 @@ is always just text, it never triggers a shortcut.
 strength in bits, and the options: ↑ ↓ choose an option, ← → change it (length,
 upper/lowercase, digits, symbols, no look-alikes, or a passphrase with the number
 of words and the separator). `r` makes a new one, `v` shows it, `e` lets you type
-your own (twice), `c` copies it, Enter uses it, Esc cancels. Opened from the list,
+your own (twice), `w` adds a **word of your own** (see below), `c` copies it,
+Enter uses it, Esc cancels. Opened from the list,
 Enter asks for a name and saves it as a new login (like `cakepass generate --save`).
 
 **Settings** (`s`): the startup animation (on/off), the auto-lock time (← → one
 minute, PgUp/PgDn ten), the **Tabs** (← → choose a type, Enter or Space shows
-or hides its tab), **Change master password** (asks for the current one
+or hides its tab, `r` renames it), the **Colors** (← → pink, blue, green,
+purple, orange, red or teal), **Change master password** (asks for the current one
 first, then a new strong one twice), the **Security level** (← → choose a
 level; the first time a level is shown CakePass measures how long unlocking
 takes on this computer; Enter switches after you type your master password),
@@ -543,6 +592,22 @@ type with ✔ (shown) or ✖ (hidden); the same setting is
 Hiding a tab hides **no items**: they stay in the **All** tab (which cannot be
 hidden), and `list`, `search` and `get` show them as always. It only changes
 which tabs the screen offers.
+
+**Your own tabs.** On the Tabs row go to "+ New" (or press `n`), press Enter and
+type a name, e.g. "Klanten". The tab lists every item with that tag, of any
+type; give an item the tag with `e` → Tags, and a new item made on the tab
+gets it by itself. `d` on an own tab deletes the tab (the items and their tags
+stay). At most 6. **The 2FA tab** is on the Tabs row too: Enter hides it (and
+shows it again); without it, `t` still shows and copies a code, and a newly
+added code shows live in the details. Tab names and tags are **not
+encrypted** (tab names are in the settings file, tags next to each item):
+don't put secrets in them.
+
+**Renaming tabs.** Keep your clients in notes? On the Tabs row choose Notes,
+press `r` and type "Clients" (at most 16 characters; empty gives the usual
+name back). Only the tab is renamed: the items keep their type, and the
+command line still says "note". Stored as `tab_names=note:Clients` in the
+settings file, the colors as `colors=blue`.
 
 Good to know:
 
@@ -797,7 +862,17 @@ Most sites offer two-factor login with an authenticator app: you scan a QR
 code, and the app shows a six-digit code that changes every 30 seconds. Under
 the QR code the site also shows the **secret** (a text like `JBSW Y3DP EHPK
 3PXP`, sometimes a link starting with `otpauth://`). Give that to CakePass and
-it computes the codes itself, offline:
+it computes the codes itself, offline. CakePass supports codes of 6 to 8 digits,
+SHA1, SHA256 and SHA512, and any period from 1 second to an hour (30 seconds
+unless the `otpauth://` link says otherwise).
+
+> **Same device, same vault.** A code in an authenticator app on your phone
+> is a real second factor: someone who has your password also needs that
+> separate phone. A code in CakePass is on the same computer and in the same
+> vault as the password, so whoever opens your vault has both. For most
+> accounts that is a fair trade for the convenience; for your e-mail, GitHub
+> (`cakepass --update` gets its code from there), your bank and your backups,
+> keep the 2FA code on your phone instead.
 
 ```text
 $ cakepass edit GitHub --totp
@@ -814,7 +889,49 @@ Valid for:       8 more second(s)
 ```
 
 - `cakepass add GitHub --totp` asks for the secret while adding; `cakepass edit
-  GitHub --no-totp` removes it. In the screen, `t` shows and copies the code.
+  GitHub --no-totp` removes it. In the screen, `t` copies the code and shows it live; the 2FA tab shows every code live.
+
+**Scan the QR code** instead of copying the secret: on the 2FA tab press `s`,
+drag a box around the QR code the site shows on your screen, and choose the
+account (or "+ New login", named after the site). **Do not take a
+screenshot of a 2FA QR code**: a clipboard history (Omarchy keeps every
+picture) and a screenshots folder keep it, and with it the secret, as a
+plain file on disk. Drag the box with `s` instead: that picture only goes
+through a pipe. If the clock of your computer is not set automatically, the
+2FA tab warns you: codes come from the clock. The code is read by the
+separate programs `slurp`, `grim` and `zbarimg` (`sudo pacman -S grim slurp
+zbar`, Wayland); the picture stays in memory, never on disk or the clipboard,
+and nothing goes online. A Google Authenticator export (`otpauth-migration://`)
+is refused: move those codes one by one.
+
+**A login with only a 2FA code** (like an entry in an authenticator app): on
+the 2FA tab press `a`, choose "+ New login", type the name and paste the 2FA
+secret; leave the password empty. On the command line: `cakepass add Discord
+--totp`, leave the password empty and answer `y` to "No password: save it only
+for its 2FA code?". Such a login is not reported as "empty" by `cakepass
+audit`.
+- The screen's **2FA** tab works like an authenticator app (Proton
+  Authenticator, Google Authenticator): all your codes in one list, each with
+  the seconds it is still valid, and the next code in the details. Enter (or
+  `c`) copies the selected code. ← from All goes there in one key press.
+  On that tab **every code is on screen at once** (as in a phone app), and
+  the next code too: mind who can see your screen. Each code works for one
+  period only and is useless without the password; under a dialog (help,
+  delete, …) the codes turn into dots, and the screen locks itself as usual.
+- **An empty 2FA tab shows the 4 steps** (also in an empty vault). After
+  saving a 2FA code, CakePass jumps to the 2FA tab on that item, so the code
+  the site asks for next is right there (Enter copies it). A scanned QR code
+  whose name matches an item without a code chooses that item already:
+  Enter is all it takes; an item of that name that already has a code is
+  named, with how to replace its code (`e`).
+- **Setting it up in the screen**, no commands needed:
+  1. On the site, turn on two-factor login with an authenticator app. Below
+     the QR code, click "can't scan it?" (or similar) and copy the secret.
+  2. In CakePass go to the **2FA** tab (←) and press **`a`**.
+  3. Choose the account (type a few letters to find it), or **+ New login**.
+  4. Paste the secret (Ctrl+Shift+V) in the **2FA secret** field and press
+     Ctrl+S. The code appears in the 2FA tab; type it on the site to finish.
+  The same field is in every add/edit form (`a`, `e`).
 - The secret is checked before it is saved (spaces and lower case are fine; a
   typo is refused). An `otpauth://totp/…` link may set other digits, a period
   or SHA-256/SHA-512; without them it is the standard 6 digits, 30 s, SHA-1.
@@ -839,7 +956,24 @@ cakepass generate --no-symbols            # without symbols
 cakepass generate --no-lookalikes         # without 0 O 1 l I |
 cakepass generate --passphrase            # 6 words, e.g. grape-lantern-oyster-…
 cakepass generate -p -w 8 --separator .   # 8 words with dots
+cakepass generate --own-word             # asks for your word (hidden): e.g. jvsdnb#U*#Justin28884218hje
 ```
+
+**A word of your own.** With `--own-word` (it asks for the word, hidden), or
+`--own-word=WORD`, or `w` in the generator of the screen, your word goes into the password at a random place in the middle,
+with random characters on both sides (at least a quarter of them before it and
+a quarter after, e.g. `jvsdnb#U*#Justin28884218hje`); in a passphrase it is one
+extra word between the others, never the first or the last.
+The random part keeps its full length, so the password is never weaker than
+without the word, and the strength shown counts only that part: a word of
+your own (a name, the site) may be guessable, so it adds no strength. Up to 32
+characters; no control characters, no invisible ones (zero-width, direction
+marks) and no spaces at the ends. In the screen it is remembered (never saved)
+while CakePass is open; empty removes it. `--own-word=WORD` lands in your shell
+history like any argument; `--own-word` alone does not. With `add`, `edit` and
+`generate --save` the word is asked after your master password, and CakePass
+refuses it if it *is* your master password (that would send your master
+password to the website); `w` in the screen checks it the same way.
 
 Passphrases come from the EFF diceware word list (7776 words, 12.9 bits per
 word). Six words give about 77 bits; the setup wizard makes seven (about 90
@@ -1050,6 +1184,47 @@ imported as the item's TOTP secret. A value CakePass cannot use (for example a
 Steam Guard `steam://` secret) is left out with a warning; the item itself is
 still imported.
 
+### Sharing items with someone else
+
+Give someone a password (or a card, an API key, a note) without typing it
+into a chat: CakePass puts **only the items you choose** in an encrypted file
+with a password of its own. CakePass itself sends nothing (it never goes
+online); you send the file.
+
+```bash
+cakepass share GitHub Netflix --to for-jane.cakepass
+```
+
+In the screen: select the item and press **`x`**. Then:
+
+1. CakePass shows a **share password** (6 random words) **once**. It makes it
+   itself, so the file cannot have a weak password. On the command line it
+   only works in a terminal (never into a file or a pipe), and after Enter
+   the password is cleared from the screen and the scrollback.
+2. Send the file: Signal, e-mail, a USB stick, AirDrop, …
+3. Tell the share password **another way** (in person, by phone), never in
+   the same message as the file.
+4. The other person adds the items to their own CakePass: in the screen with
+   **`i`**, or `cakepass import for-jane.cakepass`, and types the share
+   password. The items are then in their vault and they can view them as
+   their own. (An item they already have is skipped; a name they already use
+   gets a number, "GitHub (2)".)
+5. After the import CakePass offers to overwrite and delete the file.
+
+Good to know:
+- Your master password and key file never go into the file.
+- **2FA secrets stay home** unless you choose otherwise: in the screen `x`
+  asks ("Leave it out" is the default), on the command line add
+  `--with-totp`. Whoever has your 2FA secret can make your codes for good.
+- A private SSH key is shared with its item (CakePass warns).
+- Your favorite pin does not travel, and the dates are the moment of sharing.
+- The suggested file name has the date, not the item's name (chat apps show
+  file names in their previews).
+- The file always uses the Standard Argon2 level, so a smaller computer can
+  open it even if your own vault uses Maximum.
+- Sharing is a copy: if you change the password later, share it again. The
+  file is checked completely before anything is added, like every import.
+
 ### Encrypted export and import (between your own computers)
 
 ```bash
@@ -1059,6 +1234,16 @@ cakepass import /path/to/cakepass-export.cakepass               # on the other c
 
 The export file is encrypted with a password of its own (the same strong
 encryption as the vault).
+
+An import file is checked before anything is added: every item must follow
+the same rules as items you type yourself (no control characters such as
+terminal escape codes in names and one-line fields, nothing too long, a
+usable TOTP secret). One bad item refuses the whole import, with the item and
+field named, and your vault stays exactly as it was. An export made by an older
+CakePass can be refused this way if it holds a value today's CakePass would not
+accept; open that file with the old version and fix the item named first. Text that is shown on the
+command line is made harmless as well (`list`, `search`, `get`, `edit`: an
+escape code appears as `\u{1b}`), also for values already in a vault.
 
 ---
 
@@ -1095,10 +1280,19 @@ How:
 
 Good to know:
 
-- A backup opens with the master password (and key file, and level) that
-  applied **when you made it**. After `cakepass passwd` or `cakepass security`,
-  an old copy still opens the old way. If your old password leaked, throw away
-  old copies and make new ones. (The automatic `.bak` is re-encrypted right away.)
+- A backup **you made yourself** (and an export) opens with the master password
+  (and key file, and level) that applied **when you made it**: after
+  `cakepass passwd` or `cakepass security` it still opens the old way. If your
+  old password leaked, throw away old copies and make new ones.
+- The copies CakePass keeps itself follow the change: the `.bak` is
+  re-encrypted right away, and so are the `pre-update` copies (their contents
+  stay the vault from before the update; only the password/key file/level to
+  open them changes). A `pre-update` copy that still opens with an even older
+  password (from before an earlier change, or made by an older CakePass) is
+  listed, and in a terminal `passwd`/`security` offer to delete it.
+- Known limit: if the computer crashes in the moment between re-encrypting
+  the vault and re-encrypting the `pre-update` copies, those copies keep the
+  old password; the next change then lists them as older copies.
 - **Using a key file?** Back up the **key file separately** from the vault: a
   copy of the vault is useless without the key file, and a key file stored on
   the same stick as a vault copy protects nothing. Test a backup with
@@ -1431,9 +1625,11 @@ else turned up.
    See [How strong is this, really?](#how-strong-is-this-really).
 6. **Physical access to a running, unlocked computer.** Lock your screen.
    Cold-boot and DMA attacks are out of scope.
-7. **Backups with an old password** still open with that old password (see
-   [Backups](#backups)); copies made before you turned on a key file open
-   without it.
+7. **Backups with an old password**: copies and exports you made yourself
+   still open with that old password (see [Backups](#backups)); copies made
+   before you turned on a key file open without it. CakePass's own `.bak` and
+   `pre-update` copies are re-encrypted with every change (barring a crash in
+   between).
 8. **File system.** On SSDs and copy-on-write systems (btrfs, ZFS), old
    unencrypted data (such as a CSV export) may remain. Disk encryption (LUKS) solves that.
 9. **Root and the operating system.** Root can do anything, including `ptrace`

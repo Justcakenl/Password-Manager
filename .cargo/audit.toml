@@ -1,0 +1,10 @@
+# cargo audit settings (read by `cargo audit` in this folder).
+[advisories]
+ignore = [
+    # RUSTSEC-2026-0543: chrono 0.4.45 is unmaintained (a warning, not a
+    # vulnerability). chrono is only a wasm32 dependency of zxcvbn 3.1.1 and
+    # is not built on Linux; tests/packaging.rs checks that. Look again when
+    # zxcvbn or Cargo.lock changes. A new chrono advisory has its own ID and
+    # still fails.
+    "RUSTSEC-2026-0543",
+]

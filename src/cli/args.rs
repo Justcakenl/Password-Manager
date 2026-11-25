@@ -228,9 +228,24 @@ pub enum Cmd {
         file: PathBuf,
     },
 
-    /// Add items from an encrypted export file
+    /// Share items with someone else: a new encrypted file with only these
+    /// items and a generated password; they add it with `cakepass import`
+    Share {
+        /// The items to share (one or more names)
+        #[arg(required = true, num_args = 1..)]
+        names: Vec<String>,
+        /// The file to make (must not exist yet), e.g. share.cakepass
+        #[arg(long, short = 'o', value_name = "FILE")]
+        to: PathBuf,
+        /// Also share the items' 2FA (TOTP) secrets: the other person can
+        /// then make your 2FA codes for good. Left out without this flag
+        #[arg(long)]
+        with_totp: bool,
+    },
+
+    /// Add items from an encrypted export or share file
     Import {
-        /// Export file made with `cakepass export`
+        /// File made with `cakepass export` or `cakepass share`
         file: PathBuf,
     },
 
@@ -440,6 +455,13 @@ pub struct GenArgs {
     /// Separator between the words
     #[arg(long, default_value = "-", value_name = "CHAR")]
     pub separator: String,
+    /// A word of your own, put in the middle with random characters on both
+    /// sides (e.g. jvsdnb#U*#Justin28884218hje). --own-word alone asks for it
+    /// (hidden, so it stays out of your shell history); --own-word=WORD gives
+    /// it directly. The random part keeps its full length; the word adds no
+    /// strength, as it may be guessable
+    #[arg(long, value_name = "WORD", num_args = 0..=1, require_equals = true, default_missing_value = "")]
+    pub own_word: Option<String>,
 }
 
 #[derive(Args, Debug)]

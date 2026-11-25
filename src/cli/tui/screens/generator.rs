@@ -29,12 +29,26 @@ pub enum GenTarget {
     NewLogin,
 }
 
-/// The generator settings; remembered while CakePass is open.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// The generator settings; remembered while CakePass is open (never saved).
+#[derive(Clone, PartialEq, Eq, Default)]
 pub struct GenPrefs {
     pub passphrase: bool,
     pub password: PasswordOptions,
     pub phrase: PassphraseOptions,
+    /// A word of your own, put in at a random place; empty = none. Wiped
+    /// when dropped; not in `Debug`.
+    pub own_word: Zeroizing<String>,
+}
+
+impl std::fmt::Debug for GenPrefs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GenPrefs")
+            .field("passphrase", &self.passphrase)
+            .field("password", &self.password)
+            .field("phrase", &self.phrase)
+            .field("own_word", &(!self.own_word.is_empty()))
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,11 +62,20 @@ enum Row {
     Lookalikes,
     Words,
     Separator,
+    OwnWord,
 }
 
-const PASSWORD_ROWS: [Row; 7] =
-    [Row::Kind, Row::Length, Row::Upper, Row::Lower, Row::Digits, Row::Symbols, Row::Lookalikes];
-const PHRASE_ROWS: [Row; 3] = [Row::Kind, Row::Words, Row::Separator];
+const PASSWORD_ROWS: [Row; 8] = [
+    Row::Kind,
+    Row::Length,
+    Row::Upper,
+    Row::Lower,
+    Row::Digits,
+    Row::Symbols,
+    Row::Lookalikes,
+    Row::OwnWord,
+];
+const PHRASE_ROWS: [Row; 4] = [Row::Kind, Row::Words, Row::Separator, Row::OwnWord];
 const SEPARATORS: [&str; 6] = ["-", ".", "_", "+", ",", " "];
 
 pub enum Action {
@@ -61,6 +84,8 @@ pub enum Action {
     Cancel,
     Copy,
     TypeOwn,
+    /// Ask for a word of your own (`w`, or ←→ on its row).
+    OwnWord,
     Help,
 }
 
@@ -105,14 +130,27 @@ impl Generator {
 
     /// Make a new password with the current settings.
     pub fn regenerate(&mut self) {
-        match self.recipe().generate() {
+        let own = Some(self.prefs.own_word.as_str()).filter(|w| !w.is_empty());
+        match self.recipe().generate(own) {
             Ok((value, bits)) => {
                 self.value = value; // the old one is wiped
                 self.bits = Some(bits);
-                self.note = None;
+                self.note =
+                    own.map(|_| (Style::DIM, "Your word is at a random place; it adds no strength.".into()));
             }
             Err(e) => self.note = Some((Style::ERROR, error_text(&e))),
         }
+    }
+
+    /// Use this word of your own from now on (empty: none), and make a new
+    /// password with it. A word that is not allowed changes nothing.
+    pub fn set_own_word(&mut self, word: &str) {
+        if let Err(e) = Some(word).filter(|w| !w.is_empty()).map_or(Ok(()), generator::check_own_word) {
+            self.note = Some((Style::ERROR, error_text(&e)));
+            return;
+        }
+        self.prefs.own_word = Zeroizing::new(word.to_string());
+        self.regenerate();
     }
 
     /// Use a password the user typed (twice) instead.
@@ -132,6 +170,10 @@ impl Generator {
             Key::Esc => return Action::Cancel,
             Key::Char('c') => return Action::Copy,
             Key::Char('e') => return Action::TypeOwn,
+            Key::Char('w') => return Action::OwnWord,
+            Key::Left | Key::Right | Key::Char(' ') if self.rows()[self.row] == Row::OwnWord => {
+                return Action::OwnWord;
+            }
             Key::Char('?') | Key::F(1) => return Action::Help,
             Key::Char('r') => self.regenerate(),
             Key::Char('v') => self.shown = !self.shown,
@@ -166,6 +208,7 @@ impl Generator {
                 p.phrase.separator = SEPARATORS[(i + d.signum()).rem_euclid(n) as usize].to_string();
             }
             Row::Lookalikes => p.password.exclude_lookalikes = !p.password.exclude_lookalikes,
+            Row::OwnWord => return, // a dialog: see `handle`
             row => {
                 let o = &mut p.password;
                 let on = [o.uppercase, o.lowercase, o.digits, o.symbols].iter().filter(|&&b| b).count();
@@ -250,6 +293,15 @@ impl Generator {
                     };
                     ("Separator", format!("{l} {sep} {rt}"))
                 }
+                // Like the password: dots unless shown with v.
+                Row::OwnWord => (
+                    "Own word",
+                    match (self.prefs.own_word.chars().count(), self.shown) {
+                        (0, _) => "(none) · w adds one".to_string(),
+                        (_, true) => format!("{} · w changes", self.prefs.own_word.as_str()),
+                        (n, false) => format!("{} · w changes", g.g.dot.to_string().repeat(n)),
+                    },
+                ),
             };
             if focused {
                 g.set(inner.x + 1, y, g.g.marker, Style::ACCENT_BOLD);
@@ -274,6 +326,7 @@ impl Generator {
             ("r", "new"),
             ("v", "show"),
             ("e", "own"),
+            ("w", "own word"),
             ("c", "copy"),
             ("↑↓", "option"),
             ("←→", "change"),
@@ -319,6 +372,32 @@ mod tests {
         g.handle(Key::Right);
         assert_eq!(g.value.split('.').count(), 7);
         assert!(matches!(g.handle(Key::Enter), Action::Accept));
+    }
+
+    #[test]
+    fn a_word_of_your_own() {
+        let mut g = Generator::new(GenTarget::Form, GenPrefs::default());
+        g.row = PASSWORD_ROWS.len() - 1;
+        assert!(matches!(g.handle(Key::Right), Action::OwnWord), "←→ on its row asks for it");
+        assert!(matches!(g.handle(Key::Char('w')), Action::OwnWord));
+        let bits = g.bits;
+        g.set_own_word("Justin");
+        assert!(g.value.contains("Justin") && g.value.chars().count() == 30, "{}", g.value.as_str());
+        assert_eq!(g.bits, bits, "the word adds no strength");
+        assert!(matches!(&g.note, Some((Style::DIM, n)) if n.contains("random place")));
+        g.handle(Key::Char('r'));
+        assert!(g.value.contains("Justin"), "kept for the next one");
+        // Not allowed: nothing changes.
+        g.set_own_word("bad\u{1b}word");
+        assert!(matches!(&g.note, Some((Style::ERROR, _))) && g.prefs.own_word.as_str() == "Justin");
+        // In a passphrase it is one more word.
+        g.row = 0;
+        g.handle(Key::Right);
+        assert!(g.value.split('-').any(|w| w == "Justin"), "{}", g.value.as_str());
+        // Empty removes it.
+        g.set_own_word("");
+        assert!(!g.value.contains("Justin") && g.note.is_none());
+        assert!(!format!("{:?}", g.prefs).contains("Justin"), "not in Debug");
     }
 
     #[test]

@@ -20,7 +20,8 @@
 //! - **empty**: no password or key at all.
 //!
 //! An empty item is only reported as empty (there is nothing to judge or
-//! renew).
+//! renew). A login with only a 2FA code and no password (like an entry in
+//! an authenticator app) is not empty: it is left out.
 
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
@@ -74,6 +75,9 @@ pub fn audit(
     // when this function returns.
     let mut secrets: Vec<(&str, Zeroizing<String>)> = Vec::new();
     for e in vault.entries().iter().filter(|e| matches!(e.kind(), Kind::Login | Kind::Api)) {
+        if !e.has_password() && e.kind() == Kind::Login && e.has_totp() {
+            continue; // 2FA only: no password to judge
+        }
         report.checked += 1;
         if !e.has_password() {
             report.empty.push(e.name().to_string());

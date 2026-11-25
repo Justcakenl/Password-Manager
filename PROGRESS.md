@@ -1,6 +1,6 @@
 # Progress: `cakepass` (CakePass)
 
-Last updated: step 14 (editable screen tabs) and the desktop entry and app icon; content schema still 5.
+Last updated: version 0.5.0 (steps 15 to 18b); content schema still 5.
 Repository: `Justcakenl/Password-Manager`, branch `main` (private until it is made public).
 
 ## Maintainer checklist: manual testing on a real Arch machine
@@ -396,7 +396,553 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   `file://` copy of this repository; the GitHub URL itself only works once
   `main` is pushed.
 
+- [x] **Step 15: a 2FA tab in the screen** (branch `feature/2fa-tab`, from
+  `main`), asked for as "like Proton Authenticator". A new `Tab::TwoFactor`
+  ("2FA", last in the tab bar, so ← from All reaches it) lists every item
+  with a TOTP secret, of any type. Each row: name, account (username, or
+  the host of an SSH key), the current code in two halves (`287 082`) and
+  the seconds left, red in the last 5. The details show the code and the
+  **next code**. Enter and `c` copy the code there (`t` everywhere, as
+  before); `v` still shows the password. Search, favorites and paging work
+  as in the other tabs. Empty: "No two-factor codes yet" with the
+  `cakepass edit NAME --totp` hint. Codes are computed per frame from the
+  decrypted secret (`Totp`/`TotpCode` are `ZeroizeOnDrop`; the grouped text
+  is `Zeroizing`), never kept; under any dialog they are dots and the
+  details fall back to "set (t shows it)". The tab bar now keeps 12 columns
+  for the search instead of 18, so all eight tabs keep their counts in 80
+  columns. Files: `src/cli/tui/app.rs` (`Tab::TwoFactor`, `Tab::shows`),
+  `src/cli/tui/screens/main.rs` (`draw_code_rows`, keys, hints, details),
+  `src/cli/tui/screens/dialog.rs` (help). Tests: two new
+  (`the_2fa_tab_lists_every_code_like_an_authenticator_app`,
+  `the_2fa_tab_without_codes_says_how_to_add_one`), and the tab-order
+  tests updated for the eighth tab (`tests/tui.rs`
+  `hidden_tabs_from_the_settings_file`;
+  `with_every_type_tab_hidden_only_all_and_2fa_are_left`). Waits for
+  code review and security audit.
+  **Setting it up in the screen (asked for next):** every add/edit form
+  has an optional, hidden "2FA secret" field (`Field::Totp`, before
+  Notes; all types, like the CLI). It works like the CVV: dots,
+  "(unchanged)" when editing, Ctrl+R shows it, Ctrl+U + save removes the
+  code. It is checked with `Totp::parse` before saving, so a typo gives
+  "Not a valid 2FA secret: …" (the library's reason, never the input) and
+  the cursor goes back to the field; the save message adds "Its 2FA code
+  is in the 2FA tab." On the 2FA tab `a` (or `n`) opens a new `Picker`
+  dialog (`dialog.rs`): "+ New login" and every item without a code;
+  typing narrows it; Enter opens that item's edit form on the 2FA field
+  (`App::open_edit_at`), or the add form for a new login. A form error now
+  clears a message that would be drawn over it. Tests: three new
+  (`add_a_2fa_code_from_the_2fa_tab`,
+  `a_new_login_with_a_2fa_code_and_removing_a_code`, and the empty-tab
+  text), three form walks updated for the extra field
+  (`add_a_login_with_the_form`, `add_an_api_key_by_pasting_and_a_note`,
+  `tests/tui.rs` `add_an_item_with_the_arrow_keys_then_read_it_with_the_cli`).
+  Then (after both approved `cadca72`): `Totp::parse_new` with a minimum
+  of 10 bytes for new secrets (see "Decisions made"), tests in
+  `totp.rs`, the form test and `tests/cli.rs`; the README says the 2FA tab
+  shows every code and the next one at once; a code that cannot be
+  decrypted says "can't decrypt" (fits the code column). The security review's
+  last nit is fixed too: the too-short message rounds the base32 count up
+  ((n * 8).div_ceil(5)), so 4 bytes reads "about 7 characters", not 6.
+  Not in this step: scanning a QR code (no camera or image code in
+  CakePass; if ever, via an outside tool such as `zbarimg` and `parse_new`,
+  never an image library inside the process), a warning for short secrets
+  on CSV import, and a login with only a 2FA code and no password (a login
+  still needs a password, as before).
+
+- [x] **Step 16a: escape codes via an imported export** (branch
+  `fix/16a-import-escape-codes`, from `feature/2fa-tab`; finding 1 of
+  the security audit, rated medium). A crafted `cakepass import` file
+  (not CSV: CSV import already strips control characters) could put
+  terminal escape codes (e.g. OSC 0 window title, OSC 52 "write the
+  clipboard") into username/URL, which `list` and `search` printed raw.
+  Fixed on both sides:
+  - **In**: `Vault::merge` first checks every incoming item with
+    `Entry::check_incoming` (the setters' rules: name and tags as in
+    `validate`, `validate_line` for username, e-mail, URL, expiry, CVV,
+    public key; notes only `\n`/`\t`; `MAX_FIELD_LEN` for password,
+    passphrase, notes; TOTP `validate_line` + lenient `Totp::parse`). One
+    bad item refuses the whole import ("item 'X' has an invalid
+    username; nothing was imported", never the value), and merge restores
+    the vault if anything fails half-way, so the file is not touched.
+    `Vault::from_json` for our own vault is NOT stricter: a vault that
+    already holds such a value must still open.
+  - **Out**: every place that prints a decrypted one-line value, checked
+    by grepping every decrypted accessor in `src/cli` and `src`:
+    `print_table` (`list`, `search`, `list --favorites`): username and URL
+    now through `ui::safe` before measuring/cutting; `edit`'s questions
+    ("Username [current]:" etc.): the current username, e-mail, URL,
+    expiry and public key through `ui::safe`. Already safe: `get` (`value`,
+    `field_block`, `field_verbatim`), the e-mail warning, the audit
+    (names only, validated), copy messages (no value), the line mode (uses
+    the same commands), the screen (`Grid::print` turns control
+    characters into `?`).
+  Tests: `an_import_with_escape_codes_or_other_bad_values_is_refused_whole`
+  (vault.rs: every sealed field found from the JSON; password and
+  passphrase may hold any character; too long; bad TOTP; all-or-nothing),
+  `an_export_with_escape_codes_is_refused_and_never_printed` (tests/cli.rs:
+  a real export re-sealed with OSC 0/OSC 52 in username/URL; import fails,
+  no 0x1b in the output, vault file byte-identical; the same file opened as
+  a vault: `list`, `search`, `get`, `edit` print no 0x1b). Both checked to
+  fail without the fix (import succeeded; `list` printed the escape).
+  `every_encrypted_field_is_validated_resealed_and_merged` now uses a real
+  TOTP secret as the "different" value (imports check it).
+  After the security review (low): `validate_line` trims before it
+  looks for control characters, so `\r`, `\x0b`, `\x0c` and U+0085 at
+  either end of a one-line field or the TOTP secret slipped through. The
+  check now demands the value be exactly what a setter would store
+  (`is_ok_and(|t| t == v)`, as for tags); setters and migrations trim, so
+  real exports pass. Tested per field with `x\r`, `\u{85}x`, `\u{b}x`,
+  `\u{c}x\r` (fails without the fix). The item name in the message is cut
+  to 40 characters (the code review). README: an export from an older
+  CakePass with a value today's setters refuse is refused as a whole.
+
+- [x] **The version on the opening screen** (`da8f98c` cherry-picked onto
+  this `main`; approved by the code review and the security review). The version
+  (`logo::VERSION`, "v0.4.0") shows small (dim) and centered under the
+  tagline (login, setup, `cakepass logo`), and in the title bar as
+  "v0.4.0 · locks in 4:59" when the subtitle keeps its full width.
+
+- [x] **Step 17: sharing items with another CakePass** (branch
+  `feature/share-items`, from `fix/16b-rekey-pre-update-copies`). Asked
+  for by the user, with the file sent by hand ("Signal, mail, USB");
+  CakePass stays offline.
+  - `cakepass share NAME... --to FILE` and `x` in the screen: a NEW file
+    (never overwrites, 0600) with only those items, in the export format
+    (`UnlockedVault::share_to` → `Vault::subset`, sharing
+    `write_with_password` with `export_to`; Argon2 at `export_params`, so
+    never lighter than Standard). The password is a generated 6-word
+    diceware passphrase (about 77 bits), shown once; you cannot choose one.
+    Warnings when an item carries a 2FA secret or a private SSH key.
+  - Receiving: the existing `cakepass import` (with step 16a's checks), and
+    `i` in the screen (file, then its password; Argon2 runs as a task with
+    "Opening the file…"; a wrong password keeps the dialog; a file that
+    needs a key file is sent to the command line).
+  - `x` and `i` are now shortcuts in the list, so they no longer start a
+    search (capitals still do), like `f` before.
+  Tests: tests/cli.rs `share_some_items_with_another_cakepass` (unknown
+  name refused before writing, duplicates once, 2FA warning, 6 words, no
+  plaintext in the file, 0600, no overwrite, master password does not open
+  it, share password does, only the chosen items arrive, again = 0 added);
+  app/tests.rs `share_an_item_and_add_it_in_another_cakepass` (screen: x,
+  path, the password dialog, existing file refused; i in another vault,
+  wrong then right password, the item arrives, nothing else).
+  Review (security review, code review) asked for changes, now done:
+  - 2FA secrets stay home by default (`Vault::share_subset` seals an empty
+    one); `--with-totp`, or in the screen a question before writing with
+    "Leave it out" as the default.
+  - `cakepass share` refuses without a terminal on stdout/stdin (nothing on
+    stdout, no file); in a terminal: Enter, then screen and scrollback are
+    cleared. The screen's `Message` wipes its lines on drop.
+  - Favorite off, created/modified = now; suggested file name with the date;
+    Argon2 always `KdfParams::STANDARD`; after an import (CLI and `i`) an
+    offer to overwrite and delete the file (default keep); paths through
+    `ui::safe`; README notes that `x`/`i` no longer start a search.
+  Tests: vault.rs `a_share_holds_only_the_chosen_items_without_personal_marks`,
+  tests/cli.rs `share_refuses_to_print_its_password_into_a_pipe`,
+  tests/tui.rs `share_items_in_a_terminal_and_add_them_elsewhere` (pty:
+  2FA left out, password gone after the scrollback clear, import elsewhere),
+  app/tests.rs `share_an_item_and_add_it_in_another_cakepass` (no item name
+  in the file name, favorite not shared, delete offer: keep / delete) and
+  `sharing_leaves_the_2fa_secret_out_unless_you_say_so` (both answers,
+  Standard KDF). The flaky wrapped-text assertion now checks the prompt's
+  own lines.
+  Second round (security review, code review), after merging the 16b
+  follow-up into this branch:
+  - `ClearScreenGuard` (commands.rs) is made before the password is
+    printed: on drop, and on Ctrl+C while it lives (a SIGINT handler that
+    only calls write(2) and _exit(130)), screen and scrollback are cleared.
+  - `share` also needs stderr in the terminal (the clearing goes there), so
+    `2>/dev/null` is refused before anything is made or shown.
+  - `VaultPaths::owns` (keyfile::same_file against the vault, `.bak` and
+    every pre-update copy): after importing one of those, CLI and screen
+    do not offer to overwrite and delete it.
+  Tests: tests/tui.rs `share_items_in_a_terminal_and_add_them_elsewhere`
+  (also Ctrl+C at the question: exit 130, password gone after the last
+  clear; and `2>/dev/null`: refused, no file), `Pty::spawn_with`;
+  `importing_the_vaults_own_backup_does_not_offer_to_delete_it` in
+  tests/tui.rs and app/tests.rs (both checked to fail without `owns`).
+  Remaining risk (accepted by the security review): only SIGINT clears the share
+  password; after Ctrl+\\ (SIGQUIT) or `kill` it stays in the scrollback.
+  Test fix (found by the code review): the two "6 words" checks split on
+  `-`, but four list words have a dash themselves (`drop-down`, `felt-tip`,
+  `t-shirt`, `yo-yo`), so about 0.3% of runs counted 7. They now accept 6
+  to 12 parts.
+
+- [x] **Step 18: a word of your own in the generator** (branch
+  `feature/own-word-in-generator`, from ADMIN `main` `ffc16d1`; asked for
+  by the user: "type your own word and it generates the other characters
+  around it").
+  - Library (`generator.rs`): `generate_password_with` /
+    `generate_passphrase_with(opts, Some(word))` put the word at a random
+    place in the middle: at least a quarter of the random characters (at
+    least 1) on each side, as the user asked ("jvsdnb#U*#!*(word)28884218hje");
+    in a passphrase as one extra word between the others, never first or
+    last. The random part keeps its full length
+    and `entropy_bits` still counts only that part: the word may be
+    guessable, so it adds no strength and the password is never weaker
+    than without it. `check_own_word`: 1 to 32 characters, no control
+    characters, no spaces at the ends.
+  - CLI: `--own-word` on every command with generator options
+    (`generate`, `add`, `edit`), via `Recipe::generate(own)`; a note says
+    the strength counts only the random part. After review
+    (security review, code review): `require_equals`, so `--own-word`
+    alone asks for the word hidden once before anything else
+    (`commands::ask_own_word`, out of the shell history) and
+    `--own-word=WORD` gives it directly; `check_own_word` also refuses
+    invisible characters (zero-width, direction marks, BOM, soft hyphen,
+    variation selectors, tag characters) and spaces other than the plain
+    one. The screen's "A word of your own" dialog is masked (dots, also
+    the filled-in current word) unless the generator shows the password
+    (`v`).
+  - Screen: an "Own word" row (password and passphrase) and `w`: a dialog
+    (filled in with the current word; empty removes it). Shown as dots
+    unless `v`; kept in `GenPrefs.own_word` (`Zeroizing`, left out of
+    `Debug`) while CakePass is open, never saved. A word that is not
+    allowed changes nothing and shows the reason.
+  Tests: generator.rs `your_own_word_goes_in_at_a_random_place_and_the_rest_stays_random`
+  (every middle place reached and nothing outside it, also at the minimum
+  length; random part full length; passphrase one extra word, never
+  first or last) and `your_own_word_is_checked`; screens/generator.rs
+  `a_word_of_your_own` (row and `w`, bits unchanged, kept on `r`, bad word
+  refused, passphrase, empty removes, not in Debug); app/tests.rs
+  `generator_with_a_word_of_your_own` (dots, v shows, saved as a login,
+  remembered); tests/cli.rs `generate_with_a_word_of_your_own` (length,
+  bits of the random part, passphrase, escape code refused). Seen in tmux
+  at 80×24.
+
+- [x] **Step 18b: the own word is never the master password** (branch
+  `fix/own-word-not-master`, from ADMIN `main` `76f627a`; raised by
+  the second security review, the code review and the security review after step 18). A word of
+  your own goes into a password that is sent to a website, so a master
+  password typed there out of habit would leak.
+  - `ask_own_word(g, uv)` no longer runs before the unlock: `add`/`edit`
+    ask it in `execute` (after the master password), `generate` in
+    `generate()` after the `--save` unlock. With the vault open the word
+    (asked or `--own-word=WORD`) is checked with `verify_password`; the
+    key file is loaded again for that (`key_file_for`, as `reconfirm`),
+    since `unlock` drops it. A match is refused before anything is saved.
+  - A plain `generate` has no vault open: the question now says "NOT your
+    master password".
+  - The screen (found by the second security review): the generator's `w` dialog says "NOT
+    your master password", and a word is checked against it as a task
+    (`Task::OwnWord`, "Checking the word…", `check_password` with the key
+    file reloaded); a match is refused in the dialog (input cleared) and
+    not used. An empty word still removes it, without a check. On the
+    command line a refused word is zeroized, not just dropped
+    (the code review).
+  - Remaining risk (accepted by the security review): a word that is only a PART
+    of the master password (`Justin` for `Justin2024!`) cannot be caught
+    without knowing the password.
+  Tests (tests/cli.rs): `an_own_word_that_is_the_master_password_is_refused`
+  (`add --own-word`, `--own-word=PW`, `generate --save`, nothing saved;
+  master password asked before the word; a normal word works) and the same
+  with a key file (checked to fail when the key file is not reloaded);
+  app/tests.rs `the_master_password_is_refused_as_your_own_word` (message
+  in the dialog, not used, "save as login" saves a password without it).
+
+- [x] **The update notification shows the CakePass logo** (branch
+  `feature/notify-cakepass-icon`, from ADMIN `main` `76f627a`; asked for by
+  the user with a screenshot of the blue "i"). `update::notify` passes
+  `-i cakepass` to notify-send when the logo is installed in the hicolor
+  theme (`$XDG_DATA_HOME`/`~/.local/share`, then `$XDG_DATA_DIRS` or
+  `/usr/local/share:/usr/share`: scalable svg, 512, 256 or 32 px png, as
+  the packages install them), else `dialog-information` as before (a `cargo
+  install` has no logo). Test: `the_notification_uses_the_logo_only_when_it_is_installed`.
+  Seen on this desktop (mako): the pink CakePass logo instead of the "i".
+
+- [x] **Version 0.5.0** (branch `release/0.5.0`, from ADMIN `main`; asked
+  for by the user). `Cargo.toml`/`Cargo.lock` 0.5.0; README "What's new in
+  0.5" (2FA tab, sharing, own word, version on screen, the logo in the
+  update notification, the 16a/16b fixes)
+  and the version examples. No format change: still format 3, content
+  schema 5, so 0.4 and 0.5 open each other's vaults. Every version shown on
+  screen comes from `CARGO_PKG_VERSION`; the AUR `pkgver` is recomputed by
+  `pkgver()` at build time. The git tag `v0.5.0` and the GitHub release
+  follow after the merge.
+
+- [x] **Live TOTP code in the details** (branch `feature/totp-live-in-details`,
+  from ADMIN `main` `c2d3599`; the user: "the code changes every so often, it
+  must update live; offline; stops when CakePass closes"). `t` used to show
+  the code for `REVEAL_SECS` (10 s) and then "set (t shows it)" again, so in
+  the All tab a code never reached the next period. Now `totp_shown` is only
+  the item's name: the code (and the next code) is computed every frame from
+  the clock, offline, and stays until the selection or tab changes, a dialog
+  opens, or CakePass locks or quits. The loop already redraws at least every
+  second (`wait_ms` ≤ 1 s). The 2FA tab was already live (checked in tmux on
+  the installed 0.5.0: seconds count down, new codes after 30 s). Test:
+  `the_totp_code_is_computed_shown_and_copied` (still live long after
+  `REVEAL_SECS`, next code shown, only `t` copies, gone under a dialog, on
+  another item and on locking).
+  Known limitation (as asked by the user; raised by the code review): unlike
+  `v` for a password (hidden again after `REVEAL_SECS`), a code shown with
+  `t` stays on screen while its item stays selected, as on the 2FA tab.
+  Someone looking at the screen sees a code that is valid for at most one
+  period plus the next one; it still disappears under every dialog, on
+  another item or tab, and on the (idle) lock.
+
+- [x] **A login with only a 2FA code** (branch `feature/2fa-only-login`, from
+  ADMIN `main` `cede637`; found while re-testing 2FA for the user: "+ New
+  login" on the 2FA tab ended in "The password is empty", unlike an
+  authenticator app). The form lets a login without a password be saved
+  when it has (or keeps) a 2FA secret; removing the 2FA secret of a login
+  without a password asks for one again. The edit form shows "(unchanged)"
+  only for a field that holds something. CLI `add --totp`: an empty password
+  in a terminal asks "No password: save it only for its 2FA code?" (default
+  no = generate one, as before; without a terminal unchanged). `audit`
+  leaves 2FA-only logins out (not "empty"). `c` says "This item has no
+  password." and copies nothing; details and `get` show "-".
+  Tests: app/tests.rs `a_login_with_only_a_2fa_code_like_an_authenticator_app`;
+  tests/tui.rs `a_2fa_only_login_from_the_command_line` (pty: the question,
+  `get`, `get --totp`, audit, export + import roundtrip); vault.rs
+  `a_2fa_only_login_is_shared_and_imported_whole` (`share_subset` with the
+  2FA secret + `merge`).
+- [x] **`cargo audit`: the chrono warning** (branch `fix/audit-chrono-wasm-only`,
+  found by testing). RUSTSEC-2026-0543 (chrono 0.4.45 unmaintained, a
+  warning) made `cargo audit -D warnings` fail. chrono is only a wasm32
+  dependency of zxcvbn 3.1.1 and not in the Linux build, so
+  `.cargo/audit.toml` ignores that one ID (approved by the security review and
+  the code review; a new chrono advisory has its own ID and still fails).
+  `tests/packaging.rs` `chrono_is_not_in_the_linux_build` (`cargo tree
+  --offline -i chrono` for x86_64 Linux must print nothing; checked to fail
+  for a crate that is in the build). Look again when a zxcvbn without
+  chrono is released or Cargo.lock changes.
+
+- [x] **Scan a 2FA QR code from the screen** (branch `feature/2fa-scan-qr`, on
+  `feature/2fa-only-login`; most sites first show only a QR code). `s` on the
+  2FA tab: `src/cli/qr.rs` runs `slurp` (drag a box; Esc = cancelled),
+  `grim -g GEOM -` (the picture into a `Zeroizing` buffer through a pipe) and
+  `zbarimg --raw -q -` (reads it from stdin). No shell, no image code inside
+  CakePass, nothing on disk or the clipboard, offline. Every program has a
+  time limit (killed after) and an output limit (geometry 64 B, picture
+  32 MiB, decoded text 4 KiB); the geometry must be digits, `,`, `x` and one
+  space. Only the first `otpauth://totp/` line (at most 2 KiB, no control
+  characters) gets through, checked again with `Totp::parse_new`; an
+  `otpauth-migration://` export is refused whole; missing programs or no
+  Wayland give "needs grim, slurp and zbar". Then the usual picker: the
+  form opens with the 2FA secret filled in (hidden) and, for a new login,
+  the issuer as name (`qr::suggested_name`: percent-decoded, no control or
+  invisible characters, at most 40). The picker shows only algorithm,
+  digits and period; a scanned link not used is wiped (picker Esc, lock).
+  Tests: qr.rs `only_a_2fa_link_gets_through`, `a_selection_is_only_numbers`,
+  `the_suggested_name_is_plain_text`, `the_programs_run_with_limits` (time
+  limit, output limit, missing program), `zbarimg_reads_a_2fa_qr_code_from_a_pipe`
+  (real qrencode + zbarimg, skipped when missing); app/tests.rs
+  `scan_a_2fa_qr_code_from_the_screen` (new login named after the issuer
+  without a password, existing item, too short, cancelled, missing tools).
+  Seen for real: a QR code shown full screen with imv, read by the real
+  grim and zbarimg (only slurp replaced by a script giving the area), saved
+  as "QRTest" with the right code.
+  Then ("make 2FA the best ever"): reading a QR screenshot from the
+  clipboard was tried in `f50c81d` and taken out again after
+  the security review: Omarchy's clipboard history stores every picture
+  as a PNG file (`~/.local/state/omarchy/clipboard-images/`), so it would
+  put the 2FA secret on disk, and an old screenshot could be read instead of
+  the new QR code. Only the drag route remains; the README warns against
+  screenshots of 2FA QR codes. (The test picture from that try was removed
+  from the history.) The picker now shows the name in the code ("QR code
+  read for \"Discord\"") so a wrong code shows. `valid_geometry` accepts
+  negative X/Y (a monitor left of or above the main one; the code review).
+  And the 2FA tab warns when the clock is not set automatically
+  (`qr::clock_synced`: `timedatectl show -p NTPSynchronized`, local only):
+  test `the_2fa_tab_warns_when_the_clock_is_not_set_automatically`.
+
+- [x] **README: a 2FA code in CakePass is not a separate device** (branch
+  `docs/2fa-same-device`, from ADMIN `main` `23740e6`; the security review, after
+  the user asked whether CakePass beats Proton or Google). One paragraph in
+  "Two-factor codes (TOTP)": the code and the password sit in the same
+  vault, so for e-mail, GitHub, the bank and backups keep the code on a
+  phone. Plus one sentence on what CakePass itself supports (6 to 8
+  digits, SHA1/256/512, a period of 1 s to 1 h, as `totp.rs` checks), no claims about other apps (the code review).
+  Docs only.
+
+- [x] **2FA made easier** (branch `feature/2fa-easier`, from ADMIN `main`
+  `2fe1c84`; the user: "make 2FA much clearer, it has to be really easy").
+  UI text and flow only, no crypto or storage change:
+  the empty 2FA tab shows the whole way in 3 numbered steps, also in an
+  empty vault (it said "Your vault is empty" there before); after saving a
+  new or changed 2FA secret the screen goes to the 2FA tab on that item, so
+  its live code is right there, and the message says "Type this 2FA code on
+  the website now (Enter copies it)."; after a QR scan an item without a
+  code whose name equals the name in the code (case-insensitive) is chosen
+  already, and the picker says what Enter will do. Tests:
+  `the_2fa_steps_show_in_an_empty_vault_too`,
+  `after_adding_a_2fa_code_its_live_code_is_shown_and_a_scan_finds_the_account`,
+  updated `the_2fa_tab_without_codes_says_how_to_add_one`.
+  After the code review: 4 steps (step 3 "Press Enter to choose
+  the account, then Ctrl+S to save", the step the 3 steps skipped); a scan
+  whose name is an item that already has a code says "'X' already has a 2FA
+  code. Choose another account, or edit it with e to replace its code."
+  instead of offering a new login that would fail on the duplicate name.
+
+- [x] **Tests never read the real cache or home** (branch
+  `fix/tests-own-cache`, from ADMIN `main` `f13d4d1`; testing saw
+  `first_run_wizard_in_a_terminal_then_the_screen` fail, the code review
+  found why). The pty and CLI harnesses set only `XDG_CONFIG_HOME`, so the
+  program read `~/.cache/cakepass/update-status` of whoever ran the tests:
+  a pending update notice ("News") covered the screen and caught the `s`.
+  Now every harness that starts the program (`tests/tui.rs` `envs()` and
+  its own `Cmd`, `tests/cli.rs` `cmd()` and the four direct `Command`s)
+  sets `XDG_CACHE_HOME`, `HOME` (and `XDG_DATA_HOME` where it had
+  `XDG_CONFIG_HOME`) to the test's temporary folder. Test
+  `the_tests_never_see_the_update_notice_of_whoever_runs_them`: a foreign
+  update-status shows "News" when pointed at, never through the harness,
+  and the four variables lie in the temporary folder. Reproduced first:
+  with `XDG_CACHE_HOME` at a folder with a foreign `remote=`, the wizard
+  test failed on `f13d4d1` ("A new version of CakePass is available") and
+  passes now. Tests only; the program is unchanged.
+
+- [x] **2FA live: one key, `t`** (branch `feature/2fa-live-clearer`, from
+  ADMIN `main` `7e2281d`; the user: "how to turn 2FA live on in the screen is
+  far too unclear"). UI only. The details of every login/API key now have
+  a "2FA code" row (was "TOTP", and only when set): "off · t turns it on"
+  or "on · t shows it live", then the live code. `t` on an item without a
+  code (was: "use cakepass edit --totp") scans the QR code for that item
+  (`App::scan_for`, no account to choose) and opens its form with the
+  secret filled in; Ctrl+S goes to its live code. Without the scan tools
+  the form opens on the 2FA secret field to paste it. The footer on "All"
+  shows "t 2FA"; the copy message says "2FA code". The test harness's
+  scanner is now a stand-in by default, so no test can start the real
+  slurp. Tests: `t_turns_2fa_on_for_an_item_without_a_code`, updated
+  `the_totp_code_is_computed_shown_and_copied`. Seen for real: a login
+  without a code, `t`, a QR code on screen read by the real grim and
+  zbarimg (slurp replaced), Ctrl+S, the live code; back on All, `t` copies
+  it (marked sensitive: not in Omarchy's clipboard history).
+  After the code review: when the name in the scanned code is
+  another one than the chosen item, the form says so in red ("This QR code
+  is for 'Discord'; Ctrl+S saves it under 'Mail' (Esc cancels)."); only
+  missing tools or Wayland (`qr::tools_missing`) open the form to paste,
+  any other scan error (QR code missed) is only said, `t` tries again; `t`
+  scans only for logins and API keys (where the "2FA code" row shows), on
+  other items it says "press e and paste it in 2FA secret". Seen for real:
+  the red line for a Discord QR code on "Mail", and "No QR code found"
+  without a form when the QR code was not on screen.
+
+- [x] **Make the screen your own, step 1: colors and tab names** (branch
+  `feature/customize-ui`, from ADMIN `main` `153e858`; the user: "people
+  must be able to change everything in the settings: colors, edit tabs,
+  delete Notes or rename it to Clients"). Settings got a **Colors** row
+  (← →: pink, blue, green, purple, orange, red, teal; `config::Colors`,
+  `colors=` in the settings file, no line while pink) and the **Tabs** row
+  got `r`: rename the chosen tab (`PromptPurpose::RenameTab`,
+  `tab_names=note:Clients`; `config::parse_tab_name`: 1 to 16 characters,
+  no control or invisible characters and none of `,` `:` `=`, so the file
+  reads back the same; empty or the usual name removes it). Hiding a tab
+  ("delete Notes") already existed on that row; its help line now says
+  so. The colors: `Theme` maps CakePass's three pinks (211, 205, 175) to the
+  three shades of the chosen accent when drawing (`theme::shades`); error
+  red, success green and the gray stay; the whole screen is redrawn when
+  the accent changes (`Terminal::set_accent`), and the accent of the
+  settings file is used from the first frame. Only the screen mode changes:
+  items keep their type, the command line says "note". Tests: config
+  `colors_and_tab_names_read_back`, `bad_colors_and_tab_names_are_ignored`;
+  theme `the_accent_color_replaces_the_pinks_only`; app/tests.rs
+  `rename_a_tab_and_choose_the_colors_in_the_settings`; settings-row
+  counts updated in five tests (one row more). Seen for real: Notes renamed
+  to Clients in the tab bar, `colors=blue` drawn with only 117/33/74 (no
+  pink left), the file reads back.
+  After the review: a tab name that another tab has (its usual or own
+  name, any case) is refused ("Another tab is already called …"), and in
+  the screen a name may take at most 16 columns (wide characters count
+  double), so 16 CJK characters are refused there. Errors already start
+  with ✖ (`x` without UTF-8), so a red accent does not hide them.
+  Next steps (to plan): own tabs (e.g. a tab per tag: "Clients" = every
+  item tagged client), the order of the tabs, the order of the fields.
+
+- [x] **Own tabs, and the 2FA tab can be hidden** (branch
+  `feature/own-tabs`, on `fix/tab-names-unique`; the user: "add tab, make
+  your own tab, and put 2FA in between so people can turn it off or on").
+  `Tab::Own(i)`: an own tab lists the items with a tag of its name (any
+  case; tags are stored next to each item already, nothing new in the
+  vault), `own_tabs=Klanten,Werk` in the settings file (`parse_own_tabs`:
+  names as `parse_tab_name`, no repeats, at most 6). The tab bar is now
+  `App::tabs()` (All, the types, own tabs, 2FA last) and ← → go through it
+  (`Tab::step` and `Tab::shows` became `App::next_tab`/`App::tab_shows`).
+  Settings → Tabs lists the types, own tabs, 2FA and "+ New": Enter on
+  "+ New" (or `n`) asks a name (refused: the name of another tab, too
+  long, `,` `:` `=`), `d` deletes an own tab (items and tags stay), Enter
+  on 2FA hides or shows it (`two_factor_tab=off`). Without the 2FA tab a
+  newly saved code stays on the current tab, live in the details, and the
+  message says "t copies it". A new item made on an own tab gets its tag.
+  The row uses one space between the tabs when two do not fit, and shows
+  one tab at a time (‹ ›) when even that does not fit. Tests: config
+  `own_tabs_and_the_2fa_tab_read_back`; app/tests.rs
+  `own_tabs_and_hiding_the_2fa_tab`,
+  `without_the_2fa_tab_a_new_code_shows_in_the_details`; three settings
+  tests updated (the row has 2FA and "+ New" now). Seen for real: "+ New"
+  → Klanten, 2FA hidden, a login made on the Klanten tab got the tag, the
+  file has `own_tabs=Klanten` and `two_factor_tab=off`.
+  README (the security review): tab names and tags are not encrypted, so no
+  secrets in them (whoever publishes their dotfiles publishes the names).
+
+- [x] **0.5.0 holds everything up to now** (the user: "no version 0.6, this
+  is still 0.5"). The release is made from ADMIN `main` `fc45c0b` instead of
+  `153e858`: README "What's new in 0.5" lists the 2FA steps, `t`, the QR
+  scan, 2FA-only logins, the clock warning and the settings for colors, tab
+  names, own tabs and hiding the 2FA tab. The vault format is unchanged
+  (0.4 and 0.5 still open each other's vaults); 0.4 ignores the new lines
+  in the settings file.
+
+- [x] **0.5.0 to the public repository** (the user: "release it to the
+  original GitHub of CakePass, no API keys or my vault, version 0.5, README
+  with what is new and everything it can do"). Branch
+  `release/0.5.0-public` from ADMIN `main` `ef076ad`; public `main`
+  (`b230e59`, 0.4.0) is an ancestor, so nothing there is lost. The README's
+  "What you get" now lists 2FA like an authenticator app, sharing, the
+  generator and making the screen your own. Checked before pushing: no
+  secret patterns in any commit since `b230e59`, no vault, key, backup or
+  share file in the tree, only the fake test secrets of the tests.
+
 ## Still to do
+
+- [x] **Step 16b: pre-update copies follow a re-key** (branch
+  `fix/16b-rekey-pre-update-copies`, from `fix/16a-import-escape-codes`;
+  finding 2 of the security audit, medium). After `passwd` or
+  `security`, the `vault.enc.pre-update-<time>` copies made by
+  `cakepass --update` still opened with the OLD password or key file.
+  - `UnlockedVault::rekey` now returns a `CopiesReport`: after the vault
+    (and `.bak`) is safely re-keyed, `rekey_update_copies` re-encrypts
+    every copy whose header has exactly the old key's salt, Argon2 settings
+    and key-file flag (`format::written_with`). It is decrypted with the
+    old key without Argon2 (`format::open_with_key`, same checks as
+    `open`; a damaged copy is an error, not "another key"), every
+    `*_sealed` field is re-sealed with the new item key and NOTHING else in
+    the JSON changes (`vault::reseal_json`: schema, unknown fields, the old
+    contents stay), and it is written in its own file layout where that can
+    say what the key needs (`format::seal_like`: a version 2 copy stays
+    version 2 so cakepass 0.3 can still open it; a key file forces 3), with
+    `write_atomic` (0600) under the vault's write lock.
+  - Copies of a still older key are reported, not touched (`stale`); a
+    copy that fails is reported with the reason (`failed`) and nothing is
+    rolled back. Already under the new key = skipped (idempotent).
+  - Which files: `update_copies` (shared with `backup_before_update`):
+    regular files named exactly `<vault>.pre-update-<digits>`; no
+    temporary files, other endings, `+5`, symlinks or folders.
+  - CLI (`report_copies`): says how many were re-encrypted, warns about
+    failures, lists older copies and in a terminal asks "Overwrite and
+    delete them now? [y/N]" (`import::overwrite_and_remove`). The screen:
+    the same facts in the "Master password changed" / "Security level
+    changed" dialog (warning style when something is left), no deleting.
+  - Texts now promise only what is true: "Exports and copies you made
+    yourself" keep their own password; the README says so, and names the
+    remaining risk (a crash between the vault and the copies).
+  Tests: storage.rs `rekeying_also_rekeys_the_pre_update_copies_keeping_their_contents`
+  (old password opens nothing, new one opens the OLD contents, 0600,
+  look-alike names untouched, idempotent, older copy listed and unchanged,
+  damaged copy = failed), `a_new_key_file_also_locks_the_old_one_out_of_the_copies`,
+  `a_copy_keeps_its_old_layout_and_schema_when_re_keyed` (version 2 and an
+  unknown JSON field survive); tests/tui.rs
+  `passwd_rekeys_the_pre_update_copies_and_offers_to_delete_older_ones`
+  (piped: listed, not deleted; in a pseudo-terminal: yes deletes it); the
+  screen's `change_the_master_password` checks the copy and the dialog.
+  After review (code review, security review): `backup_before_update`
+  takes the write lock (a copy is never made half-way through a save or
+  while a re-key converts the copies); `seal_like` writes a version 1 copy
+  in the current layout (version 1 used the master key itself for the
+  file), version 2 stays 2 unless a key file needs 3; in `report_copies`
+  Ctrl+C or a read error at "Overwrite and delete them now?" counts as no
+  and the remaining messages still follow. Tests:
+  `a_version_1_copy_is_re_keyed_into_the_current_layout`,
+  `a_version_2_copy_given_a_key_file_moves_to_the_current_layout`.
 
 - [x] **Pushed `main` to GitHub** (now at `f91117e`). HTTPS with a GitHub
   account password no longer works (GitHub rejects it: use a token or
@@ -417,7 +963,7 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   (`$YES` is checked before asking); only the test coverage for that one
   combination is missing. Add a terminal test with `--yes --no-setup`
   and a typed `n` that expects no question and the file kept.
-- [ ] **Leftover branch on GitHub**: `claude/blissful-dijkstra-etqobs`
+- [ ] **Leftover branch on GitHub**: an old docs branch from before 0.4
   (one commit, "Docs: repository is public, remove private-repo
   instructions", not merged into `main`). Harmless, just needs a
   decision: merge it or delete the remote branch.
@@ -439,7 +985,7 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   permissive deserializer plus a clear error message ("this vault uses an
   item type this version doesn't know: '…'") instead of the generic
   "damaged vault" message. Not a blocker for merging step 12/13 (nothing
-  has shipped yet, so no real vault can hit this today) — deepseek's step
+  has shipped yet, so no real vault can hit this today) — the second security review's step
   13 review recommended filing it as a pre-release item specifically, not
   a merge gate.
 - [x] **App icon / desktop integration**: done on `feature/tabs-and-icon`
@@ -448,7 +994,7 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   the `cakepass-icon` variant). The branding logo in
   `docs/cakepass-logo.png` was left as it is, as asked for this round.
   The original scope note: Assets
-  already exist at `/mnt/data/Claude code pr/CakePass-logo/`: SVG sources
+  already exist in the maintainer's logo folder: SVG sources
   (`cakepass-logo*.svg`, `cakepass-icon*.svg`, dark and monochrome
   variants) and rasterized app icons at 32/256/512/1024 px
   (`cakepass-app-icon-{32,256,512,1024}.png`), distinct from the
@@ -643,12 +1189,40 @@ See `docs/DESIGN.md` for the explanation. In short:
 - The Tabs row sits right after Auto-lock (with the other preferences,
   before the master password and security level), so those two rows moved
   down by one.
+- Step 15: the 2FA tab is a view, not a type, so it is not in
+  `hidden-tabs` and is always shown (like All); an empty one explains how
+  to add a code. It is last in the bar so ← from All reaches it in one
+  key and the order of the type tabs does not change.
+- On the 2FA tab the codes of all visible rows are shown at once, as in
+  every authenticator app: that is the point of the tab. A code is valid
+  for at most one period and is useless without the password, unlike the
+  password itself, which stays dots until revealed. Under a dialog the
+  codes are dots, like every other revealed secret.
+- Enter and `c` copy the code on the 2FA tab (the thing you came for);
+  `v` still shows the password there.
+- The 2FA secret is a form field (not a separate dialog) so adding and
+  editing work the same way for it as for every other field, and the
+  "add a code" picker only has to choose the item. The picker lists names
+  only, never a decrypted field.
+- `Totp::parse` accepts very short base32 text ("line one" = 4 bytes), so
+  text typed into the wrong field could pass as a secret. Agreed with the
+  security and code review: a strict `Totp::parse_new` for secrets entered
+  now (the screen's form, `add/edit --totp`) refuses fewer than 10 bytes
+  (80 bits, 16 characters; RFC 4226 asks 128, but the site chooses and 80
+  is the least seen in practice), with a message that gives only lengths.
+  Reading, computing codes, merging and CSV import keep the lenient
+  `parse`, so secrets already stored or imported go on working.
 
 ## Checks (latest step)
 
 | Check | Result |
 |---|---|
-| `cargo test` | 322 passed (121 library, 90 CLI/screen unit, 63 CLI integration, 14 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
+| `cargo test` (step 17) | 335 passed (126 library, 95 CLI/screen unit, 65 CLI integration, 15 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
+| `cargo test` (step 16b) | 333 passed (126 library, 94 CLI/screen unit, 64 CLI integration, 15 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
+| `cargo test` (step 16a) | 329 passed (123 library, 94 CLI/screen unit, 64 CLI integration, 14 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
+| `cargo test` (step 15) | 327 passed (122 library, 94 CLI/screen unit, 63 CLI integration, 14 screen and line mode in a pseudo-terminal, 12 update, 17 installer, 5 packaging) |
+| Setting up 2FA in a real terminal (step 15, tmux, throwaway vault) | 2FA tab → `a` → typed "disc" → Enter → Discord's edit form on the 2FA secret → typed a test secret → Ctrl+S: "Item 'Discord' updated. Its 2FA code is in the 2FA tab." and its code in the list; at 80×24 and 60×16 |
+| 2FA tab in a real terminal (step 15, debug build in tmux, throwaway vault from a CSV with RFC test seeds) | at 100×28, 80×24 and 60×16: 6- and 8-digit codes with seconds left, next code in the details, Enter copies ("The TOTP code copied (wl-copy)"); all eight tabs with counts at 80 columns |
 | Known-answer tests (step 12) | TOTP: RFC 6238 Appendix B (SHA-1, SHA-256, SHA-512, all six times) and RFC 4226 Appendix D; base32: RFC 4648 section 10; cross-checked with an independent Python implementation (`hmac`/`hashlib`/`base64`) |
 | Known-answer tests (step 11) | Argon2id with a secret: vectors from the reference C implementation (libargon2 via argon2-cffi; the harness reproduces RFC 9106 first); key-file pepper: vectors from Python's `hashlib.blake2b(digest_size=32)` |
 | Unlock times (release, 4-core 2.1 GHz Xeon VM, step 11) | Standard ≈ 0.18–0.21 s, High ≈ 0.8–0.9 s, Maximum ≈ 3.6–3.8 s (first run once 5.9 s); wiping Argon2's freed memory is ~5–10 % of that |
@@ -676,6 +1250,20 @@ See `docs/DESIGN.md` for the explanation. In short:
 ## Testing on Arch
 
 Could NOT be tested in the cloud environment. Do this yourself and tick:
+
+### The 2FA tab – new in step 15
+
+- [ ] `cakepass`, then ←: the 2FA tab lists your items with a TOTP secret,
+      each code the same as in your phone's authenticator app, counting down
+- [ ] Enter on a row: "The TOTP code copied"; paste it on the site's login
+      page and it is accepted; the clipboard is empty after the clip time
+- [ ] `?` (help) on the 2FA tab: the codes behind it turn into dots
+- [ ] **Set up 2FA in the screen** for a real account: on the site turn on
+      an authenticator app, copy the secret under the QR code; in CakePass
+      ← (2FA tab), `a`, choose the account, paste, Ctrl+S; type the code
+      on the site to finish. It is accepted
+- [ ] `e` on that item: the 2FA secret says "(unchanged)"; a typo there
+      gives "Not a valid 2FA secret" and nothing is saved
 
 ### Screen tabs, desktop entry and icon – new in step 14
 

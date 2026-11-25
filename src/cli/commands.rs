@@ -162,7 +162,12 @@ fn offer_screen_mode() -> bool {
 }
 
 /// Run a command on an unlocked vault (also from `cakepass shell`).
-pub fn execute(uv: &mut UnlockedVault, cmd: Cmd, in_shell: bool) -> Result<()> {
+pub fn execute(uv: &mut UnlockedVault, mut cmd: Cmd, in_shell: bool) -> Result<()> {
+    // `add`/`edit --own-word`: asked here, after the master password, so the
+    // word can be checked against it (see `ask_own_word`).
+    if let Cmd::Add(AddArgs { gen_opts, .. }) | Cmd::Edit(EditArgs { gen_opts, .. }) = &mut cmd {
+        ask_own_word(gen_opts, Some(uv))?;
+    }
     match cmd {
         Cmd::Add(a) => add(uv, a),
         Cmd::Get(g) => get(uv, &g),
@@ -182,6 +187,12 @@ pub fn execute(uv: &mut UnlockedVault, cmd: Cmd, in_shell: bool) -> Result<()> {
                 reconfirm(uv)?;
             }
             export(uv, &file)
+        }
+        Cmd::Share { names, to, with_totp } => {
+            if in_shell {
+                reconfirm(uv)?;
+            }
+            share(uv, &names, &to, with_totp)
         }
         Cmd::Import { file } => import_vault(uv, &file),
         Cmd::ImportCsv { file } => import_csv(uv, &file),
@@ -414,18 +425,60 @@ impl Recipe {
         }
     }
 
-    /// The secret and its strength in bits.
-    pub(super) fn generate(&self) -> Result<(Zeroizing<String>, f64)> {
+    /// The secret and its strength in bits, with `own` (a word of your own)
+    /// at a random place. The bits count only the generated part.
+    pub(super) fn generate(&self, own: Option<&str>) -> Result<(Zeroizing<String>, f64)> {
         match self {
-            Recipe::Password(o) => Ok((generator::generate_password(o)?, o.entropy_bits())),
-            Recipe::Passphrase(o) => Ok((generator::generate_passphrase(o)?, o.entropy_bits())),
+            Recipe::Password(o) => Ok((generator::generate_password_with(o, own)?, o.entropy_bits())),
+            Recipe::Passphrase(o) => Ok((generator::generate_passphrase_with(o, own)?, o.entropy_bits())),
         }
     }
 }
 
+/// `--own-word` without a value: ask for the word (hidden, so it is not in
+/// the shell history or on screen).
+///
+/// SECURITY: the word ends up in a password that goes to a website. With the
+/// vault open (`add`, `edit`, `generate --save`, the shell) it is asked
+/// after the master password and refused if it IS the master password (one
+/// Argon2 run, only with `--own-word`; the key file is loaded again, as for
+/// `reconfirm`). A plain `generate` has no vault open: the question says it.
+fn ask_own_word(g: &mut GenArgs, uv: Option<&UnlockedVault>) -> Result<()> {
+    if g.own_word.as_deref() == Some("") {
+        let word = prompt::secret("Your own word for the password (hidden; NOT your master password): ")?;
+        let word = word.expose_secret().trim();
+        if word.is_empty() {
+            return Err(Error::InvalidInput("no word given for --own-word".into()));
+        }
+        generator::check_own_word(word)?;
+        g.own_word = Some(word.to_string());
+    }
+    if let (Some(word), Some(uv)) = (g.own_word.as_deref(), uv) {
+        let kf = key_file_for(uv.uses_key_file())?;
+        let typed = SecretString::from(word.to_string());
+        if uv.verify_password(credentials(&typed, &kf))? {
+            // Wipe it, not just drop it: it is the master password.
+            if let Some(mut w) = g.own_word.take() {
+                zeroize::Zeroize::zeroize(&mut w);
+            }
+            return Err(Error::InvalidInput(
+                "that is your master password; it must never go into another password. Use another word"
+                    .into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Generate a password or passphrase according to the options.
 fn generate_secret(g: &GenArgs) -> Result<(Zeroizing<String>, f64)> {
-    Recipe::from_args(g).generate()
+    let made = Recipe::from_args(g).generate(g.own_word.as_deref())?;
+    if g.own_word.is_some() {
+        ui::info(
+            "Your own word is in the middle at a random place; the strength counts only the random part.",
+        );
+    }
+    Ok(made)
 }
 
 /// "The password" / "The API key" / "The note" / "The card number" / "The
@@ -486,11 +539,19 @@ fn find_entry<'a>(vault: &'a Vault, key: &ItemKey, name: &str) -> Result<&'a Ent
 }
 
 /// Ask for a new password for a login (with repetition in a terminal).
-/// Empty = generate one, which you can then view, edit or redo.
+/// Empty = generate one, which you can then view, edit or redo. With
+/// `with_totp` (a 2FA secret follows) a terminal first asks whether the
+/// login is only for its 2FA code, without a password (default no).
 /// Returns (password, entropy bits if it is a generated one).
-fn ask_item_password(g: &GenArgs) -> Result<(Zeroizing<String>, Option<f64>)> {
+fn ask_item_password(g: &GenArgs, with_totp: bool) -> Result<(Zeroizing<String>, Option<f64>)> {
     let first = prompt::secret("Password (leave empty to let cakepass generate one): ")?;
     if first.expose_secret().is_empty() {
+        if with_totp
+            && prompt::stdin_is_tty()
+            && prompt::ask_yes_no("No password: save it only for its 2FA code?", false)?
+        {
+            return Ok((Zeroizing::new(String::new()), None));
+        }
         let (pw, bits) = generate_secret(g)?;
         return review_for_saving(g, pw, bits);
     }
@@ -572,7 +633,7 @@ fn ask_private_key() -> Result<Zeroizing<String>> {
 fn ask_totp() -> Result<Zeroizing<String>> {
     let s =
         ask_hidden("TOTP secret or otpauth:// link (hidden input; pasting is fine): ", Some("TOTP secret"))?;
-    Totp::parse(&s)?;
+    Totp::parse_new(&s)?;
     Ok(s)
 }
 
@@ -865,7 +926,7 @@ fn add_item(
                 let (pw, bits) = generate_secret(&a.gen_opts)?;
                 review_for_saving(&a.gen_opts, pw, bits)?
             }
-            Kind::Login => ask_item_password(&a.gen_opts)?,
+            Kind::Login => ask_item_password(&a.gen_opts, a.totp)?,
             Kind::Api => (ask_api_key()?, None),
             Kind::Card | Kind::SshKey | Kind::Identity => unreachable!("handled by add_card_key_or_identity"),
         }
@@ -1224,6 +1285,11 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
         )
     };
     check_edit_options(kind, &a)?;
+    // The current values are shown in the questions: made safe first (a
+    // vault may hold escape codes from before imports were checked).
+    let shown = |v: &str| Zeroizing::new(ui::safe(v, false));
+    let (cur_user, cur_email, cur_url, cur_expiry, cur_public) =
+        (shown(&cur_user), shown(&cur_email), shown(&cur_url), shown(&cur_expiry), shown(&cur_public));
     let interactive = a.rename.is_none()
         && a.username.is_none()
         && a.email.is_none()
@@ -1299,7 +1365,7 @@ fn edit(uv: &mut UnlockedVault, a: EditArgs) -> Result<()> {
                 let choice = prompt::line("Password: (k)eep, (t)ype or (g)enerate? [k] ")?.to_lowercase();
                 match choice.as_str() {
                     "" | "k" | "keep" => {}
-                    "t" | "type" => new_secret = Some(ask_item_password(&a.gen_opts)?.0),
+                    "t" | "type" => new_secret = Some(ask_item_password(&a.gen_opts, false)?.0),
                     "g" | "generate" => {
                         let (pw, bits) = generate_secret(&a.gen_opts)?;
                         let (pw, bits) = review_for_saving(&a.gen_opts, pw, bits)?;
@@ -1472,9 +1538,12 @@ fn print_table(entries: &[&Entry], key: &ItemKey) -> Result<()> {
         user: Zeroizing<String>,
         url: Zeroizing<String>,
     }
+    // Made safe before measuring and cutting: a vault may hold control
+    // characters (escape codes) from before imports were checked.
+    let safe = |v: Zeroizing<String>| Zeroizing::new(ui::safe(&v, false));
     let rows: Vec<Row> = entries
         .iter()
-        .map(|e| Ok(Row { user: e.username(key)?, url: e.url(key)? }))
+        .map(|e| Ok(Row { user: safe(e.username(key)?), url: safe(e.url(key)?) }))
         .collect::<Result<_>>()?;
     let w_name = entries.iter().map(|e| e.name().chars().count()).max().unwrap_or(0).clamp(4, 32);
     let w_user = rows.iter().map(|r| r.user.chars().count()).max().unwrap_or(0).clamp(11, 28);
@@ -1639,6 +1708,10 @@ fn generate(
     if save.is_some() && uv.is_none() {
         unlocked = Some(unlock(paths)?);
     }
+    // The word of your own after the master password (and checked against it).
+    let mut g = g.clone();
+    ask_own_word(&mut g, uv.as_deref().or(unlocked.as_ref()))?;
+    let g = &g;
     if let Some(name) = &save {
         let vault = uv.as_ref().map(|u| &u.vault).or_else(|| unlocked.as_ref().map(|u| &u.vault));
         if vault.is_some_and(|v| v.contains(name)) {
@@ -1712,13 +1785,55 @@ fn passwd(uv: &mut UnlockedVault, a: &KdfChangeArgs) -> Result<()> {
     warn_if_weak_kdf(&kdf);
     ui::info("Choose a new master password. The same warning applies: forgotten = everything lost.");
     let new_pw: SecretString = prompt::new_strong_password("master password")?;
-    uv.rekey(credentials(&new_pw, &kf), kdf)?;
+    let copies = uv.rekey(credentials(&new_pw, &kf), kdf)?;
     drop(kf);
     ui::success("Master password changed. All items and the backup now use the new key.");
+    report_copies(&copies)?;
     ui::warn(
-        "Copies and exports you made yourself earlier still open with the OLD password. \
+        "Exports and copies you made yourself earlier still open with the OLD password. \
          Delete them if you think the old password has leaked.",
     );
+    Ok(())
+}
+
+/// After re-keying: what happened to the `pre-update` copies. Copies that
+/// open with an even older password or key file are offered for deletion in
+/// a terminal (default no) and only listed otherwise.
+fn report_copies(r: &storage::CopiesReport) -> Result<()> {
+    if r.rekeyed > 0 {
+        ui::info(&format!(
+            "{} made before updates re-encrypted with the new key (their contents unchanged).",
+            plural(r.rekeyed, "copy", "copies")
+        ));
+    }
+    for (path, why) in &r.failed {
+        ui::warn(&format!(
+            "Could not re-encrypt {} ({why}); it still opens the old way. Delete it if the old password or \
+             key file may have leaked.",
+            path.display()
+        ));
+    }
+    if r.stale.is_empty() {
+        return Ok(());
+    }
+    ui::warn(&format!(
+        "{} made before updates still open with an EARLIER password or key file (from before a previous \
+         change), so they could not be re-encrypted:",
+        plural(r.stale.len(), "older copy", "older copies")
+    ));
+    for path in &r.stale {
+        ui::warn(&format!("  {}", path.display()));
+    }
+    // Ctrl+C or a read error here counts as "no": the re-key itself is done
+    // and its remaining messages must still be shown.
+    if prompt::stdin_is_tty() && prompt::confirm("Overwrite and delete them now?").unwrap_or(false) {
+        for path in &r.stale {
+            match import::overwrite_and_remove(path) {
+                Ok(()) => ui::success(&format!("Deleted {}.", path.display())),
+                Err(e) => ui::warn(&format!("Could not delete {}: {e}", path.display())),
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1744,6 +1859,111 @@ fn export(uv: &UnlockedVault, file: &Path) -> Result<()> {
     Ok(())
 }
 
+/// `cakepass share NAME... --to FILE`: only these items, in a new file with
+/// a generated password (6 diceware words, about 77 bits: a weak password
+/// could make the file crackable, so you cannot choose one). The password
+/// is shown once, only in a terminal, and taken off the screen (and out of
+/// the scrollback) after Enter: it is all that protects the file, so it
+/// must never end up in a log or a pipe. It reaches the other person
+/// another way than the file.
+fn share(uv: &UnlockedVault, names: &[String], file: &Path, with_totp: bool) -> Result<()> {
+    use std::io::IsTerminal;
+    // stdout shows the password; stderr carries the clearing afterwards, so
+    // both must be the terminal (not `> file`, not `2>/dev/null`).
+    if !io::stdout().is_terminal() || !io::stderr().is_terminal() || !prompt::stdin_is_tty() {
+        return Err(Error::InvalidInput(
+            "cakepass share shows the share password once and only in a terminal; \
+             run it in a terminal (not with its output or errors sent to a file or a pipe)"
+                .into(),
+        ));
+    }
+    if fs::symlink_metadata(file).is_ok() {
+        return Err(Error::AlreadyExists(file.to_path_buf()));
+    }
+    let key = uv.item_key();
+    let mut chosen: Vec<&Entry> = Vec::new();
+    for n in names {
+        let e = find_entry(&uv.vault, key, n)?;
+        if !chosen.iter().any(|c| c.name() == e.name()) {
+            chosen.push(e);
+        }
+    }
+    let password = generator::generate_passphrase(&PassphraseOptions::default())?;
+    let list: Vec<&str> = chosen.iter().map(|e| e.name()).collect();
+    let n = uv.share_to(file, &list, password.as_bytes(), with_totp)?;
+    let shown = ui::safe(&file.display().to_string(), false);
+    ui::success(&format!("{} shared (encrypted) in {shown}", plural(n, "item", "items")));
+    for e in &chosen {
+        match (e.has_totp(), with_totp) {
+            (true, true) => ui::warn(&format!(
+                "'{}' includes its 2FA secret: the other person can make your 2FA codes too.",
+                e.name()
+            )),
+            (true, false) => ui::info(&format!(
+                "'{}': its 2FA secret was left out (add --with-totp to share it as well).",
+                e.name()
+            )),
+            _ => {}
+        }
+        if e.kind() == Kind::SshKey && e.has_password() {
+            ui::warn(&format!("'{}' includes the private SSH key.", e.name()));
+        }
+    }
+    // From here on the screen and the scrollback are cleared however this
+    // ends: Enter, an error, or Ctrl+C at the question (the line is read in
+    // cooked mode, so Ctrl+C is a SIGINT that would skip every `Drop`).
+    let clear = ClearScreenGuard::new();
+    ui::print_secret_line(&format!("{} ", ui::bold("Share password:")), &password)?;
+    drop(password);
+    ui::info("1. Send the file to the other person (Signal, e-mail, a USB stick, …).");
+    ui::info("2. Tell them the share password ANOTHER way (in person, by phone), never with the file.");
+    ui::info(&format!(
+        "3. They add the items to their own CakePass with i in the screen, or: cakepass import {}",
+        ui::safe(&file.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default(), false)
+    ));
+    ui::info("Delete the file once they have it; it opens with the share password alone.");
+    // Off the screen and out of the scrollback once it is written down.
+    let _ =
+        prompt::line("Press Enter when you have the share password (it is then cleared from the screen) ");
+    drop(clear);
+    ui::success(&format!("Share file: {shown}. The share password was cleared from the screen."));
+    Ok(())
+}
+
+/// Clears the screen and the scrollback when dropped, and on Ctrl+C while it
+/// lives (then the process ends with 130, as Ctrl+C would). For a secret
+/// that is shown once in the terminal, such as the share password.
+struct ClearScreenGuard {
+    old: libc::sighandler_t,
+}
+
+/// What `ui::clear_screen` writes: clear, clear the scrollback, cursor home.
+const CLEAR_ALL: &[u8] = b"\x1b[2J\x1b[3J\x1b[H";
+
+extern "C" fn clear_and_exit(_: libc::c_int) {
+    // SAFETY: write(2) and _exit(2) are async-signal-safe; the buffer is static.
+    unsafe {
+        libc::write(2, CLEAR_ALL.as_ptr().cast(), CLEAR_ALL.len());
+        libc::_exit(130);
+    }
+}
+
+impl ClearScreenGuard {
+    fn new() -> ClearScreenGuard {
+        // SAFETY: installs a handler that only calls async-signal-safe functions.
+        let old = unsafe { libc::signal(libc::SIGINT, clear_and_exit as *const () as libc::sighandler_t) };
+        ClearScreenGuard { old }
+    }
+}
+
+impl Drop for ClearScreenGuard {
+    fn drop(&mut self) {
+        // SAFETY: puts back the handler that was there before.
+        unsafe { libc::signal(libc::SIGINT, self.old) };
+        ui::clear_screen();
+    }
+}
+
 fn import_vault(uv: &mut UnlockedVault, file: &Path) -> Result<()> {
     // An export file has only a password; a copy of a vault may need its key file.
     let header = storage::read_header(file)?;
@@ -1762,6 +1982,16 @@ fn import_vault(uv: &mut UnlockedVault, file: &Path) -> Result<()> {
     ui::success(&format!("{added} item(s) added, {skipped} already present (skipped)."));
     if added > 0 {
         ui::info("Items with an existing name got a sequence number, e.g. \"GitHub (2)\".");
+    }
+    // The file opens with its password alone: offer to get rid of it.
+    let shown = ui::safe(&file.display().to_string(), false);
+    // Never offer that for this vault's own file, backup or pre-update copy.
+    if !uv.paths().owns(file)
+        && prompt::stdin_is_tty()
+        && prompt::confirm(&format!("Overwrite and delete {shown} now?"))?
+    {
+        import::overwrite_and_remove(file)?;
+        ui::success(&format!("{shown} overwritten and deleted."));
     }
     Ok(())
 }
@@ -2105,7 +2335,7 @@ fn security_change(paths: &VaultPaths, open: Option<&mut UnlockedVault>, a: &Sec
     };
     ui::info(&format!("Re-encrypting the vault ({}, a fresh salt)…", target_kdf.describe()));
     let start = Instant::now();
-    uv.rekey(Credentials::new(pw.expose_secret().as_bytes(), pepper), target_kdf)?;
+    let copies = uv.rekey(Credentials::new(pw.expose_secret().as_bytes(), pepper), target_kdf)?;
     let took = start.elapsed();
     drop(pw);
     drop(kf);
@@ -2134,10 +2364,11 @@ fn security_change(paths: &VaultPaths, open: Option<&mut UnlockedVault>, a: &Sec
         forget_key_file(cur_path.as_deref());
     }
     ui::info("All items and the .bak backup now use the new key.");
+    report_copies(&copies)?;
     if new_path.is_some() || (a.no_keyfile && cur_kf) {
         ui::warn(
-            "Copies of the vault you made yourself earlier still open the old way (the old key file, \
-             or without one). Make new copies, and delete the old ones if they could fall into the wrong hands.",
+            "Exports and copies of the vault you made yourself earlier still open the old way (the old key \
+             file, or without one). Make new copies, and delete the old ones if they could fall into the wrong hands.",
         );
     }
     Ok(())

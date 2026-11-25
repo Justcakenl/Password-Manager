@@ -115,7 +115,8 @@ pub fn run(paths: &VaultPaths, cfg: &Config) -> Result<()> {
 
 /// The screen mode for a vault that is already open.
 pub fn run_unlocked(uv: UnlockedVault, notices: Vec<Notice>, cfg: &Config) -> Result<()> {
-    let theme = Theme::detect(ui::color_on_stdout());
+    let mut theme = Theme::detect(ui::color_on_stdout());
+    theme.accent = cfg.colors;
     let lock = lock_secs(cfg);
     // The clipboard is cleared after the configured time; the toast says the same.
     let clear_secs = cfg.clip_time_secs;
@@ -123,6 +124,7 @@ pub fn run_unlocked(uv: UnlockedVault, notices: Vec<Notice>, cfg: &Config) -> Re
     let now = Instant::now();
     let mut app = App::new(uv, cfg.clone(), config::path(), Duration::from_secs(lock), copier, now);
     app.key_file = commands::key_file_path();
+    app.clock_synced = super::qr::clock_synced();
     app.show_notices(notices);
     prompt::mark_activity();
     term::set_lock_secs(lock);
@@ -189,6 +191,7 @@ fn event_loop(app: &mut App, terminal: &mut Terminal) -> Result<Exit> {
         }
         term::set_lock_secs(app.lock_secs());
         app.resize(terminal.size());
+        terminal.set_accent(app.cfg.colors);
         if let Err(e) = terminal.draw(|g| app.draw(g, now)) {
             break Err(Error::Io(e));
         }

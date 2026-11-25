@@ -512,6 +512,67 @@ impl Entry {
         Ok(())
     }
 
+    /// Check an item from another vault (an import) with the same rules as
+    /// the setters: names, tags and one-line fields without control
+    /// characters, notes with only newlines and tabs, nothing too long, a
+    /// usable TOTP secret. The error names the item and the field, never the
+    /// value. (Our own vault is not checked like this when it is opened, so
+    /// a vault that already holds such a value still opens; the output side
+    /// makes those values harmless.)
+    pub fn check_incoming(&self, key: &ItemKey) -> Result<()> {
+        // The name, cut short: it comes from the file and may be long.
+        let mut shown: String =
+            self.name.chars().take(40).map(|c| if c.is_control() { '?' } else { c }).collect();
+        if self.name.chars().count() > 40 {
+            shown.push('…');
+        }
+        let bad = |what: &str| {
+            Error::InvalidInput(format!(
+                "the file to import is not valid: item '{shown}' has an invalid {what}; nothing was imported"
+            ))
+        };
+        if validate_name(&self.name).ok() != Some(self.name.as_str()) {
+            return Err(bad("name"));
+        }
+        if !self.tags.iter().all(|t| validate_line("", t).is_ok_and(|v| !v.is_empty() && v == t)) {
+            return Err(bad("tag"));
+        }
+        let lines = [
+            ("username", self.username(key)?),
+            ("e-mail address", self.email(key)?),
+            ("URL", self.url(key)?),
+            ("expiry date", self.expiry(key)?),
+            ("security code", self.cvv(key)?),
+            ("public key", self.public_key(key)?),
+        ];
+        // Exactly as a setter would have stored it: `validate_line` trims
+        // first, and whitespace control characters (\r, \x0b, \x0c, U+0085)
+        // at either end would otherwise never be looked at. The setters and
+        // the migrations store trimmed values, so a real export always passes.
+        for (what, v) in &lines {
+            if !validate_line(what, v).is_ok_and(|t| t == v.as_str()) {
+                return Err(bad(what));
+            }
+        }
+        let notes = self.notes(key)?;
+        if notes.len() > MAX_FIELD_LEN || notes.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
+            return Err(bad("notes field"));
+        }
+        if self.password(key)?.len() > MAX_FIELD_LEN {
+            return Err(bad("password or key"));
+        }
+        if self.passphrase(key)?.len() > MAX_FIELD_LEN {
+            return Err(bad("passphrase"));
+        }
+        let totp = self.totp_secret(key)?;
+        let totp_ok = validate_line("", &totp)
+            .is_ok_and(|v| v == totp.as_str() && (v.is_empty() || Totp::parse(v).is_ok()));
+        if !totp_ok {
+            return Err(bad("TOTP secret"));
+        }
+        Ok(())
+    }
+
     /// The decrypted content of every encrypted field, in a fixed order (to
     /// compare two items when merging). Wiped when dropped.
     fn contents(&self, key: &ItemKey) -> Result<[Zeroizing<String>; 10]> {
@@ -609,6 +670,33 @@ fn base_name(name: &str) -> &str {
 
 fn same_name(a: &str, b: &str) -> bool {
     a.trim().to_lowercase() == b.trim().to_lowercase()
+}
+
+/// Re-encrypt every per-field secret (`*_sealed`) in a vault's JSON from one
+/// item key to another, and change nothing else: not the schema, not the
+/// order, not unknown fields. For CakePass's own `pre-update` copies, which
+/// must keep their old contents and stay readable by the version that made
+/// them (whatever schema that is; schema 1 has no sealed fields at all).
+pub fn reseal_json(json: &[u8], from: &ItemKey, to: &ItemKey) -> Result<SecureBuf> {
+    let mut doc: serde_json::Value = serde_json::from_slice(json).map_err(|_| Error::CorruptPayload)?;
+    let entries = doc.get_mut("entries").and_then(|e| e.as_array_mut()).ok_or(Error::CorruptPayload)?;
+    for entry in entries {
+        let fields = entry.as_object_mut().ok_or(Error::CorruptPayload)?;
+        for (name, value) in fields.iter_mut() {
+            let Some(field) = name.strip_suffix("_sealed") else { continue };
+            let sealed = value.as_str().ok_or(Error::CorruptPayload)?;
+            if sealed.is_empty() {
+                continue;
+            }
+            let plain = from.open(field, sealed)?;
+            *value = to.seal(field, &plain)?.into();
+        }
+    }
+    let mut counter = CountingWriter::default();
+    serde_json::to_writer(&mut counter, &doc).map_err(|_| Error::CorruptPayload)?;
+    let mut buf = SecureBuf::with_capacity(counter.0);
+    serde_json::to_writer(&mut buf, &doc).map_err(|_| Error::CorruptPayload)?;
+    Ok(buf)
 }
 
 // ───────────────────────── older schemas (migration) ─────────────────────────
@@ -871,6 +959,35 @@ impl Vault {
         self.get(name).is_some()
     }
 
+    /// What goes into a share file: copies of only these items (names
+    /// case-insensitive; each item once), still encrypted with `key`. An
+    /// unknown name is an error, so nothing is left out silently.
+    ///
+    /// SECURITY: the 2FA secret stays home unless `with_totp` (whoever has it
+    /// can make your codes for good; only resetting 2FA at the site takes it
+    /// back). Personal marks do not travel either: the favorite pin is off and
+    /// the dates are the moment of sharing.
+    pub fn share_subset(&self, names: &[&str], key: &ItemKey, with_totp: bool) -> Result<Vault> {
+        let mut part = Vault::new();
+        let now = now();
+        for name in names {
+            let e = self.get(name).ok_or_else(|| Error::EntryNotFound(name.trim().to_string()))?;
+            if part.contains(&e.name) {
+                continue;
+            }
+            let mut copy = e.clone();
+            if !with_totp {
+                copy.totp_secret_sealed = key.seal(FIELD_TOTP, "")?;
+            }
+            copy.favorite = false;
+            copy.created = now;
+            copy.modified = now;
+            part.entries.push(copy);
+        }
+        part.sort();
+        Ok(part)
+    }
+
     pub fn add(&mut self, entry: Entry) -> Result<()> {
         if self.contains(&entry.name) {
             return Err(Error::EntryExists(entry.name.clone()));
@@ -944,7 +1061,31 @@ impl Vault {
     /// Add items from another vault (encrypted with `other_key`).
     /// An identical item is skipped; on a name clash the new item gets a
     /// sequence number. Returns (added, skipped).
+    ///
+    /// SECURITY: an import file is not ours. Its fields never went through
+    /// our setters, so a crafted file could carry terminal escape codes (or
+    /// anything else the setters refuse) into the vault. Every item is
+    /// checked with the setters' rules first ([`Entry::check_incoming`]); one
+    /// bad item refuses the whole import, and the vault is left as it was
+    /// (also when something fails half-way).
     pub fn merge(&mut self, other: &Vault, other_key: &ItemKey, my_key: &ItemKey) -> Result<(usize, usize)> {
+        for e in other.entries() {
+            e.check_incoming(other_key)?;
+        }
+        let before = self.entries.clone();
+        let result = self.merge_checked(other, other_key, my_key);
+        if result.is_err() {
+            self.entries = before;
+        }
+        result
+    }
+
+    fn merge_checked(
+        &mut self,
+        other: &Vault,
+        other_key: &ItemKey,
+        my_key: &ItemKey,
+    ) -> Result<(usize, usize)> {
         let mut added = 0;
         let mut skipped = 0;
         for e in other.entries() {
@@ -1619,11 +1760,131 @@ mod tests {
         for f in &fields {
             let mut other = item.clone();
             let field = f.strip_suffix("_sealed").unwrap();
-            other["entries"][0][f] = k1.seal(field, "different").unwrap().into();
+            // (A TOTP secret must still be one: imports are checked.)
+            let v = if field == "totp_secret" { "JBSWY3DPEHPK3PXP" } else { "different" };
+            other["entries"][0][f] = k1.seal(field, v).unwrap().into();
             let (other, _) = load(&other).unwrap();
             let (mut mine, _) = load(&item).unwrap();
             assert_eq!(mine.merge(&other, &k1, &k1).unwrap(), (1, 0), "{f} is not compared when merging");
         }
+    }
+
+    #[test]
+    fn an_import_with_escape_codes_or_other_bad_values_is_refused_whole() {
+        let k = test_item_key(1);
+        let item = full_item_json(&k);
+        let load = |v: &serde_json::Value| Vault::from_json(v.to_string().as_bytes(), &k).unwrap().0;
+        let osc = "\u{1b}]0;X\u{7}";
+        // Fields that may hold any character: a password, key or passphrase.
+        let free = ["password_sealed", "passphrase_sealed"];
+        for f in sealed_fields(&item) {
+            let field = f.strip_suffix("_sealed").unwrap();
+            let mut bad = item.clone();
+            bad["entries"][0]["name"] = "Evil".into();
+            bad["entries"][0][&f] = k.seal(field, &format!("x{osc}")).unwrap().into();
+            let mut mine = load(&item);
+            let before = mine.to_json().unwrap().as_slice().to_vec();
+            let result = mine.merge(&load(&bad), &k, &k);
+            if free.contains(&f.as_str()) {
+                assert_eq!(result.unwrap(), (1, 0), "{f} may hold any character");
+                continue;
+            }
+            let Err(Error::InvalidInput(m)) = result else { panic!("{f} with an escape code was imported") };
+            assert!(m.contains("item 'Evil'") && m.contains("nothing was imported"), "{m}");
+            assert!(!m.contains('\u{1b}') && !m.contains("0;X"), "the value is not in the message: {m}");
+            assert_eq!(mine.to_json().unwrap().as_slice(), &before[..], "{f}: the vault is unchanged");
+        }
+        // Whitespace control characters at either end, which trimming would
+        // hide from the check (one-line fields and the TOTP secret).
+        let line_fields = ["username", "email", "url", "expiry", "cvv", "public_key", "totp_secret"];
+        for field in line_fields {
+            let v = if field == "totp_secret" { TOTP_SEED } else { "x" };
+            for edge in [format!("{v}\r"), format!("\u{85}{v}"), format!("\u{b}{v}"), format!("\u{c}{v}\r")] {
+                let mut bad = item.clone();
+                bad["entries"][0]["name"] = "Evil".into();
+                bad["entries"][0][format!("{field}_sealed")] = k.seal(field, &edge).unwrap().into();
+                let result = load(&item).merge(&load(&bad), &k, &k);
+                assert!(matches!(result, Err(Error::InvalidInput(_))), "{field}: {edge:?} was imported");
+            }
+        }
+        // A long name is cut short in the message.
+        let mut bad = item.clone();
+        bad["entries"][0]["name"] = "N".repeat(150).into();
+        bad["entries"][0]["url_sealed"] = k.seal("url", osc).unwrap().into();
+        let Err(Error::InvalidInput(m)) = load(&item).merge(&load(&bad), &k, &k) else { panic!("imported") };
+        assert!(m.contains(&format!("'{}…'", "N".repeat(40))) && !m.contains(&"N".repeat(41)), "{m}");
+        // Too long, and a TOTP secret that is not one.
+        let long = "x".repeat(MAX_FIELD_LEN + 1);
+        for (f, v) in [
+            ("password_sealed", long.as_str()),
+            ("notes_sealed", &long),
+            ("totp_secret_sealed", "not base32!"),
+        ] {
+            let mut bad = item.clone();
+            bad["entries"][0]["name"] = "Evil".into();
+            bad["entries"][0][f] = k.seal(f.strip_suffix("_sealed").unwrap(), v).unwrap().into();
+            assert!(matches!(load(&item).merge(&load(&bad), &k, &k), Err(Error::InvalidInput(_))), "{f}");
+        }
+        // All or nothing: a good item before a bad one is not added either.
+        let mut two = item.clone();
+        let mut evil = item["entries"][0].clone();
+        evil["name"] = "Zz evil".into();
+        evil["url_sealed"] = k.seal("url", "\u{1b}]52;c;SGk=\u{7}").unwrap().into();
+        let mut good = item["entries"][0].clone();
+        good["name"] = "Aa good".into();
+        two["entries"] = serde_json::json!([good, evil]);
+        let mut mine = Vault::new();
+        assert!(mine.merge(&load(&two), &k, &k).is_err());
+        assert!(mine.is_empty(), "the good item was not added on its own");
+    }
+
+    #[test]
+    fn a_2fa_only_login_is_shared_and_imported_whole() {
+        // No password, only a 2FA secret (like an authenticator app): it gets
+        // through `share_subset` and the import check of `merge`.
+        let (mine, theirs) = (test_item_key(1), test_item_key(2));
+        let mut v = Vault::new();
+        let e = Entry::new(
+            NewEntry { name: "Discord".into(), totp_secret: TOTP_SEED.into(), ..Default::default() },
+            &mine,
+        )
+        .unwrap();
+        v.add(e).unwrap();
+        let part = v.share_subset(&["discord"], &mine, true).unwrap();
+        let mut other = Vault::new();
+        assert_eq!(other.merge(&part, &mine, &theirs).unwrap(), (1, 0));
+        let got = other.get("Discord").unwrap();
+        assert!(!got.has_password());
+        assert_eq!(got.totp(&theirs).unwrap().unwrap().code_at(59).as_str(), "287082");
+    }
+
+    #[test]
+    fn a_share_holds_only_the_chosen_items_without_personal_marks() {
+        let k = test_item_key(1);
+        let mut v = Vault::new();
+        for n in ["GitHub", "Bank", "Private"] {
+            v.add(entry(n, "pw")).unwrap();
+        }
+        v.update("GitHub", |e| {
+            e.set_totp_secret(&k, TOTP_SEED)?;
+            e.set_favorite(true);
+            Ok(())
+        })
+        .unwrap();
+        assert!(matches!(v.share_subset(&["github", "nope"], &k, false), Err(Error::EntryNotFound(_))));
+        let part = v.share_subset(&["GITHUB", "bank", "github"], &k, false).unwrap();
+        let names: Vec<&str> = part.entries().iter().map(|e| e.name()).collect();
+        assert_eq!(names, ["Bank", "GitHub"], "each once, nothing else");
+        let gh = part.get("GitHub").unwrap();
+        assert!(!gh.has_totp() && !gh.is_favorite());
+        assert!(gh.created() >= v.get("GitHub").unwrap().created() && gh.modified() == gh.created());
+        assert_eq!(gh.password(&k).unwrap().as_str(), "pw");
+        assert!(
+            v.get("GitHub").unwrap().has_totp() && v.get("GitHub").unwrap().is_favorite(),
+            "mine unchanged"
+        );
+        let with = v.share_subset(&["github"], &k, true).unwrap();
+        assert!(with.get("GitHub").unwrap().has_totp());
     }
 
     fn identity(k: &ItemKey) -> Entry {
