@@ -101,6 +101,68 @@ impl PasswordOptions {
     }
 }
 
+/// The longest word of your own that can go into a generated password.
+pub const MAX_OWN_WORD: usize = 32;
+
+/// Characters you cannot see: they would make a password you cannot type
+/// again (zero-width and direction marks, invisible separators, the byte
+/// order mark, the soft hyphen, variation selectors).
+fn is_invisible(c: char) -> bool {
+    matches!(c,
+        '\u{00AD}' | '\u{034F}' | '\u{061C}' | '\u{115F}' | '\u{1160}' | '\u{17B4}' | '\u{17B5}'
+        | '\u{180B}'..='\u{180F}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{206F}' | '\u{3164}' | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}' | '\u{FFA0}'
+        | '\u{FFF0}'..='\u{FFF8}' | '\u{E0000}'..='\u{E0FFF}')
+}
+
+/// Check a word of your own (see [`generate_password_with`]): 1 to
+/// [`MAX_OWN_WORD`] characters, no spaces at the ends, no control
+/// characters, no invisible characters, and no other spaces than the plain one.
+pub fn check_own_word(word: &str) -> Result<()> {
+    let n = word.chars().count();
+    if n == 0 || n > MAX_OWN_WORD {
+        return Err(Error::InvalidInput(format!("your own word must be 1 to {MAX_OWN_WORD} characters")));
+    }
+    if word.trim() != word
+        || word.chars().any(|c| c.is_control() || is_invisible(c) || (c.is_whitespace() && c != ' '))
+    {
+        return Err(Error::InvalidInput(
+            "your own word may not start or end with a space, or hold control or invisible characters".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// A random password, with `own` (a word of your own) put in at a random
+/// place in the middle: at least a quarter of the random characters before
+/// it and a quarter after (`jvsdnb#U*#Justin28884218hje`). The random part
+/// keeps the full length, so the password is never weaker than without the
+/// word. SECURITY: the word adds no strength (it may be guessable: a name, a
+/// site), so [`PasswordOptions::entropy_bits`] counts only the random part.
+pub fn generate_password_with(opts: &PasswordOptions, own: Option<&str>) -> Result<Zeroizing<String>> {
+    let random = generate_password(opts)?;
+    let Some(word) = own else { return Ok(random) };
+    check_own_word(word)?;
+    let edge = (opts.length / 4).max(1);
+    let at = rng().random_range(edge..=opts.length - edge);
+    let mut out = Zeroizing::new(String::with_capacity(random.len() + word.len()));
+    out.extend(random.chars().take(at));
+    out.push_str(word);
+    out.extend(random.chars().skip(at));
+    Ok(out)
+}
+
+/// A passphrase with `own` as one extra word at a random place between the
+/// generated words (never first or last). As with
+/// [`generate_password_with`], the generated words keep their number and
+/// only they count for the strength.
+pub fn generate_passphrase_with(opts: &PassphraseOptions, own: Option<&str>) -> Result<Zeroizing<String>> {
+    let Some(word) = own else { return generate_passphrase(opts) };
+    check_own_word(word)?;
+    let at = rng().random_range(1..opts.words.max(2));
+    passphrase(opts, Some((at, word)))
+}
+
 /// Generate a random password.
 pub fn generate_password(opts: &PasswordOptions) -> Result<Zeroizing<String>> {
     let classes = opts.validate()?;
@@ -139,6 +201,11 @@ impl PassphraseOptions {
 
 /// Generate a passphrase from the EFF word list.
 pub fn generate_passphrase(opts: &PassphraseOptions) -> Result<Zeroizing<String>> {
+    passphrase(opts, None)
+}
+
+/// The passphrase; `own` puts that word in before generated word `at`.
+fn passphrase(opts: &PassphraseOptions, own: Option<(usize, &str)>) -> Result<Zeroizing<String>> {
     if !(MIN_WORDS..=MAX_WORDS).contains(&opts.words) {
         return Err(Error::InvalidInput(format!(
             "the number of words must be between {MIN_WORDS} and {MAX_WORDS}"
@@ -149,12 +216,20 @@ pub fn generate_passphrase(opts: &PassphraseOptions) -> Result<Zeroizing<String>
     }
     let words = wordlist();
     let mut rng = rng();
-    let mut out = Zeroizing::new(String::with_capacity(opts.words * (10 + opts.separator.len())));
-    for i in 0..opts.words {
-        if i > 0 {
+    let mut out = Zeroizing::new(String::with_capacity((opts.words + 1) * (10 + opts.separator.len())));
+    let mut put = |w: &str| {
+        if !out.is_empty() {
             out.push_str(&opts.separator);
         }
-        out.push_str(words[rng.random_range(0..words.len())]);
+        out.push_str(w);
+    };
+    for i in 0..=opts.words {
+        if let Some((_, word)) = own.filter(|(at, _)| *at == i) {
+            put(word);
+        }
+        if i < opts.words {
+            put(words[rng.random_range(0..words.len())]);
+        }
     }
     Ok(out)
 }
@@ -163,6 +238,67 @@ pub fn generate_passphrase(opts: &PassphraseOptions) -> Result<Zeroizing<String>
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn your_own_word_goes_in_at_a_random_place_and_the_rest_stays_random() {
+        let opts = PasswordOptions { length: 16, ..Default::default() };
+        let mut places = HashSet::new();
+        for _ in 0..300 {
+            let pw = generate_password_with(&opts, Some("Justin")).unwrap();
+            let at = pw.find("Justin").expect("the word is in it");
+            places.insert(at);
+            let rest: String = pw.replacen("Justin", "", 1);
+            assert_eq!(rest.chars().count(), 16, "the random part keeps its full length");
+        }
+        // In the middle: at least 4 (a quarter of 16) random characters on each side.
+        assert_eq!(places.iter().min(), Some(&4), "{places:?}");
+        assert_eq!(places.iter().max(), Some(&12), "{places:?}");
+        assert_eq!(places.len(), 9, "every place in the middle is reached: {places:?}");
+        // The shortest password still has random characters on both sides.
+        let short = PasswordOptions { length: MIN_LENGTH, ..Default::default() };
+        for _ in 0..100 {
+            let pw = generate_password_with(&short, Some("é")).unwrap();
+            let at = pw.find('é').unwrap(); // the random part is ASCII
+            assert!(at >= 2 && pw.len() - at - 'é'.len_utf8() >= 2, "{}", pw.as_str());
+        }
+        // Without a word: as before.
+        assert_eq!(generate_password_with(&opts, None).unwrap().chars().count(), 16);
+        // In a passphrase: one extra word between the separators.
+        let p = PassphraseOptions { words: 5, separator: ".".into() };
+        let mut at = HashSet::new();
+        for _ in 0..200 {
+            let phrase = generate_passphrase_with(&p, Some("Café")).unwrap();
+            let parts: Vec<&str> = phrase.split('.').collect();
+            assert_eq!(parts.len(), 6, "{}", phrase.as_str());
+            at.insert(parts.iter().position(|w| *w == "Café").unwrap());
+        }
+        let mut seen: Vec<usize> = at.into_iter().collect();
+        seen.sort_unstable();
+        assert_eq!(seen, [1, 2, 3, 4], "between the generated words, never first or last");
+    }
+
+    #[test]
+    fn your_own_word_is_checked() {
+        let opts = PasswordOptions::default();
+        for bad in [
+            "",
+            " x",
+            "x ",
+            "a\u{1b}b",
+            "tab\there",
+            &"x".repeat(MAX_OWN_WORD + 1),
+            "zero\u{200B}width",
+            "bidi\u{202E}nitsuJ",
+            "\u{FEFF}bom",
+            "soft\u{AD}hyphen",
+            "no\u{A0}break",
+            "tag\u{E0041}",
+        ] {
+            assert!(generate_password_with(&opts, Some(bad)).is_err(), "{bad:?}");
+            assert!(generate_passphrase_with(&PassphraseOptions::default(), Some(bad)).is_err(), "{bad:?}");
+        }
+        assert!(check_own_word("two words").is_ok() && check_own_word(&"é".repeat(MAX_OWN_WORD)).is_ok());
+    }
 
     #[test]
     fn word_list_is_complete() {

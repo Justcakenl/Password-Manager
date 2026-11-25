@@ -8,6 +8,8 @@
 
 use cakepass::vault::Kind;
 
+use super::super::config::Colors;
+
 /// How one cell looks. `fg`/`bg` are 256-color palette indexes, 0 = the
 /// terminal's default color.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -169,17 +171,44 @@ pub fn ascii_for(c: char) -> char {
     }
 }
 
-/// Color and character set, chosen once at startup.
+/// Color and character set, chosen once at startup; the accent color can
+/// change (Settings → Colors).
 #[derive(Debug, Clone, Copy)]
 pub struct Theme {
     pub color: bool,
     pub unicode: bool,
+    pub accent: Colors,
+}
+
+/// The three shades of an accent color (light, strong, soft) that replace
+/// CakePass's pink (211, 205, 175) when the screen is drawn.
+pub fn shades(c: Colors) -> [u8; 3] {
+    match c {
+        Colors::Pink => [PINK, HOT_PINK, SOFT_PINK],
+        Colors::Blue => [117, 33, 74],
+        Colors::Green => [114, 35, 72],
+        Colors::Purple => [183, 135, 140],
+        Colors::Orange => [216, 208, 173],
+        Colors::Red => [210, 196, 167],
+        Colors::Teal => [116, 37, 73],
+    }
 }
 
 impl Theme {
     /// `color`: whether colors are allowed (see `ui::init`).
     pub fn detect(color: bool) -> Theme {
-        Theme { color, unicode: locale_is_utf8(|k| std::env::var(k).ok()) }
+        Theme { color, unicode: locale_is_utf8(|k| std::env::var(k).ok()), accent: Colors::Pink }
+    }
+
+    /// A color as drawn: the pinks become the shades of the accent.
+    fn paint(&self, c: u8) -> u8 {
+        let s = shades(self.accent);
+        match c {
+            PINK => s[0],
+            HOT_PINK => s[1],
+            SOFT_PINK => s[2],
+            other => other,
+        }
     }
 
     pub fn glyphs(&self) -> &'static Glyphs {
@@ -202,6 +231,7 @@ impl Theme {
         if self.color {
             for (layer, c) in [("38", style.fg), ("48", style.bg)] {
                 if c != 0 {
+                    let c = self.paint(c);
                     out.extend_from_slice(format!(";{layer};5;{c}").as_bytes());
                 }
             }
@@ -231,13 +261,28 @@ mod tests {
 
     #[test]
     fn colors_and_no_color() {
-        let color = Theme { color: true, unicode: true };
-        let mono = Theme { color: false, unicode: true };
+        let color = Theme { color: true, unicode: true, accent: Colors::Pink };
+        let mono = Theme { color: false, unicode: true, accent: Colors::Pink };
         assert_eq!(sgr(color, Style::ACCENT), "\x1b[0;38;5;211m");
         assert_eq!(sgr(color, Style::SELECTED), "\x1b[0;1;38;5;16;48;5;211m");
         assert_eq!(sgr(mono, Style::ACCENT), "\x1b[0m", "no color: plain text");
         assert_eq!(sgr(mono, Style::SELECTED), "\x1b[0;1;7m", "no color: reverse video");
         assert_eq!(sgr(mono, Style::ACTIVE_TAB), "\x1b[0;1;4m");
+    }
+
+    #[test]
+    fn the_accent_color_replaces_the_pinks_only() {
+        let blue = Theme { color: true, unicode: true, accent: Colors::Blue };
+        assert_eq!(sgr(blue, Style::ACCENT), "\x1b[0;38;5;117m");
+        assert_eq!(sgr(blue, Style::SELECTED), "\x1b[0;1;38;5;16;48;5;117m");
+        assert_eq!(sgr(blue, Style::TITLE), "\x1b[0;1;38;5;231;48;5;33m");
+        assert_eq!(sgr(blue, Style::ERROR), "\x1b[0;1;38;5;203m", "red stays red");
+        assert_eq!(sgr(blue, Style::DIM), "\x1b[0;38;5;245m");
+        // Every accent has three different shades, none of them the error red.
+        for c in Colors::ALL {
+            let s = shades(c);
+            assert!(s[0] != s[1] && s[1] != s[2] && !s.contains(&RED), "{c:?}");
+        }
     }
 
     #[test]

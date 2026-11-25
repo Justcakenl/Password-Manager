@@ -10,7 +10,7 @@
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -41,6 +41,11 @@ impl Vault {
         vec![
             ("CAKEPASS_VAULT", self.path().display().to_string()),
             ("XDG_CONFIG_HOME", self.dir.path().join("config-home").display().to_string()),
+            // Never the real cache or home of whoever runs the tests: a pending
+            // update notice there ("News") would cover the screen.
+            ("XDG_CACHE_HOME", self.dir.path().join("cache-home").display().to_string()),
+            ("XDG_DATA_HOME", self.dir.path().join("data-home").display().to_string()),
+            ("HOME", self.dir.path().join("home").display().to_string()),
             ("CAKEPASS_NO_ANIMATION", "1".into()),
             ("TERM", "xterm-256color".into()),
             ("LANG", "C.UTF-8".into()),
@@ -164,6 +169,18 @@ fn set_size(fd: i32, w: u16, h: u16) {
 
 impl Pty {
     fn spawn(args: &[&str], env: &[(&str, String)], extra: &[(&str, &str)], w: u16, h: u16) -> Pty {
+        Pty::spawn_with(args, env, extra, w, h, false)
+    }
+
+    /// As `spawn`; with `stderr_to_null` stderr goes to /dev/null (`2>/dev/null`).
+    fn spawn_with(
+        args: &[&str],
+        env: &[(&str, String)],
+        extra: &[(&str, &str)],
+        w: u16,
+        h: u16,
+        stderr_to_null: bool,
+    ) -> Pty {
         // SAFETY: plain libc calls on descriptors we own; checked below.
         let (master, slave) = unsafe {
             let m = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
@@ -191,7 +208,7 @@ impl Pty {
             .envs(extra.iter().copied())
             .stdin(Stdio::from(slave.try_clone().unwrap()))
             .stdout(Stdio::from(slave.try_clone().unwrap()))
-            .stderr(Stdio::from(slave));
+            .stderr(if stderr_to_null { Stdio::null() } else { Stdio::from(slave) });
         // SAFETY: setsid and ioctl are async-signal-safe; this makes the
         // pseudo-terminal the controlling terminal (/dev/tty), as in a real login.
         unsafe {
@@ -367,7 +384,7 @@ fn add_an_item_with_the_arrow_keys_then_read_it_with_the_cli() {
     t.send("work, code");
     t.send(DOWN);
     t.send("Tui-Secret-42!");
-    t.send(DOWN);
+    t.send(&DOWN.repeat(2)); // past the (optional) 2FA secret
     t.send("line one\rline two");
     t.wait_for("line two");
     assert!(!t.screen().contains("Tui-Secret-42!"), "the password is masked while typing");
@@ -405,6 +422,49 @@ fn add_an_item_with_the_arrow_keys_then_read_it_with_the_cli() {
         .assert()
         .success()
         .stdout(contains("api key").and(contains("sk-q-del-a-123")));
+}
+
+#[test]
+fn a_2fa_only_login_from_the_command_line() {
+    // In a terminal an empty password with --totp asks first: no password,
+    // only the 2FA code? (Without a terminal a password is generated, as before.)
+    let v = Vault::new();
+    let seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+    let mut t = v.pty(&["add", "Discord", "-u", "", "-e", "", "--url", "", "-t", "", "--totp"], &[], 100, 30);
+    t.wait_for("Master password");
+    t.send(&format!("{PW}\r"));
+    t.wait_for("Password (leave empty");
+    t.send("\r");
+    t.wait_for("only for its 2FA code?");
+    t.send("y\r");
+    t.wait_for("TOTP");
+    t.send(&format!("{seed}\r"));
+    assert_eq!(t.wait_exit(), 0, "{}", t.screen());
+    let get = |args: &[&str]| {
+        let o = v.cmd().args(args).write_stdin(format!("{PW}\n")).output().unwrap();
+        (String::from_utf8_lossy(&o.stdout).into_owned(), o.status.success())
+    };
+    let (shown, ok) = get(&["get", "discord", "--show"]);
+    let pw_line = shown.lines().find(|l| l.starts_with("Password:")).expect(&shown);
+    assert!(ok && pw_line.trim_start_matches("Password:").trim() == "-", "no password: {shown}");
+    let (code, ok) = get(&["get", "discord", "--totp", "--no-copy"]);
+    assert!(ok && code.contains("TOTP code"), "{code}");
+    // The health check does not call it empty.
+    let (audit, _) = get(&["audit"]);
+    assert!(!audit.contains("Discord"), "{audit}");
+    // Through an export and an import it stays a 2FA-only login.
+    let file = v.dir.path().join("e.cakepass");
+    let f = file.to_str().unwrap();
+    v.cmd().args(["export", f]).write_stdin(format!("{PW}\n{PW}\n{PW}\n")).assert().success();
+    let w = Vault::new();
+    w.cmd().args(["import", f]).write_stdin(format!("{PW}\n{PW}\n")).assert().success();
+    let o = w
+        .cmd()
+        .args(["get", "discord", "--totp", "--no-copy"])
+        .write_stdin(format!("{PW}\n"))
+        .output()
+        .unwrap();
+    assert!(o.status.success() && String::from_utf8_lossy(&o.stdout).contains("TOTP code"));
 }
 
 #[test]
@@ -545,22 +605,173 @@ fn hidden_tabs_from_the_settings_file() {
         .assert()
         .success();
     let mut t = v.pty(&[], &[], 80, 24);
+    // The opening screen shows the version, small, under the logo.
+    t.wait_for(concat!("v", env!("CARGO_PKG_VERSION")));
     t.login();
     t.wait_for("All 1   Logins 0   Notes 0");
     let bar = t.screen().lines().nth(1).unwrap_or_default().to_string();
     assert!(!bar.contains("API") && !bar.contains("Cards") && !bar.contains("SSH"), "{bar}");
     // The hidden type's item is still in the list under All.
     assert!(t.screen().contains("Cloud"), "{}", t.screen());
-    // → skips the hidden tabs: Logins, Notes, and round to All again (without
-    // skipping, the third → would be on the empty Cards tab).
+    // → skips the hidden tabs: Logins, Notes, 2FA (not a type, so never
+    // hidden) and round to All again (without skipping, the third → would
+    // be on the empty Cards tab).
     t.send("\x1b[C");
     t.wait_for("Nothing of this type yet");
     assert!(!t.screen().contains("Cloud"), "{}", t.screen());
     t.send("\x1b[C\x1b[C");
+    t.wait_for("No 2FA codes yet");
+    t.send("\x1b[C");
     t.wait_for("Cloud");
     t.send("q");
     assert_eq!(t.wait_exit(), 0);
     assert_restored(&t.output());
+}
+
+#[test]
+fn passwd_rekeys_the_pre_update_copies_and_offers_to_delete_older_ones() {
+    const PW2: &str = "grape-lantern-oyster-bulky-scenic-dwarf";
+    const PW3: &str = "violet-anchor-pebble-mango-tundra-whisk";
+    let v = Vault::new();
+    let dir = v.dir.path();
+    let older = dir.join("vault.enc.pre-update-1");
+    let copy = dir.join("vault.enc.pre-update-2");
+    // An "older" copy: the vault under the first password, put in place
+    // after the password was changed once.
+    let first = std::fs::read(v.path()).unwrap();
+    v.cmd().arg("passwd").write_stdin(format!("{PW}\n{PW2}\n{PW2}\n")).assert().success();
+    std::fs::write(&older, &first).unwrap();
+    std::fs::copy(v.path(), &copy).unwrap();
+    // Without a terminal: the copy of the current key is re-encrypted; the
+    // older one is only listed (nothing is deleted without asking).
+    v.cmd()
+        .arg("passwd")
+        .write_stdin(format!("{PW2}\n{PW3}\n{PW3}\n"))
+        .assert()
+        .success()
+        .stderr(contains("1 copy made before updates re-encrypted").and(contains("pre-update-1")));
+    assert!(older.exists() && std::fs::read(&older).unwrap() == first);
+    let opens = |file: &Path, pw: &str| {
+        Cmd::new(env!("CARGO_BIN_EXE_cakepass"))
+            .args(["--vault", file.to_str().unwrap(), "list"])
+            .env("XDG_CONFIG_HOME", dir.join("config-home"))
+            .env("XDG_CACHE_HOME", dir.join("cache-home"))
+            .env("XDG_DATA_HOME", dir.join("data-home"))
+            .env("HOME", dir.join("home"))
+            .write_stdin(format!("{pw}\n"))
+            .output()
+            .unwrap()
+            .status
+            .success()
+    };
+    assert!(!opens(&copy, PW2) && opens(&copy, PW3), "the copy follows the new password");
+    // In a terminal: asked, and yes deletes the older copy.
+    let mut t = v.pty(&["passwd"], &[], 100, 30);
+    t.wait_for("assword");
+    t.send(&format!("{PW3}\r"));
+    t.wait_for("New master password");
+    t.send(&format!("{PW}\r"));
+    t.wait_for("Repeat master password");
+    t.send(&format!("{PW}\r"));
+    t.wait_for("Overwrite and delete them now?");
+    t.send("y\r");
+    assert_eq!(t.wait_exit(), 0);
+    assert!(!older.exists(), "deleted after yes");
+    assert!(opens(&copy, PW) && !opens(&copy, PW3));
+}
+
+#[test]
+fn share_items_in_a_terminal_and_add_them_elsewhere() {
+    let v = Vault::new();
+    let add = |name: &str, pw: &str| {
+        v.cmd()
+            .args(["add", name, "-u", "john", "-e", "", "--url", "", "-t", ""])
+            .write_stdin(format!("{PW}\n{pw}\n"))
+            .assert()
+            .success();
+    };
+    add("GitHub", "gh-shared-1");
+    add("Bank", "bank-shared-2");
+    add("Private", "not-shared-3");
+    let seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+    v.cmd().args(["edit", "github", "--totp"]).write_stdin(format!("{PW}\n{seed}\n")).assert().success();
+    let file = v.dir.path().join("for-jane.cakepass");
+    let f = file.to_str().unwrap();
+    let mut t = v.pty(&["share", "github", "bank", "--to", f], &[], 100, 30);
+    t.wait_for("Master password");
+    t.send(&format!("{PW}\r"));
+    t.wait_for("Press Enter when you have the share password");
+    let screen = t.screen();
+    assert!(screen.contains("2 items shared (encrypted)"), "{screen}");
+    assert!(screen.contains("'GitHub': its 2FA secret was left out"), "{screen}");
+    let line = screen.lines().find(|l| l.starts_with("Share password:")).expect(&screen);
+    let password = line.trim_start_matches("Share password:").trim().to_string();
+    // Six words; a few list words have a dash of their own (t-shirt, yo-yo).
+    assert!((6..=12).contains(&password.split('-').count()), "{password}");
+    t.send("\r");
+    assert_eq!(t.wait_exit(), 0);
+    // Taken off the screen and out of the scrollback after Enter.
+    let out = t.output();
+    let after = &out[out.rfind("\x1b[3J").expect("scrollback cleared")..];
+    assert!(!after.contains(&password), "the password is gone from the screen");
+
+    // Ctrl+C at the question clears it too (and makes no difference to the file).
+    let other = v.dir.path().join("second.cakepass");
+    let mut c = v.pty(&["share", "bank", "--to", other.to_str().unwrap()], &[], 100, 30);
+    c.wait_for("Master password");
+    c.send(&format!("{PW}\r"));
+    c.wait_for("Press Enter when you have the share password");
+    let line = c.screen().lines().find(|l| l.starts_with("Share password:")).unwrap().to_string();
+    let second = line.trim_start_matches("Share password:").trim().to_string();
+    c.send("\x03");
+    assert_eq!(c.wait_exit(), 130, "ends as Ctrl+C does");
+    let out = c.output();
+    let after = &out[out.rfind("\x1b[3J").expect("scrollback cleared on Ctrl+C")..];
+    assert!(!after.contains(&second), "the password is gone after Ctrl+C");
+    assert!(other.exists());
+
+    // With stderr not in the terminal (2>/dev/null) the clearing could not
+    // reach the screen: refused before anything is made or shown.
+    let third = v.dir.path().join("third.cakepass");
+    let mut q =
+        Pty::spawn_with(&["share", "bank", "--to", third.to_str().unwrap()], &v.envs(), &[], 100, 30, true);
+    q.send(&format!("{PW}\r"));
+    assert_ne!(q.wait_exit(), 0);
+    assert!(!q.output().contains("Share password"), "{}", q.output());
+    assert!(!third.exists());
+    // Someone else adds them: only the two items, without the 2FA secret.
+    let w = Vault::new();
+    w.cmd().args(["import", f]).write_stdin(format!("{PW}\n{password}\n")).assert().success();
+    let show = |name: &str| {
+        let o = w.cmd().args(["get", name, "--show"]).write_stdin(format!("{PW}\n")).output().unwrap();
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    assert!(show("github").contains("gh-shared-1") && show("bank").contains("bank-shared-2"));
+    assert!(show("private").is_empty(), "only the chosen items");
+    w.cmd().args(["get", "github", "--totp"]).write_stdin(format!("{PW}\n")).assert().failure();
+}
+
+#[test]
+fn importing_the_vaults_own_backup_does_not_offer_to_delete_it() {
+    let v = Vault::new();
+    for name in ["One", "Two"] {
+        v.cmd()
+            .args(["add", name, "-u", "john", "-e", "", "--url", "", "-t", ""])
+            .write_stdin(format!("{PW}\npw-{name}\n"))
+            .assert()
+            .success();
+    }
+    let backup = v.dir.path().join("vault.enc.bak");
+    assert!(backup.exists());
+    let mut t = v.pty(&["import", backup.to_str().unwrap()], &[], 100, 30);
+    t.wait_for("Master password");
+    t.send(&format!("{PW}\r"));
+    t.wait_for("assword");
+    t.send(&format!("{PW}\r"));
+    assert_eq!(t.wait_exit(), 0, "{}", t.screen());
+    assert!(t.screen().contains("item(s) added"), "{}", t.screen());
+    assert!(!t.output().contains("Overwrite and delete"), "{}", t.screen());
+    assert!(backup.exists());
 }
 
 #[test]
@@ -745,7 +956,8 @@ fn the_settings_row_switches_the_security_level() {
     t.wait_for("Startup animation");
     t.send(DOWN);
     t.send(DOWN);
-    t.send(DOWN); // past the Tabs row
+    t.send(DOWN);
+    t.send(DOWN); // past the Tabs and Colors rows
     assert!(!t.screen().contains("Unlock here"), "nothing measured yet");
     t.send(DOWN);
     // The High level is measured for real on this computer (256 MiB).
@@ -811,6 +1023,39 @@ fn logging_in_to_a_vault_with_a_key_file() {
 }
 
 #[test]
+fn the_tests_never_see_the_update_notice_of_whoever_runs_them() {
+    // A pending update notice in a cache (as in the home of a developer
+    // whose checkout is ahead of the installed program) shows "News" over
+    // the screen; the harness must not read the real one.
+    let v = Vault::new();
+    let cache = v.dir.path().join("someone-elses-cache");
+    std::fs::create_dir_all(cache.join("cakepass")).unwrap();
+    std::fs::write(cache.join("cakepass/update-status"), format!("remote={}\nnotified=\n", "f".repeat(40)))
+        .unwrap();
+    let open = |extra: &[(&str, &str)]| {
+        let mut t = v.pty(&[], extra, 100, 30);
+        t.wait_for("Master password");
+        t.send(&format!("{PW}\r"));
+        t.wait_for("locks in");
+        std::thread::sleep(Duration::from_millis(300));
+        t.pump();
+        let s = t.screen();
+        t.send("\x1b");
+        t.send("q");
+        s
+    };
+    let with_it = open(&[("XDG_CACHE_HOME", cache.to_str().unwrap())]);
+    assert!(with_it.contains("A new version of CakePass is available"), "the file matters: {with_it}");
+    let harness = open(&[]);
+    assert!(!harness.contains("A new version"), "{harness}");
+    let envs = v.envs();
+    for var in ["XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "HOME"] {
+        let (_, path) = envs.iter().find(|(k, _)| *k == var).unwrap_or_else(|| panic!("{var} not set"));
+        assert!(Path::new(path).starts_with(v.dir.path()), "{var}={path}");
+    }
+}
+
+#[test]
 fn first_run_wizard_in_a_terminal_then_the_screen() {
     // No vault yet: `cakepass` starts the wizard, then offers the screen.
     let v = Vault { dir: tempfile::tempdir().unwrap() };
@@ -855,7 +1100,7 @@ fn first_run_wizard_in_a_terminal_then_the_screen() {
     // The key file recorded by the wizard is used at once (re-check in settings).
     t.send("s");
     t.wait_for("Startup animation");
-    t.send(&format!("{DOWN}{DOWN}{DOWN}\r")); // past the Tabs row
+    t.send(&format!("{DOWN}{DOWN}{DOWN}{DOWN}\r")); // past the Tabs and Colors rows
     t.wait_for("current master password");
     t.send(&format!("{phrase}\r"));
     t.wait_for("Choose a new master password");

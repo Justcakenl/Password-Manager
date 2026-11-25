@@ -123,6 +123,12 @@ fn invalid(msg: &str) -> Error {
     Error::InvalidInput(msg.into())
 }
 
+/// The shortest secret [`Totp::parse_new`] accepts: 10 bytes (80 bits, 16
+/// base32 characters), what sites hand out at the least. RFC 4226 asks for
+/// 128; shorter is not a weakness of CakePass (the site chooses the secret),
+/// but text pasted into the wrong field ("line one" is valid base32) is.
+pub const MIN_NEW_SECRET_BYTES: usize = 10;
+
 impl Totp {
     /// A TOTP secret with explicit settings (validated).
     pub fn new(secret: &[u8], algorithm: Algorithm, digits: u32, period: u64) -> Result<Totp> {
@@ -153,6 +159,24 @@ impl Totp {
         }
         let secret = decode_secret(input)?;
         Totp::new(&secret, Algorithm::Sha1, DEFAULT_DIGITS, DEFAULT_PERIOD)
+    }
+
+    /// Like [`Totp::parse`], for a secret typed or pasted now (the form, `add`
+    /// and `edit --totp`): also refuses one shorter than
+    /// [`MIN_NEW_SECRET_BYTES`]. Secrets already stored or imported keep using
+    /// `parse`, so their codes go on working. The error gives only lengths.
+    pub fn parse_new(input: &str) -> Result<Totp> {
+        let totp = Self::parse(input)?;
+        let n = totp.secret.len();
+        if n < MIN_NEW_SECRET_BYTES {
+            return Err(Error::InvalidInput(format!(
+                "the TOTP secret is too short ({n} bytes, about {} characters; real ones have at least {} \
+                 characters): check that you pasted the right text",
+                (n * 8).div_ceil(5),
+                (MIN_NEW_SECRET_BYTES * 8).div_ceil(5)
+            )));
+        }
+        Ok(totp)
     }
 
     /// The part of an `otpauth://` URI after the scheme.
@@ -382,6 +406,26 @@ mod tests {
         }
         // The RFC 6238 seed in base32, as an authenticator app would get it.
         assert_eq!(base32_decode("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ").unwrap().as_slice(), SEED_SHA1);
+    }
+
+    #[test]
+    fn new_secrets_must_be_at_least_80_bits() {
+        // Text typed in the wrong field: valid base32, 4 bytes.
+        assert!(Totp::parse("line one").is_ok(), "parse stays lenient for stored secrets");
+        let Err(Error::InvalidInput(m)) = Totp::parse_new("line one") else { panic!("accepted") };
+        // 4 bytes = 32 bits; a base32 character carries 5, so this rounds up to 7.
+        assert!(m.contains("too short (4 bytes, about 7 characters") && m.contains("16 characters"), "{m}");
+        assert!(!m.to_lowercase().contains("line"), "the input is never in the message: {m}");
+        // In an otpauth:// link as well.
+        assert!(Totp::parse_new("otpauth://totp/x?secret=MZXW6YQ").is_err());
+        // 16 characters (10 bytes) is the minimum; 15 is one byte short.
+        assert!(Totp::parse_new("JBSWY3DPEHPK3PXP").is_ok());
+        assert!(Totp::parse_new("jbsw y3dp ehpk 3px").is_err());
+        assert!(Totp::parse_new("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ").is_ok());
+        // Other errors are the same as parse's.
+        assert!(
+            matches!(Totp::parse_new("not base32!"), Err(Error::InvalidInput(m)) if m.contains("base32"))
+        );
     }
 
     #[test]

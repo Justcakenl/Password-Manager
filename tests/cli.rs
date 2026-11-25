@@ -41,6 +41,10 @@ impl Vaulty {
         c.env("CAKEPASS_VAULT", &self.path)
             .env("NO_COLOR", "1")
             .env("XDG_CONFIG_HOME", self.dir().join("config-home"))
+            // Never the real cache or home of whoever runs the tests.
+            .env("XDG_CACHE_HOME", self.dir().join("cache-home"))
+            .env("XDG_DATA_HOME", self.dir().join("data-home"))
+            .env("HOME", self.dir().join("home"))
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("DISPLAY")
             .timeout(Duration::from_secs(60));
@@ -211,6 +215,9 @@ fn backup_holds_previous_version() {
     let out = Command::new(env!("CARGO_BIN_EXE_cakepass"))
         .args(["--vault", bak.to_str().unwrap(), "list"])
         .env("NO_COLOR", "1")
+        .env("XDG_CONFIG_HOME", k.dir().join("config-home"))
+        .env("XDG_CACHE_HOME", k.dir().join("cache-home"))
+        .env("HOME", k.dir().join("home"))
         .write_stdin(format!("{PW}\n"))
         .assert()
         .success();
@@ -228,9 +235,89 @@ fn change_master_password() {
     let bak = k.dir().join("vault.enc.bak");
     Command::new(env!("CARGO_BIN_EXE_cakepass"))
         .args(["--vault", bak.to_str().unwrap(), "list"])
+        .env("XDG_CONFIG_HOME", k.dir().join("config-home"))
+        .env("XDG_CACHE_HOME", k.dir().join("cache-home"))
+        .env("HOME", k.dir().join("home"))
         .write_stdin(format!("{PW}\n"))
         .assert()
         .failure();
+}
+
+/// An export file like an attacker would make it: a real export whose
+/// username and URL hold terminal escape codes (a window-title change and
+/// an OSC 52 "write the clipboard"). Only possible by sealing the fields
+/// directly, since every setter refuses them.
+fn evil_export(from: &Vaulty, path: &Path) {
+    from.add("Evil", "placeholder", ITEM_PW);
+    let clean = from.dir().join("clean.cakepass");
+    from.run(&["export", clean.to_str().unwrap()], &format!("{PW}\n{PW2}\n{PW2}\n")).success();
+    let creds = cakepass::format::Credentials::password(PW2.as_bytes());
+    let (vault, vk) = cakepass::storage::read_vault_file(&clean, creds).unwrap();
+    let mut json: serde_json::Value = serde_json::from_slice(vault.to_json().unwrap().as_slice()).unwrap();
+    let k = vk.item_key();
+    let item = &mut json["entries"][0];
+    item["username_sealed"] = k.seal("username", "\u{1b}]0;X\u{7}").unwrap().into();
+    item["url_sealed"] = k.seal("url", "\u{1b}]52;c;SGk=\u{7}").unwrap().into();
+    let bytes = cakepass::format::seal(&vk, json.to_string().as_bytes()).unwrap();
+    cakepass::storage::write_new_file(path, &bytes).unwrap();
+}
+
+#[test]
+fn an_export_with_escape_codes_is_refused_and_never_printed() {
+    let a = Vaulty::new().init();
+    let evil = a.dir().join("evil.cakepass");
+    evil_export(&a, &evil);
+    let evil_s = evil.to_str().unwrap();
+    // Importing it fails as a whole, says which item and field, prints no
+    // escape code, and leaves the vault file exactly as it was.
+    let b = Vaulty::new().init();
+    b.add("Mine", "me", ITEM_PW);
+    let before = std::fs::read(&b.path).unwrap();
+    let out = b.run(&["import", evil_s], &format!("{PW}\n{PW2}\n")).failure();
+    let o = out.get_output();
+    assert!(!o.stdout.contains(&0x1b) && !o.stderr.contains(&0x1b), "an escape code was printed");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("item 'Evil' has an invalid username") && err.contains("nothing was imported"),
+        "{err}"
+    );
+    assert_eq!(std::fs::read(&b.path).unwrap(), before, "the vault file is unchanged");
+    // A vault that already holds such values (the export opened as a vault):
+    // list, search and get show them made harmless, never as escape codes.
+    for args in [&["list"][..], &["search", "evil"], &["get", "evil", "--no-copy"]] {
+        let mut cmd = a.cmd();
+        cmd.arg("--vault").arg(&evil).args(args).write_stdin(format!("{PW2}\n"));
+        let out = cmd.assert().success();
+        let o = out.get_output();
+        assert!(!o.stdout.contains(&0x1b) && !o.stderr.contains(&0x1b), "{args:?} printed an escape code");
+        let text = String::from_utf8_lossy(&o.stdout);
+        assert!(text.contains("\\u{1b}"), "{args:?} shows the escape as text: {text}");
+    }
+    // edit shows the current values in its questions: also made harmless.
+    let mut cmd = a.cmd();
+    cmd.arg("--vault")
+        .arg(&evil)
+        .args(["edit", "evil"])
+        .write_stdin(format!("{PW2}\n\n\n\n\n\nn\nk\nn\nn\n"));
+    let out = cmd.assert();
+    let o = out.get_output();
+    assert!(!o.stdout.contains(&0x1b) && !o.stderr.contains(&0x1b), "edit printed an escape code");
+    let shown = String::from_utf8_lossy(&o.stderr).into_owned() + &String::from_utf8_lossy(&o.stdout);
+    assert!(shown.contains("Username [\\u{1b}]0;X\\u{7}]"), "{shown}");
+}
+
+#[test]
+fn share_refuses_to_print_its_password_into_a_pipe() {
+    // The share password is all that protects the file: it is shown only in
+    // a terminal (see tests/tui.rs for the real thing), never into a log.
+    let a = Vaulty::new().init();
+    a.add("GitHub", "john", ITEM_PW);
+    let file = a.dir().join("for-jane.cakepass");
+    let out = a.run(&["share", "github", "--to", file.to_str().unwrap()], &format!("{PW}\n")).failure();
+    let o = out.get_output();
+    assert!(o.stdout.is_empty(), "nothing on stdout: {}", String::from_utf8_lossy(&o.stdout));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("only in a terminal"));
+    assert!(!file.exists(), "no file without a password anyone saw");
 }
 
 #[test]
@@ -293,6 +380,40 @@ fn generator() {
 }
 
 #[test]
+fn generate_with_a_word_of_your_own() {
+    let k = Vaulty::new();
+    let run = |args: &[&str], stdin: &str| {
+        let o = k.run(args, stdin).success().get_output().clone();
+        (String::from_utf8(o.stdout).unwrap().trim().to_string(), String::from_utf8(o.stderr).unwrap())
+    };
+    let (pw, err) = run(&["generate", "--show", "-l", "20", "--own-word=Justin"], "");
+    assert!(pw.contains("Justin"), "{pw}");
+    assert_eq!(pw.chars().count(), 26, "20 random characters plus the word: {pw}");
+    let at = pw.find("Justin").unwrap();
+    assert!((5..=15).contains(&at), "in the middle: {pw}");
+    assert!(err.contains("strength counts only the random part"), "{err}");
+    assert!(err.contains("26 characters, about 1"), "the bits are those of the 20: {err}");
+    // --own-word alone asks for it (hidden in a terminal; here from stdin),
+    // so it stays out of the shell history.
+    let (pw, err) = run(&["generate", "--show", "--own-word"], "Bakfiets\n");
+    assert!(pw.contains("Bakfiets") && err.contains("NOT your master password"), "{pw} / {err}");
+    // A value needs the = (else it would be read as another argument).
+    k.run(&["generate", "--show", "--own-word", "Justin"], "").failure();
+    let (phrase, _) =
+        run(&["generate", "--show", "-p", "-w", "4", "--separator", ".", "--own-word=Bakfiets"], "");
+    let words: Vec<&str> = phrase.split('.').collect();
+    assert_eq!(words.len(), 5, "{phrase}");
+    let at = words.iter().position(|w| *w == "Bakfiets").expect(&phrase);
+    assert!((1..=3).contains(&at), "never first or last: {phrase}");
+    for bad in
+        ["--own-word=", "--own-word= lead", "--own-word=a\u{1b}]0;x\u{7}", "--own-word=zero\u{200B}width"]
+    {
+        k.run(&["generate", "--show", bad], "").failure().stderr(contains("own word"));
+    }
+    k.run(&["generate", "--show", "--own-word"], "\n").failure().stderr(contains("no word given"));
+}
+
+#[test]
 fn info_works_without_password() {
     let k = Vaulty::new();
     k.run(&["info"], "").success().stdout(contains("does not exist yet"));
@@ -347,6 +468,8 @@ fn shell_until_locked(k: &Vaulty, input: &str) -> String {
         .env("CAKEPASS_VAULT", &k.path)
         .env("NO_COLOR", "1")
         .env("XDG_CONFIG_HOME", k.dir().join("config-home"))
+        .env("XDG_CACHE_HOME", k.dir().join("cache-home"))
+        .env("HOME", k.dir().join("home"))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -897,6 +1020,40 @@ fn usb(v: &Vaulty) -> PathBuf {
     d
 }
 
+/// `add`/`generate --save` with `--own-word`: the word is asked after the
+/// master password and refused when it IS the master password (it would
+/// go to the website inside the new password).
+fn own_word_that_is_the_master_password_is_refused(v: &Vaulty) {
+    let add = |word_arg: &str, stdin: String| {
+        v.run(&["add", "Site", "--generate", word_arg, "-u", "john", "-e", "", "--url", "", "-t", ""], &stdin)
+    };
+    add("--own-word", format!("{PW}\n{PW}\n")).failure().stderr(contains("that is your master password"));
+    let own = format!("--own-word={PW}");
+    add(&own, format!("{PW}\n")).failure().stderr(contains("that is your master password"));
+    v.run(&["generate", "--save", "Site", "--own-word"], &format!("{PW}\n{PW}\n"))
+        .failure()
+        .stderr(contains("that is your master password"));
+    v.run(&["get", "site"], &format!("{PW}\n")).failure();
+    // The master password is asked first, then the word.
+    let err = add("--own-word", format!("{PW}\nJustin\n")).success().get_output().stderr.clone();
+    let err = String::from_utf8_lossy(&err);
+    assert!(err.find("Master password").unwrap() < err.find("Your own word").unwrap(), "{err}");
+    v.run(&["get", "site", "--show"], &format!("{PW}\n")).success().stdout(contains("Justin"));
+}
+
+#[test]
+fn an_own_word_that_is_the_master_password_is_refused() {
+    own_word_that_is_the_master_password_is_refused(&Vaulty::new().init());
+}
+
+#[test]
+fn an_own_word_that_is_the_master_password_is_refused_with_a_key_file_too() {
+    // The key file is loaded again for the check (unlock drops it).
+    let v = Vaulty::new();
+    init_with_key_file(&v);
+    own_word_that_is_the_master_password_is_refused(&v);
+}
+
 fn make_key_file(v: &Vaulty, name: &str) -> PathBuf {
     let kf = usb(v).join(name);
     v.run(&["keyfile", "create", kf.to_str().unwrap()], "").success();
@@ -1064,7 +1221,7 @@ fn security_levels_and_key_files_can_be_changed_and_keep_everything() {
         contains("now needs the key file")
             .and(contains("Saved in your settings"))
             .and(contains("no recovery"))
-            .and(contains("Copies of the vault you made yourself earlier")),
+            .and(contains("copies of the vault you made yourself earlier")),
     );
     v.run(&["get", "github", "--show"], &format!("{PW}\n")).success().stdout(contains(ITEM_PW));
     v.run(&["security"], "").success().stdout(contains("Key file:         required:"));
@@ -1241,6 +1398,8 @@ fn setup_with_passphrase(v: &Vaulty, after: impl FnOnce(&str) -> String) -> (std
         .env("CAKEPASS_VAULT", &v.path)
         .env("NO_COLOR", "1")
         .env("XDG_CONFIG_HOME", v.dir().join("config-home"))
+        .env("XDG_CACHE_HOME", v.dir().join("cache-home"))
+        .env("HOME", v.dir().join("home"))
         .env_remove("CAKEPASS_KEYFILE")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1518,6 +1677,10 @@ fn totp_codes_for_two_factor_authentication() {
     k.run(&["edit", "github", "--totp"], &format!("{PW}\nnot base32!\n"))
         .failure()
         .stderr(contains("not valid base32"));
+    // Valid base32 but far too short for a real secret (text pasted by mistake).
+    k.run(&["edit", "github", "--totp"], &format!("{PW}\nline one\n"))
+        .failure()
+        .stderr(contains("too short").and(contains("line one").not()));
     k.run(&["edit", "github", "--totp"], &format!("{PW}\n\n"))
         .failure()
         .stderr(contains("must not be empty"));

@@ -45,6 +45,115 @@ pub struct Config {
     pub hidden_tabs: Vec<Kind>,
     /// Where the key file is, for a vault that needs one (only the path).
     pub keyfile: Option<PathBuf>,
+    /// The accent color of the screen mode (pink unless chosen).
+    pub colors: Colors,
+    /// Own names for type tabs ("Notes" → "Clients"), in the order of
+    /// [`Kind::ALL`], each name checked by [`parse_tab_name`].
+    pub tab_names: Vec<(Kind, String)>,
+    /// Own tabs: each lists the items with a tag of the same name (any
+    /// case). At most [`MAX_OWN_TABS`], names checked by [`parse_tab_name`].
+    pub own_tabs: Vec<String>,
+    /// Whether the screen mode shows the 2FA tab.
+    pub two_factor_tab: bool,
+}
+
+/// The most own tabs (the tab bar has to hold them).
+pub const MAX_OWN_TABS: usize = 6;
+
+/// Parse `own_tabs`: names separated by commas, each checked by
+/// [`parse_tab_name`], no repeats (any case), at most [`MAX_OWN_TABS`].
+pub fn parse_own_tabs(s: &str) -> Vec<String> {
+    let mut tabs: Vec<String> = Vec::new();
+    for name in s.split(',').filter_map(parse_tab_name) {
+        if tabs.len() < MAX_OWN_TABS && !tabs.iter().any(|t| t.to_lowercase() == name.to_lowercase()) {
+            tabs.push(name);
+        }
+    }
+    tabs
+}
+
+/// The accent colors of the screen mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Colors {
+    #[default]
+    Pink,
+    Blue,
+    Green,
+    Purple,
+    Orange,
+    Red,
+    Teal,
+}
+
+impl Colors {
+    pub const ALL: [Colors; 7] = [
+        Colors::Pink,
+        Colors::Blue,
+        Colors::Green,
+        Colors::Purple,
+        Colors::Orange,
+        Colors::Red,
+        Colors::Teal,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Colors::Pink => "pink",
+            Colors::Blue => "blue",
+            Colors::Green => "green",
+            Colors::Purple => "purple",
+            Colors::Orange => "orange",
+            Colors::Red => "red",
+            Colors::Teal => "teal",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Colors> {
+        let s = s.trim().to_lowercase();
+        Colors::ALL.into_iter().find(|c| c.name() == s)
+    }
+
+    /// The next (`1`) or previous (`-1`) one, wrapping around.
+    pub fn step(self, delta: isize) -> Colors {
+        let n = Colors::ALL.len() as isize;
+        let i = Colors::ALL.iter().position(|&c| c == self).unwrap_or(0) as isize;
+        Colors::ALL[(i + delta).rem_euclid(n) as usize]
+    }
+}
+
+/// The longest own tab name (it has to fit in the tab bar).
+pub const MAX_TAB_NAME: usize = 16;
+
+/// An own name for a tab: 1 to 16 characters, no control or invisible
+/// characters, and none of `,` `:` `=` (the settings file uses them).
+/// `None` otherwise.
+pub fn parse_tab_name(s: &str) -> Option<String> {
+    let s = s.trim();
+    let ok = !s.is_empty()
+        && s.chars().count() <= MAX_TAB_NAME
+        && !s.chars().any(|c| {
+            c.is_control()
+                || matches!(c, ',' | ':' | '=')
+                || matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{FEFF}')
+        });
+    ok.then(|| s.to_string())
+}
+
+/// Parse `tab_names`: `type:name` pairs separated by commas
+/// ("note:Clients,api:Tokens"). A pair with an unknown type or a name
+/// [`parse_tab_name`] refuses is left out.
+pub fn parse_tab_names(s: &str) -> Vec<(Kind, String)> {
+    let mut names: Vec<(Kind, String)> = Vec::new();
+    for pair in s.split(',') {
+        let Some((kind, name)) = pair.split_once(':') else { continue };
+        if let (Some(kind), Some(name)) = (Kind::parse(kind.trim()), parse_tab_name(name))
+            && !names.iter().any(|(k, _)| *k == kind)
+        {
+            names.push((kind, name));
+        }
+    }
+    names.sort_by_key(|(k, _)| Kind::ALL.iter().position(|a| a == k));
+    names
 }
 
 impl Default for Config {
@@ -55,6 +164,10 @@ impl Default for Config {
             clip_time_secs: DEFAULT_CLEAR_SECS,
             hidden_tabs: Vec::new(),
             keyfile: None,
+            colors: Colors::Pink,
+            tab_names: Vec::new(),
+            own_tabs: Vec::new(),
+            two_factor_tab: true,
         }
     }
 }
@@ -144,6 +257,10 @@ impl Config {
                     }
                 }
                 "keyfile" => cfg.keyfile = parse_keyfile_path(value),
+                "colors" => cfg.colors = Colors::parse(value).unwrap_or_default(),
+                "tab_names" => cfg.tab_names = parse_tab_names(value),
+                "own_tabs" => cfg.own_tabs = parse_own_tabs(value),
+                "two_factor_tab" => cfg.two_factor_tab = parse_on_off(value).unwrap_or(true),
                 _ => {}
             }
         }
@@ -162,6 +279,32 @@ impl Config {
         if !self.hidden_tabs.is_empty() {
             text.push_str(&format!("hidden_tabs={}\n", self.hidden_tabs_text(",")));
         }
+        if self.colors != Colors::Pink {
+            text.push_str(&format!("colors={}\n", self.colors.name()));
+        }
+        // Only names that read back the same are written.
+        let names: Vec<String> = self
+            .tab_names
+            .iter()
+            .filter(|(_, n)| parse_tab_name(n).as_deref() == Some(n.as_str()))
+            .map(|(k, n)| format!("{}:{n}", type_name(*k)))
+            .collect();
+        if !names.is_empty() {
+            text.push_str(&format!("tab_names={}\n", names.join(",")));
+        }
+        let own: Vec<&str> = self
+            .own_tabs
+            .iter()
+            .filter(|n| parse_tab_name(n).as_deref() == Some(n.as_str()))
+            .map(String::as_str)
+            .take(MAX_OWN_TABS)
+            .collect();
+        if !own.is_empty() {
+            text.push_str(&format!("own_tabs={}\n", own.join(",")));
+        }
+        if !self.two_factor_tab {
+            text.push_str("two_factor_tab=off\n");
+        }
         // Only a path that reads back the same is written (see `parse_keyfile_path`).
         if let Some(p) =
             self.keyfile.as_ref().and_then(|p| p.to_str()).filter(|p| parse_keyfile_path(p).is_some())
@@ -174,6 +317,20 @@ impl Config {
     /// The hidden tabs as type names joined by `sep` (empty if none).
     pub fn hidden_tabs_text(&self, sep: &str) -> String {
         self.hidden_tabs.iter().map(|&k| type_name(k)).collect::<Vec<_>>().join(sep)
+    }
+
+    /// The own name of a type's tab, if one was given.
+    pub fn tab_name(&self, kind: Kind) -> Option<&str> {
+        self.tab_names.iter().find(|(k, _)| *k == kind).map(|(_, n)| n.as_str())
+    }
+
+    /// Give a type's tab its own name, or its usual one back (`None`).
+    pub fn set_tab_name(&mut self, kind: Kind, name: Option<String>) {
+        self.tab_names.retain(|(k, _)| *k != kind);
+        if let Some(name) = name {
+            self.tab_names.push((kind, name));
+            self.tab_names.sort_by_key(|(k, _)| Kind::ALL.iter().position(|a| a == k));
+        }
     }
 
     /// Whether the screen mode shows the tab of this type.
@@ -224,6 +381,51 @@ pub fn save(cfg: &Config) -> Result<()> {
 mod tests {
     use super::*;
     use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn colors_and_tab_names_read_back() {
+        let mut c = Config { colors: Colors::Teal, ..Config::default() };
+        c.set_tab_name(Kind::Note, Some("Clients".into()));
+        c.set_tab_name(Kind::Login, Some("Websites".into()));
+        let text = c.to_text();
+        assert!(text.contains("colors=teal\ntab_names=login:Websites,note:Clients\n"), "{text}");
+        assert_eq!(Config::parse(&text), c);
+        c.set_tab_name(Kind::Note, None);
+        assert_eq!(c.tab_name(Kind::Note), None);
+        assert_eq!(c.tab_name(Kind::Login), Some("Websites"));
+        // Pink and no names: no lines at all (files of older versions stay the same).
+        assert!(
+            !Config::default().to_text().contains("colors")
+                && !Config::default().to_text().contains("tab_names")
+        );
+    }
+
+    #[test]
+    fn own_tabs_and_the_2fa_tab_read_back() {
+        let c = Config::parse("own_tabs=Klanten, werk ,KLANTEN,a:b,,Thuis,5,6,7,8,9\ntwo_factor_tab=off\n");
+        assert_eq!(c.own_tabs, ["Klanten", "werk", "Thuis", "5", "6", "7"], "no repeats, at most 6");
+        assert!(!c.two_factor_tab);
+        assert_eq!(Config::parse(&c.to_text()), c);
+        let d = Config::default();
+        assert!(d.two_factor_tab && !d.to_text().contains("own_tabs") && !d.to_text().contains("two_factor"));
+        assert!(Config::parse("two_factor_tab=maybe").two_factor_tab, "unreadable: shown");
+    }
+
+    #[test]
+    fn bad_colors_and_tab_names_are_ignored() {
+        let c = Config::parse(
+            "colors=rainbow\ntab_names=note:Clients,bogus:X,api:,card:a=b,login:\u{202E}evil,ssh-key:Way too long a tab name,note:Twice\n",
+        );
+        assert_eq!(c.colors, Colors::Pink);
+        assert_eq!(c.tab_names, vec![(Kind::Note, "Clients".to_string())]);
+        for bad in ["", "   ", "a,b", "a:b", "a=b", "tab\x1b[31m", "\u{200B}", "12345678901234567"] {
+            assert_eq!(parse_tab_name(bad), None, "{bad:?}");
+        }
+        assert_eq!(parse_tab_name(" Klanten "), Some("Klanten".into()));
+        assert_eq!(parse_tab_name("Café 2FA ✓").as_deref(), Some("Café 2FA ✓"));
+        assert_eq!(Colors::Pink.step(-1), Colors::Teal);
+        assert_eq!(Colors::Teal.step(1), Colors::Pink);
+    }
 
     #[test]
     fn defaults() {
@@ -321,6 +523,10 @@ mod tests {
             clip_time_secs: 90,
             hidden_tabs: vec![Kind::Api, Kind::SshKey],
             keyfile: None,
+            colors: Colors::Purple,
+            tab_names: vec![(Kind::Note, "Clients".into())],
+            own_tabs: vec!["Klanten".into(), "Werk".into()],
+            two_factor_tab: false,
         };
         save_to(&path, &cfg).unwrap();
         assert_eq!(load_from(&path), cfg);

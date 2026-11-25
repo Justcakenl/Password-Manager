@@ -493,14 +493,18 @@ pub fn show(animate: bool) {
     }
 }
 
-/// A centered line below the logo.
+/// The version as shown on the opening screen, e.g. "v0.5.0".
+pub const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
+
+/// A centered line below the logo, with the version small (dim) under it.
 pub fn tagline(text: &str) {
     if !allowed() {
         return;
     }
     let cols = terminal_size().map_or(80, |(c, _)| c);
-    let pad = cols.saturating_sub(text.chars().count()) / 2;
-    eprintln!("{}{}\n", " ".repeat(pad), ui::pink(text));
+    let center = |s: &str| " ".repeat(cols.saturating_sub(s.chars().count()) / 2);
+    eprintln!("{}{}", center(text), ui::pink(text));
+    eprintln!("{}{}\n", center(VERSION), ui::dim_err(VERSION));
 }
 
 #[cfg(test)]

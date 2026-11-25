@@ -350,6 +350,31 @@ impl CachedStatus {
     }
 }
 
+/// The icon for the notification: the CakePass logo when it is installed
+/// (the package puts it in the hicolor theme as `cakepass`), else the
+/// standard info icon (a `cargo install` has no logo).
+fn notify_icon() -> &'static str {
+    let home = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share"));
+    let data_home = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).or(home);
+    let data_dirs = std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".into());
+    let dirs = data_home.into_iter().chain(data_dirs.split(':').filter(|d| !d.is_empty()).map(PathBuf::from));
+    if dirs.into_iter().any(|d| has_logo(&d)) { "cakepass" } else { "dialog-information" }
+}
+
+/// Whether `data_dir` (e.g. /usr/share) has the CakePass logo in the hicolor theme.
+fn has_logo(data_dir: &Path) -> bool {
+    let apps = data_dir.join("icons/hicolor");
+    // The sizes the packages install (packaging/*/PKGBUILD).
+    [
+        "scalable/apps/cakepass.svg",
+        "512x512/apps/cakepass.png",
+        "256x256/apps/cakepass.png",
+        "32x32/apps/cakepass.png",
+    ]
+    .iter()
+    .any(|f| apps.join(f).is_file())
+}
+
 /// Send one desktop notification per new version (if notify-send exists).
 fn notify(remote: &str) {
     let mut st = CachedStatus::read();
@@ -357,7 +382,7 @@ fn notify(remote: &str) {
         return;
     }
     let sent = Command::new("notify-send")
-        .args(["-a", "CakePass", "-i", "dialog-information", "CakePass update available"])
+        .args(["-a", "CakePass", "-i", notify_icon(), "CakePass update available"])
         .arg("Type in a terminal: cakepass --update")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -549,6 +574,16 @@ fn auto(mode: AutoMode) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_notification_uses_the_logo_only_when_it_is_installed() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!has_logo(dir.path()));
+        let apps = dir.path().join("icons/hicolor/scalable/apps");
+        fs::create_dir_all(&apps).unwrap();
+        fs::write(apps.join("cakepass.svg"), "<svg/>").unwrap();
+        assert!(has_logo(dir.path()));
+    }
 
     #[test]
     fn status_file_is_read_strictly() {

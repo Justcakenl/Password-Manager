@@ -9,7 +9,9 @@
 //!   buffers that are wiped right after. A revealed password or note is not
 //!   kept either: it is decrypted again for every frame while it is shown.
 //! - A revealed secret hides itself after [`REVEAL_SECS`], when the selection
-//!   changes, when a dialog or another screen opens, and on locking.
+//!   changes, when a dialog or another screen opens, and on locking. A TOTP
+//!   code shown with `t` stays live (a new code every period) until one of
+//!   those last three; it is computed offline from the clock, never kept.
 //! - Every change is saved at once with the library (`UnlockedVault::save`).
 //!   If saving fails the vault in memory is put back as it was, so memory and
 //!   file never differ.
@@ -20,7 +22,7 @@
 //!   typo can never re-key the vault under a password nobody knows.
 
 use std::cell::Cell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use zeroize::Zeroizing;
@@ -33,13 +35,15 @@ use cakepass::vault::{Entry, Kind, Vault};
 use cakepass::{Error, Result};
 
 use super::super::commands::{self, Notice};
-use super::super::config::Config;
+use super::super::config::{self, Config};
 use super::super::prompt;
 use super::grid::{Grid, Rect, wrap};
 use super::input::TextInput;
 use super::keys::{Event, Key};
-use super::screens::dialog::{Confirm, ConfirmAction, Help, HelpPage, Message, Prompt, PromptPurpose};
-use super::screens::form::Form;
+use super::screens::dialog::{
+    Confirm, ConfirmAction, Help, HelpPage, Message, Picked, Picker, Prompt, PromptPurpose,
+};
+use super::screens::form::{Field, Form};
 use super::screens::generator::{GenPrefs, GenTarget, Generator};
 use super::screens::settings::Settings;
 use super::screens::{self, Hint};
@@ -76,15 +80,31 @@ pub enum Tab {
     Identities,
     SshKeys,
     Notes,
+    /// Every item with a TOTP secret, whatever its type, with its current
+    /// code in the list (like an authenticator app). Not a type: shown
+    /// unless `two_factor_tab=off`.
+    TwoFactor,
+    /// An own tab (Settings → Tabs → + New tab): the items with a tag of its
+    /// name. The number is its place in `Config::own_tabs`.
+    Own(u8),
 }
 
 impl Tab {
-    pub const ALL: [Tab; 7] =
-        [Tab::All, Tab::Logins, Tab::Api, Tab::Cards, Tab::Identities, Tab::SshKeys, Tab::Notes];
+    /// Last, so ← from "All" goes straight to the codes.
+    pub const ALL: [Tab; 8] = [
+        Tab::All,
+        Tab::Logins,
+        Tab::Api,
+        Tab::Cards,
+        Tab::Identities,
+        Tab::SshKeys,
+        Tab::Notes,
+        Tab::TwoFactor,
+    ];
 
     pub fn kind(self) -> Option<Kind> {
         match self {
-            Tab::All => None,
+            Tab::All | Tab::TwoFactor | Tab::Own(_) => None,
             Tab::Logins => Some(Kind::Login),
             Tab::Api => Some(Kind::Api),
             Tab::Cards => Some(Kind::Card),
@@ -104,6 +124,9 @@ impl Tab {
             // Short, so all seven tabs keep their counts in 80 columns.
             Tab::SshKeys => "SSH",
             Tab::Notes => "Notes",
+            Tab::TwoFactor => "2FA",
+            // Named in the settings (see `App::tab_label`).
+            Tab::Own(_) => "",
         }
     }
 
@@ -117,21 +140,6 @@ impl Tab {
             Kind::SshKey => Tab::SshKeys,
             Kind::Note => Tab::Notes,
         }
-    }
-
-    /// The next (`delta` > 0) or previous tab that `shown` lets through,
-    /// going round. "All" is always shown, so there always is one.
-    pub fn step(self, delta: isize, shown: impl Fn(Tab) -> bool) -> Tab {
-        let n = Tab::ALL.len() as isize;
-        let mut i = Tab::ALL.iter().position(|&t| t == self).unwrap_or(0) as isize;
-        for _ in 0..n {
-            i = (i + delta.signum()).rem_euclid(n);
-            let t = Tab::ALL[i as usize];
-            if t == Tab::All || shown(t) {
-                return t;
-            }
-        }
-        Tab::All
     }
 }
 
@@ -148,6 +156,8 @@ pub enum Modal {
     Confirm(Confirm),
     Prompt(Prompt),
     Generator(Box<Generator>),
+    /// The 2FA tab's "add a code": which item gets it.
+    Picker(Picker),
 }
 
 /// A message in the status line.
@@ -167,8 +177,24 @@ pub enum Task {
     Reload(Zeroizing<String>),
     /// Time one unlock at this level (settings screen; no dialog involved).
     Measure(SecurityLevel),
+    /// Read a 2FA QR code from the screen (runs outside CakePass: slurp,
+    /// grim, zbarimg).
+    ScanQr,
     /// Re-check the master password, then re-key at this level.
     ChangeLevel(Zeroizing<String>, SecurityLevel),
+    /// Check that a word of your own is not the master password, then use it.
+    OwnWord(Zeroizing<String>),
+    /// Write a share file with this item (Argon2 for its new key).
+    Share {
+        name: String,
+        path: PathBuf,
+        with_totp: bool,
+    },
+    /// Open an export or share file with its password and add its items.
+    Import {
+        path: PathBuf,
+        password: Zeroizing<String>,
+    },
 }
 
 /// Copies a secret to the clipboard (with automatic clearing); returns the
@@ -178,6 +204,10 @@ pub type Copier = Box<dyn FnMut(&str) -> Result<&'static str>>;
 /// Measures how long one unlock takes with these settings (Argon2 on this
 /// computer). Replaced by a fake in the tests.
 pub type Measurer = Box<dyn FnMut(&KdfParams) -> Result<Duration>>;
+
+/// Reads a 2FA QR code from the screen (`qr::scan_screen`; a stand-in in
+/// the tests). `Ok(None)`: cancelled.
+pub type Scanner = Box<dyn FnMut() -> Result<Option<Zeroizing<String>>>>;
 
 /// A measured unlock time, or why it could not be measured.
 pub type Timing = std::result::Result<Duration, String>;
@@ -212,9 +242,10 @@ pub struct App {
     /// First visible row of the list (kept between frames).
     pub top: Cell<usize>,
     pub reveal_until: Option<Instant>,
-    /// The TOTP code of this item is shown in the details until then. Only
-    /// the name is kept: the code is computed again for every frame.
-    pub totp_shown: Option<(String, Instant)>,
+    /// The TOTP code of this item is shown live in the details (`t`), until
+    /// the selection or tab changes, a dialog opens, or CakePass locks or
+    /// closes. Only the name is kept: the code is computed for every frame.
+    pub totp_shown: Option<String>,
     /// Seconds since 1970 (for TOTP codes). Replaced by a fixed time in the tests.
     pub clock: fn() -> u64,
     pub screen: Screen,
@@ -227,6 +258,15 @@ pub struct App {
     /// Where the key file is, for a vault that needs one (only the path).
     pub key_file: Option<PathBuf>,
     pub measurer: Measurer,
+    pub scanner: Scanner,
+    /// A scanned 2FA link waiting for its account (the picker is open).
+    /// Wiped when dropped.
+    pub scanned: Option<Zeroizing<String>>,
+    /// The item `t` turns 2FA on for (the scan skips choosing an account).
+    pub scan_for: Option<String>,
+    /// Whether the clock is set automatically (see `qr::clock_synced`);
+    /// `Some(false)` puts a warning on the 2FA tab.
+    pub clock_synced: Option<bool>,
     /// Unlock times per level (index into `SecurityLevel::ALL`), measured
     /// the first time a level is shown.
     pub level_times: [Option<Timing>; 3],
@@ -268,6 +308,10 @@ impl App {
             wrong_reconfirms: 0,
             key_file: None,
             measurer: Box::new(crypto::measure_unlock),
+            scanner: Box::new(super::super::qr::scan_screen),
+            scanned: None,
+            scan_for: None,
+            clock_synced: None,
             level_times: Default::default(),
         };
         app.refilter();
@@ -328,6 +372,8 @@ impl App {
     pub fn lock_idle(&mut self) {
         self.reveal_until = None;
         self.totp_shown = None;
+        self.scanned = None;
+        self.scan_for = None;
         self.exit.get_or_insert(Exit::Idle);
     }
 
@@ -345,9 +391,6 @@ impl App {
         if self.reveal_until.is_some_and(|t| now >= t) {
             self.reveal_until = None;
         }
-        if self.totp_shown.as_ref().is_some_and(|(_, t)| now >= *t) {
-            self.totp_shown = None;
-        }
         if self.toast.as_ref().is_some_and(|t| now >= t.until) {
             self.toast = None;
         }
@@ -360,8 +403,8 @@ impl App {
     /// screen (at most a second, for the lock countdown).
     pub fn wait_ms(&self, now: Instant) -> i32 {
         let lock_at = self.last_input + self.lock_after;
-        let totp_until = self.totp_shown.as_ref().map(|(_, t)| *t);
-        let mut next = [Some(lock_at), self.reveal_until, totp_until, self.toast.as_ref().map(|t| t.until)]
+        // At most a second, so the seconds left and a new TOTP code show live.
+        let mut next = [Some(lock_at), self.reveal_until, self.toast.as_ref().map(|t| t.until)]
             .into_iter()
             .flatten()
             .map(|t| t.saturating_duration_since(now))
@@ -389,13 +432,60 @@ impl App {
 
     /// Whether the tab bar shows this tab (`config set hidden-tabs`, or the
     /// Tabs row in the settings). Only the tab: its items stay under "All".
+    /// "All" and "2FA" are not a type, so they are always shown.
     pub fn tab_shown(&self, tab: Tab) -> bool {
-        tab.kind().is_none_or(|k| self.cfg.shows_tab(k))
+        match tab {
+            Tab::All => true,
+            Tab::TwoFactor => self.cfg.two_factor_tab,
+            Tab::Own(i) => usize::from(i) < self.cfg.own_tabs.len(),
+            t => t.kind().is_none_or(|k| self.cfg.shows_tab(k)),
+        }
     }
 
-    /// The tab ← → (or Tab, Shift+Tab) moves to, skipping hidden ones.
+    /// The tabs of the tab bar, in order: All, the types, your own tabs,
+    /// 2FA (last, so ← from All goes straight to the codes). Hidden ones
+    /// are left out.
+    pub fn tabs(&self) -> Vec<Tab> {
+        let own = (0..self.cfg.own_tabs.len().min(config::MAX_OWN_TABS)).map(|i| Tab::Own(i as u8));
+        let types = Tab::ALL.into_iter().filter(|t| t.kind().is_some());
+        std::iter::once(Tab::All)
+            .chain(types)
+            .chain(own)
+            .chain(std::iter::once(Tab::TwoFactor))
+            .filter(|&t| self.tab_shown(t))
+            .collect()
+    }
+
+    /// Every tab, hidden ones too (for names that must not repeat).
+    pub fn tabs_with_hidden(&self) -> Vec<Tab> {
+        let own = (0..self.cfg.own_tabs.len()).map(|i| Tab::Own(i as u8));
+        Tab::ALL.into_iter().chain(own).collect()
+    }
+
+    /// Whether `tab` lists `e`.
+    pub fn tab_shows(&self, tab: Tab, e: &Entry) -> bool {
+        match tab {
+            Tab::TwoFactor => e.has_totp(),
+            Tab::Own(i) => self.cfg.own_tabs.get(usize::from(i)).is_some_and(|tag| e.has_tag(tag)),
+            t => t.kind().is_none_or(|k| e.kind() == k),
+        }
+    }
+
+    /// The name a tab shows: its own name from the settings, else the usual one.
+    pub fn tab_label(&self, tab: Tab) -> &str {
+        match tab {
+            Tab::Own(i) => self.cfg.own_tabs.get(usize::from(i)).map_or("?", String::as_str),
+            t => t.kind().and_then(|k| self.cfg.tab_name(k)).unwrap_or(t.label()),
+        }
+    }
+
+    /// The tab ← → (or Tab, Shift+Tab) moves to, skipping hidden ones,
+    /// going round.
     pub fn next_tab(&self, delta: isize) -> Tab {
-        self.tab.step(delta, |t| self.tab_shown(t))
+        let tabs = self.tabs();
+        let n = tabs.len() as isize;
+        let i = tabs.iter().position(|&t| t == self.tab).unwrap_or(0) as isize;
+        tabs[(i + delta.signum()).rem_euclid(n) as usize]
     }
 
     pub fn selected(&self) -> Option<&Entry> {
@@ -406,7 +496,7 @@ impl App {
     /// selected item selected when it is still there.
     pub fn refilter(&mut self) {
         let keep = self.selected().map(|e| e.name().to_string());
-        let kind = self.tab.kind();
+        let tab = self.tab;
         let query = self.search.as_str().trim();
         let entries = self.uv.vault.entries();
         self.view = if query.is_empty() {
@@ -424,7 +514,9 @@ impl App {
             }
             out
         };
-        self.view.retain(|&i| kind.is_none_or(|k| entries[i].kind() == k));
+        let mut view = std::mem::take(&mut self.view);
+        view.retain(|&i| self.tab_shows(tab, &entries[i]));
+        self.view = view;
         // Favorites first; otherwise the vault's order (by name). Stable.
         self.view.sort_by_key(|&i| !entries[i].is_favorite());
         match keep.and_then(|n| self.view.iter().position(|&i| entries[i].name() == n)) {
@@ -574,22 +666,179 @@ impl App {
 
     /// `t`: compute the current TOTP code of the selected item (fresh from
     /// the decrypted secret, which is wiped right after), copy it and show
-    /// it in the details for a while. The code itself is never kept.
+    /// it live in the details: every frame computes the code again, so a new
+    /// one appears each period. The code itself is never kept.
     fn copy_totp(&mut self) {
         let Some(e) = self.selected() else { return };
         let name = e.name().to_string();
         let code = match e.totp(self.uv.item_key()) {
             Ok(Some(totp)) => totp.code_at((self.clock)()),
+            // No code yet: turn 2FA on for this login, by scanning its QR code.
+            Ok(None) if matches!(e.kind(), Kind::Login | Kind::Api) => return self.ask_scan_qr_for(name),
             Ok(None) => {
+                let noun = commands::kind_noun(e.kind());
                 return self.info(format!(
-                    "'{name}' has no TOTP secret. Add one with: cakepass edit \"{name}\" --totp"
+                    "{noun} has no 2FA code. To add one anyway: press e and paste it in \"2FA secret\"."
                 ));
             }
             Err(e) => return self.fail(error_text(&e)),
         };
         self.reveal_until = None;
-        self.totp_shown = Some((name, self.now + Duration::from_secs(REVEAL_SECS)));
-        self.copy_value(code.as_str(), "The TOTP code");
+        self.totp_shown = Some(name);
+        self.copy_value(code.as_str(), "The 2FA code");
+    }
+
+    /// `a` on the 2FA tab: ask which item gets a 2FA code (or a new login).
+    pub fn ask_add_totp(&mut self) {
+        let names: Vec<String> =
+            self.entries().iter().filter(|e| !e.has_totp()).map(|e| e.name().to_string()).collect();
+        self.reveal_until = None;
+        self.modals.push(Modal::Picker(Picker::new(
+            "Add a 2FA code",
+            vec![
+                "Which account is it for? On the site, turn on two-factor login with an \
+                 authenticator app; under the QR code it shows a secret (\"can't scan it?\"). \
+                 Next you paste that secret."
+                    .into(),
+            ],
+            "+ New login",
+            names,
+        )));
+    }
+
+    /// Open the form for the chosen item, on its 2FA secret field. After a
+    /// QR scan the field is already filled in (hidden), and a new login gets
+    /// the account's name from the code.
+    fn add_totp_to(&mut self, picked: Picked) {
+        let scanned = self.scanned.take();
+        match picked {
+            Picked::New => {
+                self.reveal_until = None;
+                let mut f = Form::add(Kind::Login);
+                match &scanned {
+                    Some(link) => {
+                        if let Some(name) = super::super::qr::suggested_name(link) {
+                            f.name.set(&name);
+                        }
+                        f.put_totp(link);
+                        self.info("The 2FA code is filled in. Check the name; a password is optional. Ctrl+S saves.");
+                    }
+                    None => self.info("Type the name, then paste the 2FA secret (a password is optional)."),
+                }
+                self.screen = Screen::Form(Box::new(f));
+            }
+            // The field's own help line says what to paste.
+            Picked::Name(name) => {
+                self.open_edit_at(&name, Field::Totp);
+                if let (Some(link), Screen::Form(f)) = (&scanned, &mut self.screen) {
+                    f.put_totp(link);
+                    self.info("The 2FA code is filled in. Ctrl+S saves.");
+                }
+            }
+        }
+    }
+
+    /// `t` on an item without a 2FA code: scan the QR code for that item
+    /// (no account to choose); without the scan tools, its form opens on the
+    /// 2FA secret field to paste the secret instead.
+    fn ask_scan_qr_for(&mut self, name: String) {
+        self.reveal_until = None;
+        self.info(format!("2FA for '{name}': drag a box around the website's QR code (Esc cancels)…"));
+        self.scan_for = Some(name);
+        self.task = Some(Task::ScanQr);
+    }
+
+    /// `s` on the 2FA tab: drag a box around a QR code on the screen.
+    pub fn ask_scan_qr(&mut self) {
+        self.scan_for = None;
+        self.reveal_until = None;
+        self.info("Drag a box around the QR code on the screen (Esc cancels)…");
+        self.task = Some(Task::ScanQr);
+    }
+
+    /// The QR scan is done: on success choose the account (as with `a`).
+    fn scanned_qr(&mut self) {
+        let target = self.scan_for.take();
+        let link = match (self.scanner)() {
+            Ok(Some(link)) => link,
+            Ok(None) => return self.info("Scanning cancelled."),
+            // No scan tools (or no Wayland): paste the secret instead. Any
+            // other error (missed the QR code): just say so; t tries again.
+            Err(e) if target.is_some() && super::super::qr::tools_missing(&e) => {
+                let name = target.unwrap_or_default();
+                self.open_edit_at(&name, Field::Totp);
+                return self.info(format!(
+                    "{} Paste the 2FA secret instead (the text under the QR code), then Ctrl+S.",
+                    error_text(&e)
+                ));
+            }
+            Err(e) => return self.fail(error_text(&e)),
+        };
+        let totp = match cakepass::totp::Totp::parse_new(&link) {
+            Ok(t) => t,
+            Err(e) => return self.fail(format!("That QR code is not a usable 2FA code: {}", error_text(&e))),
+        };
+        if let Some(name) = target {
+            // The item was chosen with `t`: straight to its form. When the
+            // name in the code is another one, say so (a wrong QR code shows).
+            drop(totp);
+            let other = super::super::qr::suggested_name(&link).filter(|n| {
+                !n.trim().eq_ignore_ascii_case(name.trim())
+                    && !name.to_lowercase().contains(&n.trim().to_lowercase())
+            });
+            self.toast = None;
+            self.scanned = Some(link);
+            self.add_totp_to(Picked::Name(name.clone()));
+            if let (Some(other), Screen::Form(_)) = (other, &self.screen) {
+                self.say(
+                    Style::ERROR,
+                    format!("This QR code is for '{other}'; Ctrl+S saves it under '{name}' (Esc cancels)."),
+                );
+            }
+            return;
+        }
+        // The name in the code (plain text only), so a wrong QR code shows.
+        let suggested = super::super::qr::suggested_name(&link);
+        let from = suggested.as_ref().map_or(String::new(), |n| format!(" for \"{n}\""));
+        let about = format!(
+            "QR code read{from}: {}, {} digits, a new code every {} s.",
+            totp.algorithm().name(),
+            totp.digits(),
+            totp.period()
+        );
+        drop(totp);
+        // An item of that name that has a code already (not in the picker).
+        let has_code = suggested.as_ref().and_then(|n| {
+            self.entries()
+                .iter()
+                .find(|e| e.has_totp() && e.name().trim().eq_ignore_ascii_case(n.trim()))
+                .map(|e| e.name().to_string())
+        });
+        self.toast = None;
+        self.ask_add_totp();
+        if let Some(Modal::Picker(p)) = self.modals.last_mut() {
+            p.title = "Add the scanned 2FA code".into();
+            // An item with that name (without a code yet) is chosen already:
+            // then Enter is all it takes.
+            let same =
+                suggested.and_then(|n| p.names.iter().position(|m| m.trim().eq_ignore_ascii_case(n.trim())));
+            let ask = match (same, has_code) {
+                (Some(i), _) => {
+                    p.sel = i + 1;
+                    format!("Press Enter to add it to '{}', or choose another account.", p.names[i])
+                }
+                (None, Some(name)) => {
+                    format!(
+                        "'{name}' already has a 2FA code. Choose another account, or edit it with e to replace its code."
+                    )
+                }
+                (None, None) => {
+                    "Press Enter to save it as a new login, or choose the account it is for.".to_string()
+                }
+            };
+            p.lines = vec![about, ask];
+        }
+        self.scanned = Some(link);
     }
 
     /// `f`: pin the selected item as a favorite, or unpin it. Saved at once
@@ -690,6 +939,17 @@ impl App {
                 }
                 None => {}
             },
+            Modal::Picker(p) => match p.handle(ev) {
+                Some(Some(picked)) => {
+                    self.modals.pop();
+                    self.add_totp_to(picked);
+                }
+                Some(None) => {
+                    self.modals.pop();
+                    self.scanned = None; // a scanned code that was not used is wiped
+                }
+                None => {}
+            },
             Modal::Generator(g) => {
                 let Event::Key(key) = ev else { return };
                 match g.handle(key) {
@@ -711,6 +971,23 @@ impl App {
                         true,
                         PromptPurpose::OwnPassword,
                     ))),
+                    screens::generator::Action::OwnWord => {
+                        let mut p = Prompt::new(
+                            "A word of your own",
+                            vec![
+                                "It goes into the middle of the password, e.g. a name (NOT your master \
+                                 password). The random part keeps its full length, so it is never weaker; the \
+                                 word itself adds no strength. Leave it empty to remove it."
+                                    .into(),
+                            ],
+                            "Word",
+                            // Like the generator: dots unless it shows the password (v).
+                            !g.shown,
+                            PromptPurpose::OwnWord,
+                        );
+                        p.input.set(&g.prefs.own_word);
+                        self.modals.push(Modal::Prompt(p));
+                    }
                     screens::generator::Action::Accept => self.generator_accepted(),
                 }
             }
@@ -743,6 +1020,12 @@ impl App {
                 true,
                 PromptPurpose::Reload,
             ))),
+            (ConfirmAction::ShareTotp(name), yes) => self.ask_share_file(name, yes),
+            (ConfirmAction::DeleteFile(path), true) => match cakepass::import::overwrite_and_remove(&path) {
+                Ok(()) => self.ok(format!("{} overwritten and deleted.", path.display())),
+                Err(e) => self.fail(format!("Could not delete {}: {}", path.display(), error_text(&e))),
+            },
+            (ConfirmAction::DeleteFile(_), false) => self.info("The file was kept."),
             (ConfirmAction::Reload, false) => {
                 self.info("Not saved. Lock (l) and open CakePass again to see the other changes.")
             }
@@ -789,6 +1072,101 @@ impl App {
                     true,
                     PromptPurpose::OwnPasswordRepeat(text),
                 )));
+            }
+            PromptPurpose::NewTab => {
+                let taken = |n: &str| {
+                    self.tabs_with_hidden().into_iter().any(|t| {
+                        self.tab_label(t).to_lowercase() == n.to_lowercase()
+                            || t.label().to_lowercase() == n.to_lowercase()
+                    })
+                };
+                let error = match config::parse_tab_name(&text) {
+                    _ if text.trim().is_empty() => return,
+                    Some(n) if taken(&n) => Some(format!("There already is a tab called \"{n}\".")),
+                    Some(n) if super::grid::str_width(&n) <= config::MAX_TAB_NAME => {
+                        let mut cfg = self.cfg.clone();
+                        cfg.own_tabs.push(n.clone());
+                        if self.save_config(cfg) {
+                            let count = self.entries().iter().filter(|e| e.has_tag(&n)).count();
+                            self.ok(format!(
+                                "Tab \"{n}\" made: it lists the items tagged \"{n}\" ({count} now)."
+                            ));
+                            if let Screen::Settings(s) = &mut self.screen {
+                                s.tab_item = self.cfg.own_tabs.len() + Kind::ALL.len() - 1;
+                            }
+                        }
+                        None
+                    }
+                    _ => Some(format!(
+                        "1 to {} characters (wide ones count double), without , : or =.",
+                        config::MAX_TAB_NAME
+                    )),
+                };
+                if let Some(error) = error {
+                    p.purpose = PromptPurpose::NewTab;
+                    p.error = Some(error);
+                    self.modals.push(Modal::Prompt(p));
+                }
+            }
+            PromptPurpose::RenameTab(kind) => {
+                let usual = Tab::of(kind).label();
+                // The name of another tab (its own or usual one): two tabs
+                // with one name would only confuse.
+                let taken = |n: &str| {
+                    self.tabs_with_hidden().into_iter().filter(|&t| t != Tab::of(kind)).any(|t| {
+                        self.tab_label(t).to_lowercase() == n.to_lowercase()
+                            || t.label().to_lowercase() == n.to_lowercase()
+                    })
+                };
+                let name = match text.trim() {
+                    "" => None,
+                    t => match config::parse_tab_name(t) {
+                        Some(n) if taken(&n) => {
+                            p.purpose = PromptPurpose::RenameTab(kind);
+                            p.error = Some(format!("Another tab is already called \"{n}\"."));
+                            return self.modals.push(Modal::Prompt(p));
+                        }
+                        // Wide characters take two columns: the tab bar has room for 16.
+                        Some(n) if super::grid::str_width(&n) <= config::MAX_TAB_NAME && n != usual => {
+                            Some(n)
+                        }
+                        Some(n) if n == usual => None,
+                        _ => {
+                            p.purpose = PromptPurpose::RenameTab(kind);
+                            p.error = Some(format!(
+                                "1 to {} characters (wide ones count double), without , : or =.",
+                                config::MAX_TAB_NAME
+                            ));
+                            return self.modals.push(Modal::Prompt(p));
+                        }
+                    },
+                };
+                let mut cfg = self.cfg.clone();
+                cfg.set_tab_name(kind, name.clone());
+                if self.save_config(cfg) {
+                    match name {
+                        Some(n) => self.ok(format!("The {usual} tab is now called \"{n}\".")),
+                        None => self.ok(format!("The {usual} tab has its usual name again.")),
+                    }
+                }
+            }
+            PromptPurpose::OwnWord => {
+                let word = Zeroizing::new(text.trim().to_string());
+                p.purpose = PromptPurpose::OwnWord;
+                if word.is_empty() {
+                    if let Some(Modal::Generator(g)) = self.modals.last_mut() {
+                        g.set_own_word(""); // removes it
+                    }
+                } else if let Err(e) = cakepass::generator::check_own_word(&word) {
+                    p.error = Some(error_text(&e));
+                    self.modals.push(Modal::Prompt(p));
+                } else {
+                    // SECURITY: the word goes into a password for a website;
+                    // never the master password (one Argon2 run, as a task).
+                    p.busy = Some("Checking the word…");
+                    self.modals.push(Modal::Prompt(p));
+                    self.task = Some(Task::OwnWord(word));
+                }
             }
             PromptPurpose::OwnPasswordRepeat(first) => {
                 let same = same_secret(&first, &text);
@@ -864,7 +1242,147 @@ impl App {
                 self.modals.push(Modal::Prompt(p));
                 self.task = Some(Task::ChangeLevel(text, level));
             }
+            PromptPurpose::ShareTo(name, with_totp) => {
+                let path = expand_home(text.trim());
+                let problem = if text.trim().is_empty() {
+                    Some("Type where the file should go.".to_string())
+                } else if std::fs::symlink_metadata(&path).is_ok() {
+                    Some("That file already exists; choose another name.".to_string())
+                } else {
+                    None
+                };
+                p.purpose = PromptPurpose::ShareTo(name.clone(), with_totp);
+                if problem.is_some() {
+                    p.error = problem;
+                    self.modals.push(Modal::Prompt(p));
+                    return;
+                }
+                p.busy = Some("Encrypting the share file…");
+                self.modals.push(Modal::Prompt(p));
+                self.task = Some(Task::Share { name, path, with_totp });
+            }
+            PromptPurpose::ImportFrom => {
+                let path = expand_home(text.trim());
+                p.purpose = PromptPurpose::ImportFrom;
+                match storage::read_header(&path) {
+                    Ok(h) if h.key_file => {
+                        p.error = Some(
+                            "This file needs a key file; add it with `cakepass import` on the command line.".into(),
+                        );
+                        self.modals.push(Modal::Prompt(p));
+                    }
+                    Ok(_) => self.modals.push(Modal::Prompt(Prompt::new(
+                        "Add items from a file",
+                        vec![format!(
+                            "Type the password of {} (the share or export password, not your master password).",
+                            path.display()
+                        )],
+                        "Password",
+                        true,
+                        PromptPurpose::ImportPassword(path),
+                    ))),
+                    Err(e) => {
+                        p.error = Some(error_text(&e));
+                        self.modals.push(Modal::Prompt(p));
+                    }
+                }
+            }
+            PromptPurpose::ImportPassword(path) => {
+                p.purpose = PromptPurpose::ImportPassword(path.clone());
+                p.busy = Some("Opening the file…");
+                self.modals.push(Modal::Prompt(p));
+                self.task = Some(Task::Import { path, password: text });
+            }
         }
+    }
+
+    /// `x`: share the selected item. An item with a 2FA secret first asks
+    /// whether that goes along (default no); then where the file goes. The
+    /// password is generated and shown once afterwards.
+    pub fn ask_share(&mut self) {
+        let Some(e) = self.selected() else { return };
+        let (name, has_totp) = (e.name().to_string(), e.has_totp());
+        self.reveal_until = None;
+        if has_totp {
+            self.modals.push(Modal::Confirm(Confirm::new(
+                &format!("Share '{name}'"),
+                vec![
+                    "This item has a 2FA secret. Share that too? Then the other person can make your \
+                     2FA codes for good (only turning 2FA off and on again at the site undoes that)."
+                        .into(),
+                ],
+                "Share it too",
+                "Leave it out",
+                false,
+                ConfirmAction::ShareTotp(name),
+            )));
+        } else {
+            self.ask_share_file(name, false);
+        }
+    }
+
+    /// The share dialog's file question. The suggested name has the date, not
+    /// the item's name (chat apps show file names in their previews).
+    fn ask_share_file(&mut self, name: String, with_totp: bool) {
+        let today = super::super::ui::format_time(cakepass::vault::now());
+        let default = format!("~/cakepass-share-{}.cakepass", today.get(..10).unwrap_or("file"));
+        let mut p = Prompt::new(
+            &format!("Share '{name}'"),
+            vec![
+                "CakePass makes an encrypted file with only this item and a password of its own. \
+                 You send the file (Signal, e-mail, USB stick); the other person adds it to their CakePass with i."
+                    .into(),
+            ],
+            "File",
+            false,
+            PromptPurpose::ShareTo(name, with_totp),
+        );
+        p.input.set(&default);
+        self.modals.push(Modal::Prompt(p));
+    }
+
+    /// `i`: add the items of a share or export file.
+    pub fn ask_import(&mut self) {
+        self.reveal_until = None;
+        self.modals.push(Modal::Prompt(Prompt::new(
+            "Add items from a file",
+            vec![
+                "A file someone shared with you, or an export of your own (made with x or cakepass export)."
+                    .into(),
+            ],
+            "File",
+            false,
+            PromptPurpose::ImportFrom,
+        )));
+    }
+
+    fn share(&mut self, name: &str, path: &Path, with_totp: bool) -> Result<Message> {
+        let password = cakepass::generator::generate_passphrase(&Default::default())?;
+        self.uv.share_to(path, &[name], password.as_bytes(), with_totp)?;
+        // The message wipes its lines when it closes (see `Message`).
+        let mut lines = vec![
+            format!("Saved (encrypted) in {}", path.display()),
+            format!("Share password:  {}", password.as_str()),
+        ];
+        drop(password);
+        if let Some(e) = self.uv.vault.get(name) {
+            match (e.has_totp(), with_totp) {
+                (true, true) => lines
+                    .push("It includes the 2FA secret: the other person can make your 2FA codes too.".into()),
+                (true, false) => lines.push("Its 2FA secret was left out.".into()),
+                _ => {}
+            }
+            if e.kind() == Kind::SshKey && e.has_password() {
+                lines.push("It includes the private SSH key.".into());
+            }
+        }
+        lines.extend([
+            "1. Send the file to the other person (Signal, e-mail, USB stick, …).".to_string(),
+            "2. Tell them this password ANOTHER way (in person, by phone), never with the file.".into(),
+            "3. They add it in their CakePass with i (or: cakepass import FILE).".into(),
+            "The password is not shown again. Delete the file once they have it.".into(),
+        ]);
+        Ok(Message::new("Shared", lines, false))
     }
 
     fn generator_accepted(&mut self) {
@@ -897,6 +1415,10 @@ impl App {
             self.level_times[level_index(level)] = Some(timing);
             return true;
         }
+        if let Task::ScanQr = task {
+            self.scanned_qr();
+            return true;
+        }
         // The prompt that queued the task is on top; it is replaced or updated.
         let mut top = match self.modals.pop() {
             Some(Modal::Prompt(p)) => p,
@@ -908,7 +1430,85 @@ impl App {
         };
         top.busy = None;
         match task {
-            Task::Measure(_) => unreachable!("handled above"),
+            Task::Measure(_) | Task::ScanQr => unreachable!("handled above"),
+            Task::Share { name, path, with_totp } => match self.share(&name, &path, with_totp) {
+                Ok(message) => self.modals.push(Modal::Message(message)),
+                Err(e) => {
+                    top.error = Some(error_text(&e));
+                    self.modals.push(Modal::Prompt(top));
+                }
+            },
+            Task::Import { path, password } => {
+                let read = storage::read_vault_file(&path, Credentials::password(password.as_bytes()));
+                drop(password);
+                match read {
+                    Ok((other, other_key)) => {
+                        let mut counts = (0, 0);
+                        let merged = self.commit(|v, key| {
+                            counts = v.merge(&other, other_key.item_key(), key)?;
+                            Ok(())
+                        });
+                        match merged {
+                            Ok(()) => {
+                                self.refilter();
+                                self.ok(format!(
+                                    "{} item(s) added, {} already present. Same names got a number, e.g. \"GitHub (2)\".",
+                                    counts.0, counts.1
+                                ));
+                                // It opens with its password alone: offer to get rid of it
+                                // (never this vault's own file, backup or pre-update copy).
+                                if !self.uv.paths().owns(&path) {
+                                    self.modals.push(Modal::Confirm(Confirm::new(
+                                    "Delete the file?",
+                                    vec![format!(
+                                        "The items are in your vault now. Overwrite and delete {}? Anyone with \
+                                         its password could still open it.",
+                                        path.display()
+                                    )],
+                                    "Delete it",
+                                    "Keep it",
+                                    false,
+                                    ConfirmAction::DeleteFile(path),
+                                )));
+                                }
+                            }
+                            Err(e) => {
+                                if let Some(t) = self.save_error(e) {
+                                    self.modals.push(Modal::Message(Message::new(
+                                        "Nothing added",
+                                        vec![t],
+                                        true,
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                    Err(Error::Decrypt) => {
+                        top.input.clear();
+                        top.error = Some("Wrong password for this file. Try again.".into());
+                        self.modals.push(Modal::Prompt(top));
+                    }
+                    Err(e) => self.modals.push(Modal::Message(Message::new(
+                        "Nothing added",
+                        vec![error_text(&e)],
+                        true,
+                    ))),
+                }
+            }
+            Task::OwnWord(word) => match self.check_password(&word) {
+                Ok(true) => {
+                    top.input.clear();
+                    top.error =
+                        Some("That is your master password; it must never go into another password.".into());
+                    self.modals.push(Modal::Prompt(top));
+                }
+                Ok(false) => {
+                    if let Some(Modal::Generator(g)) = self.modals.last_mut() {
+                        g.set_own_word(&word);
+                    }
+                }
+                Err(e) => self.check_failed(top, &e),
+            },
             Task::Reconfirm(pw) => match self.check_password(&pw) {
                 Ok(true) => {
                     self.wrong_reconfirms = 0;
@@ -932,16 +1532,17 @@ impl App {
                     self.uv.rekey(Credentials::new(new.as_bytes(), kf.as_ref().map(|k| &k.pepper)), kdf)
                 });
                 match changed {
-                    Ok(()) => self.modals.push(Modal::Message(Message::new(
-                        "Master password changed",
-                        vec![
-                            "All items and the .bak backup now use the new master password.".into(),
-                            "Copies and exports you made yourself earlier still open with the OLD \
+                    Ok(copies) => {
+                        let mut lines =
+                            vec!["All items and the .bak backup now use the new master password.".into()];
+                        let warn = copies_lines(&copies, &mut lines);
+                        lines.push(
+                            "Exports and copies you made yourself earlier still open with the OLD \
                              password. Delete them if you think the old password has leaked."
                                 .into(),
-                        ],
-                        false,
-                    ))),
+                        );
+                        self.modals.push(Modal::Message(Message::new("Master password changed", lines, warn)))
+                    }
                     Err(e) => {
                         let mut lines =
                             vec![format!("The master password was NOT changed: {}", error_text(&e))];
@@ -1030,15 +1631,15 @@ impl App {
             self.uv.rekey(Credentials::new(pw.as_bytes(), kf.as_ref().map(|k| &k.pepper)), level.params())
         });
         let message = match changed {
-            Ok(()) => Message::new(
-                "Security level changed",
-                vec![
+            Ok(copies) => {
+                let mut lines = vec![
                     format!("The vault now uses the {} level: {}.", level.title(), level.params().describe()),
                     format!("Unlocking takes about {} on this computer.", commands::seconds(start.elapsed())),
                     "Your master password did not change. The .bak backup was re-encrypted as well.".into(),
-                ],
-                false,
-            ),
+                ];
+                let warn = copies_lines(&copies, &mut lines);
+                Message::new("Security level changed", lines, warn)
+            }
             Err(e) => Message::new(
                 "Not changed",
                 vec![format!("The security level was NOT changed: {}", error_text(&e))],
@@ -1097,10 +1698,45 @@ impl App {
                 Modal::Confirm(c) => c.draw(g, area),
                 Modal::Prompt(p) => p.draw(g, area),
                 Modal::Generator(gn) => gn.draw(g, area),
+                Modal::Picker(p) => p.draw(g, area),
             };
         }
         screens::status_line(g, self, now);
         screens::hint_bar(g, &hints);
+    }
+}
+
+/// After re-keying, what happened to the `pre-update` copies, as dialog
+/// lines. Returns whether there is something to warn about. The screen only
+/// lists copies it could not re-encrypt; deleting them is `cakepass passwd`'s
+/// question or the user's own choice.
+fn copies_lines(r: &cakepass::storage::CopiesReport, lines: &mut Vec<String>) -> bool {
+    if r.rekeyed > 0 {
+        let n = r.rekeyed;
+        lines.push(format!(
+            "{n} {} made before updates re-encrypted as well (contents unchanged).",
+            if n == 1 { "copy" } else { "copies" }
+        ));
+    }
+    for (path, why) in &r.failed {
+        lines.push(format!("Could not re-encrypt {} ({why}); it still opens the old way.", path.display()));
+    }
+    if !r.stale.is_empty() {
+        lines.push(
+            "These copies still open with an EARLIER password or key file (from before a previous change); \
+             delete them if that could have leaked:"
+                .into(),
+        );
+        lines.extend(r.stale.iter().map(|p| format!("  {}", p.display())));
+    }
+    !r.failed.is_empty() || !r.stale.is_empty()
+}
+
+/// A path as typed: `~/…` is in the home folder.
+fn expand_home(text: &str) -> PathBuf {
+    match (text.strip_prefix("~/"), std::env::var_os("HOME")) {
+        (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
+        _ => PathBuf::from(text),
     }
 }
 
