@@ -871,6 +871,8 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   tests updated (the row has 2FA and "+ New" now). Seen for real: "+ New"
   → Klanten, 2FA hidden, a login made on the Klanten tab got the tag, the
   file has `own_tabs=Klanten` and `two_factor_tab=off`.
+  README (security-opus): tab names and tags are not encrypted, so no
+  secrets in them (whoever publishes their dotfiles publishes the names).
 
 ## Still to do
 
