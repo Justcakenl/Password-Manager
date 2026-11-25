@@ -337,7 +337,19 @@ installed to (step 5). More help: [Troubleshooting](#troubleshooting).
 
 - **2FA tab** in the screen, like an authenticator app: every code live, with
   the seconds left and the next code; set up a code with `a` on that tab or
-  the "2FA secret" field of any item.
+  the "2FA secret" field of any item. An empty 2FA tab shows the steps.
+- **2FA in one key: `t`.** On a login without a code it turns 2FA on (drag a
+  box around the website's QR code, Ctrl+S); on one with a code it copies it
+  and shows it live in the details.
+- **Scan a QR code** from the screen with `s` on the 2FA tab (grim, slurp and
+  zbar; the picture never touches the disk or the clipboard).
+- **A login with only a 2FA code**, without a password, like in an
+  authenticator app.
+- A warning on the 2FA tab when the clock of the computer is not set
+  automatically.
+- **Make the screen your own** (Settings, `s`): choose the **colors**, give a
+  tab **your own name** (`r`), make **your own tabs** ("+ New": a tab per
+  tag), and hide the tabs you do not use, **2FA included**.
 - **Sharing items** with someone else: `x` in the screen or `cakepass share`
   makes an encrypted file with a generated password; they add it with `i` or
   `cakepass import`. CakePass itself sends nothing.

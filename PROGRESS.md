@@ -874,6 +874,14 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   README (security-opus): tab names and tags are not encrypted, so no
   secrets in them (whoever publishes their dotfiles publishes the names).
 
+- [x] **0.5.0 holds everything up to now** (the user: "no version 0.6, this
+  is still 0.5"). The release is made from ADMIN `main` `fc45c0b` instead of
+  `153e858`: README "What's new in 0.5" lists the 2FA steps, `t`, the QR
+  scan, 2FA-only logins, the clock warning and the settings for colors, tab
+  names, own tabs and hiding the 2FA tab. The vault format is unchanged
+  (0.4 and 0.5 still open each other's vaults); 0.4 ignores the new lines
+  in the settings file.
+
 ## Still to do
 
 - [x] **Step 16b: pre-update copies follow a re-key** (branch
