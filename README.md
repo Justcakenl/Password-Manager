@@ -572,6 +572,14 @@ Hiding a tab hides **no items**: they stay in the **All** tab (which cannot be
 hidden), and `list`, `search` and `get` show them as always. It only changes
 which tabs the screen offers.
 
+**Your own tabs.** On the Tabs row go to "+ New" (or press `n`), press Enter and
+type a name, e.g. "Klanten". The tab lists every item with that tag, of any
+type; give an item the tag with `e` → Tags, and a new item made on the tab
+gets it by itself. `d` on an own tab deletes the tab (the items and their tags
+stay). At most 6. **The 2FA tab** is on the Tabs row too: Enter hides it (and
+shows it again); without it, `t` still shows and copies a code, and a newly
+added code shows live in the details.
+
 **Renaming tabs.** Keep your clients in notes? On the Tabs row choose Notes,
 press `r` and type "Clients" (at most 16 characters; empty gives the usual
 name back). Only the tab is renamed: the items keep their type, and the

@@ -848,6 +848,30 @@ CakePass 0.3 can no longer open it (format 3); the `.pre-update-…` copy can.
   Next steps (to plan): own tabs (e.g. a tab per tag: "Clients" = every
   item tagged client), the order of the tabs, the order of the fields.
 
+- [x] **Own tabs, and the 2FA tab can be hidden** (branch
+  `feature/own-tabs`, on `fix/tab-names-unique`; the user: "add tab, make
+  your own tab, and put 2FA in between so people can turn it off or on").
+  `Tab::Own(i)`: an own tab lists the items with a tag of its name (any
+  case; tags are stored next to each item already, nothing new in the
+  vault), `own_tabs=Klanten,Werk` in the settings file (`parse_own_tabs`:
+  names as `parse_tab_name`, no repeats, at most 6). The tab bar is now
+  `App::tabs()` (All, the types, own tabs, 2FA last) and ← → go through it
+  (`Tab::step` and `Tab::shows` became `App::next_tab`/`App::tab_shows`).
+  Settings → Tabs lists the types, own tabs, 2FA and "+ New": Enter on
+  "+ New" (or `n`) asks a name (refused: the name of another tab, too
+  long, `,` `:` `=`), `d` deletes an own tab (items and tags stay), Enter
+  on 2FA hides or shows it (`two_factor_tab=off`). Without the 2FA tab a
+  newly saved code stays on the current tab, live in the details, and the
+  message says "t copies it". A new item made on an own tab gets its tag.
+  The row uses one space between the tabs when two do not fit, and shows
+  one tab at a time (‹ ›) when even that does not fit. Tests: config
+  `own_tabs_and_the_2fa_tab_read_back`; app/tests.rs
+  `own_tabs_and_hiding_the_2fa_tab`,
+  `without_the_2fa_tab_a_new_code_shows_in_the_details`; three settings
+  tests updated (the row has 2FA and "+ New" now). Seen for real: "+ New"
+  → Klanten, 2FA hidden, a login made on the Klanten tab got the tag, the
+  file has `own_tabs=Klanten` and `two_factor_tab=off`.
+
 ## Still to do
 
 - [x] **Step 16b: pre-update copies follow a re-key** (branch

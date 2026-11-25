@@ -138,6 +138,8 @@ pub enum PromptPurpose {
     ImportPassword(std::path::PathBuf),
     /// An own name for the tab of this type (empty: its usual name).
     RenameTab(Kind),
+    /// The name of a new own tab (it lists the items with that tag).
+    NewTab,
 }
 
 pub struct Prompt {
@@ -450,6 +452,12 @@ impl HelpPage {
                         "r",
                         "on Tabs: give that tab a name of your own, e.g. Notes → Clients (empty: its usual name)",
                     ),
+                    (
+                        "n  + New",
+                        "on Tabs: make a tab of your own; it lists the items with a tag of its name",
+                    ),
+                    ("d", "on Tabs: delete an own tab (its items and their tags stay)"),
+                    ("", "Enter on 2FA hides or shows the 2FA tab (t still shows and copies a code)"),
                     ("", "the unlock time of a level is measured on this computer when you choose it"),
                     ("Esc", "back to the list"),
                 ],
