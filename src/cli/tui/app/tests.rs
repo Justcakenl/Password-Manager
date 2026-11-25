@@ -1841,12 +1841,12 @@ fn hiding_a_tab_in_the_settings_keeps_its_items_under_all() {
     t.key(Key::Char('s'));
     t.keys(&[Key::Down, Key::Down]);
     let s = t.screen();
-    assert!(s.contains("Tabs") && s.contains("✔Logins  ✔API keys  ✔Cards  ✔IDs  ✔SSH  ✔Notes"), "{s}");
+    assert!(s.contains("Tabs") && s.contains("✔Logins ✔API keys ✔Cards ✔IDs ✔SSH ✔Notes ✔2FA + New"), "{s}");
     assert!(s.contains("Enter: show/hide it (items stay under All) · r: rename it"), "{s}");
     t.key(Key::Right);
     t.key(Key::Enter);
     assert_eq!(t.toast(), "The API keys tab is hidden; its items stay under All.");
-    assert!(t.screen().contains("✔Logins  ✖API keys  ✔Cards"), "{}", t.screen());
+    assert!(t.screen().contains("✔Logins ✖API keys ✔Cards"), "{}", t.screen());
     assert_eq!(t.app.cfg.hidden_tabs, [Kind::Api]);
     // Saved at once, in the same settings file as the other settings.
     let saved = crate::cli::config::load_from(&t.dir.path().join("config"));
@@ -1894,7 +1894,7 @@ fn with_every_type_tab_hidden_only_all_and_2fa_are_left() {
     t.app.cfg.hidden_tabs = Kind::ALL.to_vec();
     let bar = tab_bar(&t);
     assert!(bar.contains("All 3") && !bar.contains("Logins") && !bar.contains("Notes"), "{bar}");
-    assert!(bar.contains("2FA 0"), "2FA is not a type, so it cannot be hidden: {bar}");
+    assert!(bar.contains("2FA 0"), "2FA is not a type; hiding the types leaves it: {bar}");
     for k in [Key::Right, Key::Left, Key::Tab, Key::BackTab] {
         t.key(k);
         assert_eq!(t.app.tab, Tab::TwoFactor);
@@ -1907,12 +1907,99 @@ fn with_every_type_tab_hidden_only_all_and_2fa_are_left() {
     t.keys(&[Key::Down, Key::Down]);
     let mut g = Grid::new(80, 24, &ASCII);
     t.app.draw(&mut g, t.now);
-    assert!(g.text().contains("xLogins  xAPI keys  xCards  xIDs  xSSH  xNotes"), "{}", g.text());
+    assert!(g.text().contains("xLogins xAPI keys xCards xIDs xSSH xNotes +2FA + New"), "{}", g.text());
     t.app.resize((60, 16));
     assert!(t.screen_at(60, 16).contains("‹ Logins: hidden ›"), "{}", t.screen_at(60, 16));
     t.keys(&[Key::Right, Key::Enter]);
     assert!(t.screen_at(60, 16).contains("‹ API keys: shown ›"), "{}", t.screen_at(60, 16));
-    // ← → stop at the ends.
-    t.keys(&[Key::Right; 9]);
+    // ← → stop at the ends: after the types come 2FA and "+ New tab".
+    t.keys(&[Key::Right; 4]);
     assert!(t.screen_at(60, 16).contains("‹ Notes: hidden ›"), "{}", t.screen_at(60, 16));
+    t.key(Key::Right);
+    assert!(t.screen_at(60, 16).contains("‹ 2FA: shown ›"), "{}", t.screen_at(60, 16));
+    t.keys(&[Key::Right; 9]);
+    assert!(t.screen_at(60, 16).contains("‹ + New tab ›"), "{}", t.screen_at(60, 16));
+}
+
+#[test]
+fn without_the_2fa_tab_a_new_code_shows_in_the_details() {
+    let mut t = T::with(|uv| add(uv, "GitHub", Kind::Login, "john", "gh-Secret-1", ""));
+    t.app.clock = || 59;
+    t.app.cfg.two_factor_tab = false;
+    t.app.scanner = Box::new(|| {
+        Ok(Some(Zeroizing::new("otpauth://totp/GitHub:me?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ".into())))
+    });
+    t.app.select_name("GitHub");
+    t.key(Key::Char('t'));
+    t.key(Key::Ctrl('s'));
+    assert_eq!(t.app.tab, Tab::All, "no 2FA tab to go to");
+    assert_eq!(t.app.totp_shown.as_deref(), Some("GitHub"));
+    assert!(t.toast().contains("(t copies it)"), "{}", t.toast());
+    assert!(t.screen().contains("287082  ("), "live in the details: {}", t.screen());
+    assert!(!tab_bar(&t).contains("2FA"));
+}
+
+#[test]
+fn own_tabs_and_hiding_the_2fa_tab() {
+    let mut t = T::sample();
+    t.app
+        .commit(|v, _| {
+            let mut e = v.get("OpenAI").unwrap().clone();
+            e.set_tags(&["Clients".into()])?;
+            v.remove("OpenAI")?;
+            v.add(e)
+        })
+        .unwrap();
+    t.app.refilter();
+    t.key(Key::Char('s'));
+    t.keys(&[Key::Down, Key::Down]); // Tabs
+    t.keys(&[Key::Right; 7]); // past the six types and 2FA: "+ New"
+    assert!(t.screen().contains("Enter: make a tab of your own"), "{}", t.screen());
+    t.key(Key::Enter);
+    assert!(t.screen().contains("New tab") && t.screen().contains("It lists every"));
+    // A name another tab has is refused.
+    t.typ("notes");
+    t.key(Key::Enter);
+    assert!(t.screen().contains("There already is a tab called \"notes\"."), "{}", t.screen());
+    t.key(Key::Ctrl('u'));
+    t.typ("Clients");
+    t.key(Key::Enter);
+    assert_eq!(t.toast(), "Tab \"Clients\" made: it lists the items tagged \"Clients\" (1 now).");
+    assert_eq!(t.app.cfg.own_tabs, ["Clients"]);
+    assert!(
+        t.screen().contains("‹ Clients: shown ›"),
+        "too many for 80 columns: one at a time: {}",
+        t.screen()
+    );
+    assert!(t.screen_at(120, 30).contains("✔Notes  ✔Clients  ✔2FA  + New"), "{}", t.screen_at(120, 30));
+    // The 2FA tab can be hidden (Enter on it), and shown again.
+    t.key(Key::Right); // 2FA comes after the own tabs
+    t.key(Key::Enter);
+    assert_eq!(t.toast(), "The 2FA tab is hidden; t still shows and copies a code.");
+    assert!(!t.app.cfg.two_factor_tab);
+    t.key(Key::Esc);
+    let bar = tab_bar(&t);
+    assert!(bar.contains("Clients") && !bar.contains("2FA"), "{bar}");
+    // ← from All now goes to the own tab (the last one): only the tagged item.
+    t.key(Key::Left);
+    assert_eq!(t.app.tab, Tab::Own(0));
+    assert_eq!(t.app.view.len(), 1);
+    assert_eq!(t.app.selected().unwrap().name(), "OpenAI");
+    // A new item made on the tab gets its tag.
+    t.key(Key::Char('a'));
+    let Screen::Form(f) = &t.app.screen else { panic!("no form") };
+    assert_eq!(f.tags.as_str(), "Clients");
+    t.key(Key::Esc);
+    // Deleting the tab keeps the item and its tag.
+    t.key(Key::Char('s'));
+    t.keys(&[Key::Down, Key::Down]);
+    t.keys(&[Key::Right; 6]);
+    t.key(Key::Char('d'));
+    assert_eq!(t.toast(), "The Clients tab is deleted; its items and their tags stay.");
+    assert!(t.app.cfg.own_tabs.is_empty() && t.app.tab == Tab::All);
+    assert!(get(&t.app.uv, "OpenAI").has_tag("clients"));
+    // 2FA back on (the choice moved to the tab before the deleted one).
+    t.key(Key::Right);
+    t.key(Key::Enter);
+    assert!(t.app.cfg.two_factor_tab, "{}", t.toast());
 }

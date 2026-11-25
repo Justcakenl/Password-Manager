@@ -81,9 +81,12 @@ pub enum Tab {
     SshKeys,
     Notes,
     /// Every item with a TOTP secret, whatever its type, with its current
-    /// code in the list (like an authenticator app). Not a type, so it is
-    /// not in the `hidden-tabs` setting either: it is always shown.
+    /// code in the list (like an authenticator app). Not a type: shown
+    /// unless `two_factor_tab=off`.
     TwoFactor,
+    /// An own tab (Settings → Tabs → + New tab): the items with a tag of its
+    /// name. The number is its place in `Config::own_tabs`.
+    Own(u8),
 }
 
 impl Tab {
@@ -101,7 +104,7 @@ impl Tab {
 
     pub fn kind(self) -> Option<Kind> {
         match self {
-            Tab::All | Tab::TwoFactor => None,
+            Tab::All | Tab::TwoFactor | Tab::Own(_) => None,
             Tab::Logins => Some(Kind::Login),
             Tab::Api => Some(Kind::Api),
             Tab::Cards => Some(Kind::Card),
@@ -122,14 +125,8 @@ impl Tab {
             Tab::SshKeys => "SSH",
             Tab::Notes => "Notes",
             Tab::TwoFactor => "2FA",
-        }
-    }
-
-    /// Whether this tab lists `e`.
-    pub fn shows(self, e: &Entry) -> bool {
-        match self {
-            Tab::TwoFactor => e.has_totp(),
-            t => t.kind().is_none_or(|k| e.kind() == k),
+            // Named in the settings (see `App::tab_label`).
+            Tab::Own(_) => "",
         }
     }
 
@@ -143,21 +140,6 @@ impl Tab {
             Kind::SshKey => Tab::SshKeys,
             Kind::Note => Tab::Notes,
         }
-    }
-
-    /// The next (`delta` > 0) or previous tab that `shown` lets through,
-    /// going round. "All" is always shown, so there always is one.
-    pub fn step(self, delta: isize, shown: impl Fn(Tab) -> bool) -> Tab {
-        let n = Tab::ALL.len() as isize;
-        let mut i = Tab::ALL.iter().position(|&t| t == self).unwrap_or(0) as isize;
-        for _ in 0..n {
-            i = (i + delta.signum()).rem_euclid(n);
-            let t = Tab::ALL[i as usize];
-            if t == Tab::All || shown(t) {
-                return t;
-            }
-        }
-        Tab::All
     }
 }
 
@@ -452,17 +434,58 @@ impl App {
     /// Tabs row in the settings). Only the tab: its items stay under "All".
     /// "All" and "2FA" are not a type, so they are always shown.
     pub fn tab_shown(&self, tab: Tab) -> bool {
-        tab.kind().is_none_or(|k| self.cfg.shows_tab(k))
+        match tab {
+            Tab::All => true,
+            Tab::TwoFactor => self.cfg.two_factor_tab,
+            Tab::Own(i) => usize::from(i) < self.cfg.own_tabs.len(),
+            t => t.kind().is_none_or(|k| self.cfg.shows_tab(k)),
+        }
+    }
+
+    /// The tabs of the tab bar, in order: All, the types, your own tabs,
+    /// 2FA (last, so ← from All goes straight to the codes). Hidden ones
+    /// are left out.
+    pub fn tabs(&self) -> Vec<Tab> {
+        let own = (0..self.cfg.own_tabs.len().min(config::MAX_OWN_TABS)).map(|i| Tab::Own(i as u8));
+        let types = Tab::ALL.into_iter().filter(|t| t.kind().is_some());
+        std::iter::once(Tab::All)
+            .chain(types)
+            .chain(own)
+            .chain(std::iter::once(Tab::TwoFactor))
+            .filter(|&t| self.tab_shown(t))
+            .collect()
+    }
+
+    /// Every tab, hidden ones too (for names that must not repeat).
+    pub fn tabs_with_hidden(&self) -> Vec<Tab> {
+        let own = (0..self.cfg.own_tabs.len()).map(|i| Tab::Own(i as u8));
+        Tab::ALL.into_iter().chain(own).collect()
+    }
+
+    /// Whether `tab` lists `e`.
+    pub fn tab_shows(&self, tab: Tab, e: &Entry) -> bool {
+        match tab {
+            Tab::TwoFactor => e.has_totp(),
+            Tab::Own(i) => self.cfg.own_tabs.get(usize::from(i)).is_some_and(|tag| e.has_tag(tag)),
+            t => t.kind().is_none_or(|k| e.kind() == k),
+        }
     }
 
     /// The name a tab shows: its own name from the settings, else the usual one.
     pub fn tab_label(&self, tab: Tab) -> &str {
-        tab.kind().and_then(|k| self.cfg.tab_name(k)).unwrap_or(tab.label())
+        match tab {
+            Tab::Own(i) => self.cfg.own_tabs.get(usize::from(i)).map_or("?", String::as_str),
+            t => t.kind().and_then(|k| self.cfg.tab_name(k)).unwrap_or(t.label()),
+        }
     }
 
-    /// The tab ← → (or Tab, Shift+Tab) moves to, skipping hidden ones.
+    /// The tab ← → (or Tab, Shift+Tab) moves to, skipping hidden ones,
+    /// going round.
     pub fn next_tab(&self, delta: isize) -> Tab {
-        self.tab.step(delta, |t| self.tab_shown(t))
+        let tabs = self.tabs();
+        let n = tabs.len() as isize;
+        let i = tabs.iter().position(|&t| t == self.tab).unwrap_or(0) as isize;
+        tabs[(i + delta.signum()).rem_euclid(n) as usize]
     }
 
     pub fn selected(&self) -> Option<&Entry> {
@@ -491,7 +514,9 @@ impl App {
             }
             out
         };
-        self.view.retain(|&i| tab.shows(&entries[i]));
+        let mut view = std::mem::take(&mut self.view);
+        view.retain(|&i| self.tab_shows(tab, &entries[i]));
+        self.view = view;
         // Favorites first; otherwise the vault's order (by name). Stable.
         self.view.sort_by_key(|&i| !entries[i].is_favorite());
         match keep.and_then(|n| self.view.iter().position(|&i| entries[i].name() == n)) {
@@ -1048,12 +1073,47 @@ impl App {
                     PromptPurpose::OwnPasswordRepeat(text),
                 )));
             }
+            PromptPurpose::NewTab => {
+                let taken = |n: &str| {
+                    self.tabs_with_hidden().into_iter().any(|t| {
+                        self.tab_label(t).to_lowercase() == n.to_lowercase()
+                            || t.label().to_lowercase() == n.to_lowercase()
+                    })
+                };
+                let error = match config::parse_tab_name(&text) {
+                    _ if text.trim().is_empty() => return,
+                    Some(n) if taken(&n) => Some(format!("There already is a tab called \"{n}\".")),
+                    Some(n) if super::grid::str_width(&n) <= config::MAX_TAB_NAME => {
+                        let mut cfg = self.cfg.clone();
+                        cfg.own_tabs.push(n.clone());
+                        if self.save_config(cfg) {
+                            let count = self.entries().iter().filter(|e| e.has_tag(&n)).count();
+                            self.ok(format!(
+                                "Tab \"{n}\" made: it lists the items tagged \"{n}\" ({count} now)."
+                            ));
+                            if let Screen::Settings(s) = &mut self.screen {
+                                s.tab_item = self.cfg.own_tabs.len() + Kind::ALL.len() - 1;
+                            }
+                        }
+                        None
+                    }
+                    _ => Some(format!(
+                        "1 to {} characters (wide ones count double), without , : or =.",
+                        config::MAX_TAB_NAME
+                    )),
+                };
+                if let Some(error) = error {
+                    p.purpose = PromptPurpose::NewTab;
+                    p.error = Some(error);
+                    self.modals.push(Modal::Prompt(p));
+                }
+            }
             PromptPurpose::RenameTab(kind) => {
                 let usual = Tab::of(kind).label();
                 // The name of another tab (its own or usual one): two tabs
                 // with one name would only confuse.
                 let taken = |n: &str| {
-                    Tab::ALL.into_iter().filter(|&t| t != Tab::of(kind)).any(|t| {
+                    self.tabs_with_hidden().into_iter().filter(|&t| t != Tab::of(kind)).any(|t| {
                         self.tab_label(t).to_lowercase() == n.to_lowercase()
                             || t.label().to_lowercase() == n.to_lowercase()
                     })

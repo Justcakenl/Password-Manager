@@ -294,9 +294,9 @@ impl App {
 
     fn draw_tabs(&self, g: &mut Grid) {
         let w = g.width();
-        let count = |t: Tab| self.entries().iter().filter(|e| t.shows(e)).count();
+        let count = |t: Tab| self.entries().iter().filter(|e| self.tab_shows(t, e)).count();
         // Only the tabs that are not hidden (and always "All").
-        let tabs: Vec<Tab> = Tab::ALL.into_iter().filter(|&t| self.tab_shown(t)).collect();
+        let tabs = self.tabs();
         let labels: Vec<String> =
             tabs.iter().map(|&t| format!("{} {}", self.tab_label(t), count(t))).collect();
         // With counts if they fit (with a narrower gap when needed), else without.

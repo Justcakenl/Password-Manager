@@ -50,6 +50,26 @@ pub struct Config {
     /// Own names for type tabs ("Notes" → "Clients"), in the order of
     /// [`Kind::ALL`], each name checked by [`parse_tab_name`].
     pub tab_names: Vec<(Kind, String)>,
+    /// Own tabs: each lists the items with a tag of the same name (any
+    /// case). At most [`MAX_OWN_TABS`], names checked by [`parse_tab_name`].
+    pub own_tabs: Vec<String>,
+    /// Whether the screen mode shows the 2FA tab.
+    pub two_factor_tab: bool,
+}
+
+/// The most own tabs (the tab bar has to hold them).
+pub const MAX_OWN_TABS: usize = 6;
+
+/// Parse `own_tabs`: names separated by commas, each checked by
+/// [`parse_tab_name`], no repeats (any case), at most [`MAX_OWN_TABS`].
+pub fn parse_own_tabs(s: &str) -> Vec<String> {
+    let mut tabs: Vec<String> = Vec::new();
+    for name in s.split(',').filter_map(parse_tab_name) {
+        if tabs.len() < MAX_OWN_TABS && !tabs.iter().any(|t| t.to_lowercase() == name.to_lowercase()) {
+            tabs.push(name);
+        }
+    }
+    tabs
 }
 
 /// The accent colors of the screen mode.
@@ -146,6 +166,8 @@ impl Default for Config {
             keyfile: None,
             colors: Colors::Pink,
             tab_names: Vec::new(),
+            own_tabs: Vec::new(),
+            two_factor_tab: true,
         }
     }
 }
@@ -237,6 +259,8 @@ impl Config {
                 "keyfile" => cfg.keyfile = parse_keyfile_path(value),
                 "colors" => cfg.colors = Colors::parse(value).unwrap_or_default(),
                 "tab_names" => cfg.tab_names = parse_tab_names(value),
+                "own_tabs" => cfg.own_tabs = parse_own_tabs(value),
+                "two_factor_tab" => cfg.two_factor_tab = parse_on_off(value).unwrap_or(true),
                 _ => {}
             }
         }
@@ -267,6 +291,19 @@ impl Config {
             .collect();
         if !names.is_empty() {
             text.push_str(&format!("tab_names={}\n", names.join(",")));
+        }
+        let own: Vec<&str> = self
+            .own_tabs
+            .iter()
+            .filter(|n| parse_tab_name(n).as_deref() == Some(n.as_str()))
+            .map(String::as_str)
+            .take(MAX_OWN_TABS)
+            .collect();
+        if !own.is_empty() {
+            text.push_str(&format!("own_tabs={}\n", own.join(",")));
+        }
+        if !self.two_factor_tab {
+            text.push_str("two_factor_tab=off\n");
         }
         // Only a path that reads back the same is written (see `parse_keyfile_path`).
         if let Some(p) =
@@ -361,6 +398,17 @@ mod tests {
             !Config::default().to_text().contains("colors")
                 && !Config::default().to_text().contains("tab_names")
         );
+    }
+
+    #[test]
+    fn own_tabs_and_the_2fa_tab_read_back() {
+        let c = Config::parse("own_tabs=Klanten, werk ,KLANTEN,a:b,,Thuis,5,6,7,8,9\ntwo_factor_tab=off\n");
+        assert_eq!(c.own_tabs, ["Klanten", "werk", "Thuis", "5", "6", "7"], "no repeats, at most 6");
+        assert!(!c.two_factor_tab);
+        assert_eq!(Config::parse(&c.to_text()), c);
+        let d = Config::default();
+        assert!(d.two_factor_tab && !d.to_text().contains("own_tabs") && !d.to_text().contains("two_factor"));
+        assert!(Config::parse("two_factor_tab=maybe").two_factor_tab, "unreadable: shown");
     }
 
     #[test]
@@ -477,6 +525,8 @@ mod tests {
             keyfile: None,
             colors: Colors::Purple,
             tab_names: vec![(Kind::Note, "Clients".into())],
+            own_tabs: vec!["Klanten".into(), "Werk".into()],
+            two_factor_tab: false,
         };
         save_to(&path, &cfg).unwrap();
         assert_eq!(load_from(&path), cfg);

@@ -477,7 +477,13 @@ impl App {
     pub fn open_add(&mut self) {
         let kind = self.tab.kind().unwrap_or(Kind::Login);
         self.reveal_until = None;
-        self.screen = Screen::Form(Box::new(Form::add(kind)));
+        let mut f = Form::add(kind);
+        // On an own tab the new item gets its tag, so it shows there.
+        if let Tab::Own(_) = self.tab {
+            let tag = self.tab_label(self.tab).to_string();
+            f.tags.set(&tag);
+        }
+        self.screen = Screen::Form(Box::new(f));
     }
 
     pub fn open_edit(&mut self) {
@@ -529,7 +535,7 @@ impl App {
         match self.try_save(&mut f) {
             // The form is dropped here, which wipes what was typed.
             Ok((name, msg)) => {
-                if new_code {
+                if new_code && self.tab_shown(Tab::TwoFactor) {
                     // Straight to its live code: the site asks for it next.
                     self.tab = Tab::TwoFactor;
                     self.search.clear();
@@ -537,6 +543,12 @@ impl App {
                 }
                 self.refilter();
                 self.select_name(&name);
+                let mut msg = msg;
+                if new_code && !self.tab_shown(Tab::TwoFactor) {
+                    // No 2FA tab: its code live in the details (as after t).
+                    self.totp_shown = Some(name.clone());
+                    msg = msg.replace("(Enter copies it)", "(t copies it)");
+                }
                 self.ok(msg);
             }
             Err(e) => {

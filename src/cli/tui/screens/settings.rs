@@ -29,9 +29,9 @@ use super::{Hint, field_row, title_bar};
 
 pub struct Settings {
     pub row: usize,
-    /// The type chosen on the Tabs row (an index in `Kind::ALL`); Enter or
-    /// Space shows or hides its tab.
-    pub tab_kind: usize,
+    /// The place chosen on the Tabs row (an index in `App::settings_tabs`,
+    /// one past the end: "+ New tab").
+    pub tab_item: usize,
     /// The level chosen on the security row (applied only with Enter).
     pub level: SecurityLevel,
     /// Looked up once when the screen opens (no need to search PATH every frame).
@@ -53,7 +53,7 @@ impl Settings {
     pub fn load(current: KdfParams) -> Settings {
         Settings {
             row: 0,
-            tab_kind: 0,
+            tab_item: 0,
             level: SecurityLevel::of(&current).unwrap_or(SecurityLevel::DEFAULT),
             clipboard: cakepass::clipboard::detect().map(|t| t.name()),
             update: update::pending_notice(),
@@ -65,15 +65,29 @@ impl App {
     pub fn handle_settings(&mut self, ev: Event) {
         let Event::Key(key) = ev else { return };
         let Screen::Settings(s) = &mut self.screen else { return };
-        let row = s.row;
+        let (row, tab_item) = (s.row, s.tab_item);
         match key {
             Key::Esc => self.screen = Screen::Main,
             Key::Up | Key::BackTab => s.row = row.saturating_sub(1),
             Key::Down | Key::Tab => s.row = (row + 1).min(ROWS - 1),
             Key::Char('?') | Key::F(1) => self.modals.push(Modal::Help(Help::new(HelpPage::Settings))),
-            Key::Char('r') if row == TABS_ROW => {
-                let kind = Kind::ALL[s.tab_kind.min(Kind::ALL.len() - 1)];
-                self.ask_rename_tab(kind);
+            Key::Char(c @ ('r' | 'd' | 'n' | 'a')) if row == TABS_ROW => {
+                let chosen = self.settings_tabs().get(tab_item).copied();
+                match (c, chosen) {
+                    ('r', Some(Tab::Own(_))) => self.info(
+                        "An own tab shows the items tagged with its name: delete it (d) and make a new one instead.",
+                    ),
+                    ('r', Some(Tab::TwoFactor)) => self.info("The 2FA tab keeps its name."),
+                    ('r', Some(t)) => {
+                        if let Some(kind) = t.kind() {
+                            self.ask_rename_tab(kind);
+                        }
+                    }
+                    ('d', Some(Tab::Own(i))) => self.delete_own_tab(usize::from(i)),
+                    ('d', Some(_)) => self.info("Only own tabs can be deleted; Enter hides this one."),
+                    ('n' | 'a', _) => self.ask_new_tab(),
+                    _ => {}
+                }
             }
             Key::Left | Key::Right | Key::Enter | Key::Char(' ') | Key::PageUp | Key::PageDown => {
                 self.change_setting(row, key)
@@ -117,15 +131,24 @@ impl App {
                 }
             }
             TABS_ROW => {
+                let tabs = self.settings_tabs();
                 let Screen::Settings(s) = &mut self.screen else { return };
-                let last = Kind::ALL.len() - 1;
+                let last = tabs.len(); // "+ New tab"
                 match key {
-                    Key::Left | Key::PageDown => s.tab_kind = s.tab_kind.saturating_sub(1),
-                    Key::Right | Key::PageUp => s.tab_kind = (s.tab_kind + 1).min(last),
-                    Key::Enter | Key::Char(' ') => {
-                        let kind = Kind::ALL[s.tab_kind.min(last)];
-                        self.toggle_tab(kind);
-                    }
+                    Key::Left | Key::PageDown => s.tab_item = s.tab_item.saturating_sub(1),
+                    Key::Right | Key::PageUp => s.tab_item = (s.tab_item + 1).min(last),
+                    Key::Enter | Key::Char(' ') => match tabs.get(s.tab_item.min(last)).copied() {
+                        None => self.ask_new_tab(),
+                        Some(Tab::TwoFactor) => self.toggle_2fa_tab(),
+                        Some(Tab::Own(_)) => {
+                            self.info("An own tab is always shown; d deletes it (its items stay).")
+                        }
+                        Some(t) => {
+                            if let Some(kind) = t.kind() {
+                                self.toggle_tab(kind);
+                            }
+                        }
+                    },
                     _ => {}
                 }
             }
@@ -194,6 +217,71 @@ impl App {
         }
     }
 
+    /// The tabs on the Tabs row of the settings, hidden ones too: the types,
+    /// your own tabs, 2FA ("+ New tab" comes after them).
+    pub fn settings_tabs(&self) -> Vec<Tab> {
+        let own = (0..self.cfg.own_tabs.len().min(config::MAX_OWN_TABS)).map(|i| Tab::Own(i as u8));
+        Kind::ALL.into_iter().map(Tab::of).chain(own).chain(std::iter::once(Tab::TwoFactor)).collect()
+    }
+
+    /// Show or hide the 2FA tab (its codes stay: `t` shows one in the details).
+    fn toggle_2fa_tab(&mut self) {
+        let mut cfg = self.cfg.clone();
+        cfg.two_factor_tab = !cfg.two_factor_tab;
+        let shown = cfg.two_factor_tab;
+        if !self.save_config(cfg) {
+            return;
+        }
+        if shown {
+            self.ok("The 2FA tab is shown again.");
+        } else {
+            self.ok("The 2FA tab is hidden; t still shows and copies a code.");
+        }
+        if !self.tab_shown(self.tab) {
+            self.tab = Tab::All;
+            self.refilter();
+        }
+    }
+
+    /// `+ New tab` (or `n` on the Tabs row): ask the name of an own tab.
+    fn ask_new_tab(&mut self) {
+        if self.cfg.own_tabs.len() >= config::MAX_OWN_TABS {
+            return self.info(format!("At most {} own tabs; delete one first (d).", config::MAX_OWN_TABS));
+        }
+        self.modals.push(Modal::Prompt(Prompt::new(
+            "New tab",
+            vec![
+                "A tab of your own, e.g. \"Clients\". It lists every item with that tag, whatever its type."
+                    .into(),
+                "Give an item the tag with e → Tags; a new item made on the tab gets it by itself.".into(),
+            ],
+            "Name",
+            false,
+            PromptPurpose::NewTab,
+        )));
+    }
+
+    /// `d` on an own tab: remove the tab. The items and their tags stay.
+    fn delete_own_tab(&mut self, i: usize) {
+        let mut cfg = self.cfg.clone();
+        if i >= cfg.own_tabs.len() {
+            return;
+        }
+        let name = cfg.own_tabs.remove(i);
+        if !self.save_config(cfg) {
+            return;
+        }
+        self.ok(format!("The {name} tab is deleted; its items and their tags stay."));
+        // The places of the other own tabs moved: back to All.
+        if let Tab::Own(_) = self.tab {
+            self.tab = Tab::All;
+            self.refilter();
+        }
+        if let Screen::Settings(s) = &mut self.screen {
+            s.tab_item = s.tab_item.saturating_sub(1);
+        }
+    }
+
     /// `r` on the Tabs row: give the chosen tab its own name.
     fn ask_rename_tab(&mut self, kind: Kind) {
         let usual = Tab::of(kind).label();
@@ -215,31 +303,47 @@ impl App {
         self.modals.push(Modal::Prompt(p));
     }
 
-    /// The Tabs row: every type with ✔ (shown) or ✖ (hidden), the chosen one
-    /// highlighted. Too narrow for all six: only the chosen one, ‹ › style.
+    /// The Tabs row: every tab with ✔ (shown) or ✖ (hidden), then
+    /// "+ New tab", the chosen one highlighted. Too narrow for all: only the
+    /// chosen one, ‹ › style.
     fn draw_tabs_row(&self, g: &mut Grid, x: u16, y: u16, w: u16, s: &Settings, focused: bool) {
-        let mark = |k: Kind| if self.cfg.shows_tab(k) { g.g.check } else { g.g.cross };
-        let items: Vec<(Kind, String)> = Kind::ALL
-            .into_iter()
-            .map(|k| (k, format!("{}{}", mark(k), self.tab_label(Tab::of(k)))))
+        let tabs = self.settings_tabs();
+        let shown = |t: Tab| match t {
+            Tab::TwoFactor => self.cfg.two_factor_tab,
+            t => t.kind().is_none_or(|k| self.cfg.shows_tab(k)),
+        };
+        let mut items: Vec<(bool, String)> = tabs
+            .iter()
+            .map(|&t| {
+                let mark = if shown(t) { g.g.check } else { g.g.cross };
+                (shown(t), format!("{mark}{}", self.tab_label(t)))
+            })
             .collect();
-        let full: usize = items.iter().map(|(_, t)| str_width(t) + 2).sum();
-        if full <= w as usize + 2 {
+        items.push((true, "+ New".to_string()));
+        let chosen = s.tab_item.min(items.len() - 1);
+        // Two spaces between them if that fits, else one.
+        let full = |gap: usize| items.iter().map(|(_, t)| str_width(t) + gap).sum::<usize>();
+        let gap = if full(2) <= w as usize + 2 { 2 } else { 1 };
+        if full(gap) <= w as usize + gap {
             let (mut x, end) = (x, x + w);
-            for (j, (k, text)) in items.iter().enumerate() {
-                let style = if focused && j == s.tab_kind {
+            for (j, (on, text)) in items.iter().enumerate() {
+                let style = if focused && j == chosen {
                     Style::SELECTED
-                } else if self.cfg.shows_tab(*k) {
+                } else if *on {
                     Style::PLAIN
                 } else {
                     Style::DIM
                 };
-                x += g.print(x, y, end.saturating_sub(x), text, style) + 2;
+                x += g.print(x, y, end.saturating_sub(x), text, style) + gap as u16;
             }
         } else {
-            let k = Kind::ALL[s.tab_kind.min(Kind::ALL.len() - 1)];
-            let state = if self.cfg.shows_tab(k) { "shown" } else { "hidden" };
-            let text = format!("{} {}: {state} {}", g.g.left, self.tab_label(Tab::of(k)), g.g.right);
+            let text = match tabs.get(chosen) {
+                Some(&t) => {
+                    let state = if shown(t) { "shown" } else { "hidden" };
+                    format!("{} {}: {state} {}", g.g.left, self.tab_label(t), g.g.right)
+                }
+                None => format!("{} + New tab {}", g.g.left, g.g.right),
+            };
             g.print(x, y, w, &text, if focused { Style::SELECTED } else { Style::PLAIN });
         }
     }
@@ -374,9 +478,14 @@ impl App {
         let help = match s.row {
             0 => "← → or Enter: an animated or a still logo at startup.".to_string(),
             1 => "← → (PgUp PgDn: ±10): minutes until CakePass locks itself.".to_string(),
-            TABS_ROW => {
-                "← →: choose a tab · Enter: show/hide it (items stay under All) · r: rename it".to_string()
-            }
+            TABS_ROW => match self.settings_tabs().get(s.tab_item).copied() {
+                None => "Enter: make a tab of your own (it lists the items with that tag)".to_string(),
+                Some(Tab::Own(_)) => {
+                    "← →: choose a tab · d: delete this own tab (its items stay)".to_string()
+                }
+                Some(_) => "← →: choose a tab · Enter: show/hide it (items stay under All) · r: rename it"
+                    .to_string(),
+            },
             COLORS_ROW => {
                 "← →: the color of CakePass (pink, blue, green, purple, orange, red, teal)".to_string()
             }
